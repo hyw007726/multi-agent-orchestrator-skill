@@ -367,19 +367,34 @@ async function runLoop() {
                 }
                 break;
               }
-              case "restart_agent": {
+              case "soft_restart":
+              case "hard_restart": {
                 let agents = readJSON<Record<string, AgentEntry>>(paths.agents);
                 if (agents[action.agent]) {
                   const worktree = agents[action.agent].worktree;
                   const mode = agents[action.agent].kilo_mode;
                   killAgentProcess(agents[action.agent].pid, config.logFile);
                   
-                  if (action.rollback && fs.existsSync(worktree)) {
-                    appendLog(config.logFile, `Rolling back worktree ${worktree}...`);
-                    try {
-                      execSync(`git reset --hard HEAD && git clean -fd`, { cwd: worktree });
-                    } catch (err: any) {
-                      appendLog(config.logFile, `Rollback failed: ${err.message}`);
+                  if (fs.existsSync(worktree)) {
+                    if (action.type === "hard_restart") {
+                      appendLog(config.logFile, `Hard resetting worktree ${worktree}...`);
+                      try {
+                        execSync(`git reset --hard HEAD && git clean -fd`, { cwd: worktree });
+                      } catch (err: any) {
+                        appendLog(config.logFile, `Hard reset failed: ${err.message}`);
+                      }
+                    } else if (action.type === "soft_restart") {
+                      appendLog(config.logFile, `Soft restarting: creating WIP commit in ${worktree}...`);
+                      try {
+                        execSync(`git add .`, { cwd: worktree });
+                        try {
+                          execSync(`git commit -m "WIP: Orchestrator intervention - review new instructions"`, { cwd: worktree, stdio: "ignore" });
+                        } catch (commitErr) {
+                          appendLog(config.logFile, `No changes to commit for soft_restart.`);
+                        }
+                      } catch (err: any) {
+                        appendLog(config.logFile, `Soft restart WIP commit failed: ${err.message}`);
+                      }
                     }
                   }
                   

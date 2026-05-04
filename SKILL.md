@@ -57,7 +57,7 @@ npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/bootstrap.ts \
 ```
 
 ### `coord/context.json`
-Because the orchestrator loop runs in a detached Claude CLI session, it has **zero access** to your original chat history. **You must heavily compress all user preferences, architectural nuances, and conversational context into the `chat_context` field.**
+Because the orchestrator loop runs after your Claude CLI session is done, it has **zero access** to your original chat history. **You must heavily compress all user preferences, architectural nuances, and conversational context into the `chat_context` field.**
 
 You should also include the tasks you generated in Phase 1 under the `"tasks"` key.
 
@@ -111,7 +111,8 @@ nohup npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/orchestrator-loop
 | Action | Effect |
 |--------|--------|
 | `end_agent` | Orchestrator loop sends SIGTERM to the process and marks it `"completed"`. |
-| `restart_agent` | Orchestrator loop handles everything automatically: it kills the rogue process, runs `git reset --hard` (if `rollback` is `true`), and uses `spawn-agent.ts` to immediately respawn the agent with the new `instruction`. |
+| `soft_restart` | Orchestrator loop kills the rogue process, creates a `WIP` commit to preserve uncommitted work, and respawns the agent with new `instruction`s so it can correct its course. |
+| `hard_restart` | Orchestrator loop kills the process, aggressively wipes all uncommitted work via `git reset --hard`, and respawns the agent. Useful for escaping hallucination loops. |
 
 ## Phase 6 — Review and Integration
 

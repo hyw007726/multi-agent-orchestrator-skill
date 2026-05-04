@@ -111,6 +111,19 @@ If priority is \`high\`, STOP WORKING and wait for the orchestrator to update \`
   const agentsMdPath = path.join(coordDir, "AGENTS.md");
   fs.writeFileSync(agentsMdPath, agentsMd);
 
+  const gitignorePath = path.join(process.cwd(), ".gitignore");
+  const ignoreEntries = [".kilocode/worktrees/", ".agents/worktrees/", "coord/orchestrator-loop.out"];
+  let gitignoreContent = "";
+  if (fs.existsSync(gitignorePath)) {
+    gitignoreContent = fs.readFileSync(gitignorePath, "utf-8");
+  }
+  const newIgnores = ignoreEntries.filter(entry => !gitignoreContent.includes(entry));
+  if (newIgnores.length > 0) {
+    const prefix = gitignoreContent.length === 0 || gitignoreContent.endsWith("\n") ? "" : "\n";
+    fs.appendFileSync(gitignorePath, prefix + newIgnores.join("\n") + "\n");
+    console.log(`Added ${newIgnores.length} entries to .gitignore`);
+  }
+
   console.log(`Successfully bootstrapped multi-agent coordination in ${coordDir}`);
   console.log(`Global rules written to ${agentsMdPath}`);
 }
