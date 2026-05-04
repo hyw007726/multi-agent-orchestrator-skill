@@ -336,10 +336,23 @@ async function runLoop() {
                   const match = wtList.match(/\[(.*?)\]/);
                   if (match && match[1]) baseBranch = match[1];
                 } catch { baseBranch = "master"; }                
-                const diffUnstaged = execSync('git diff', { cwd: worktree, encoding: 'utf-8' });
-                const diffStaged = execSync('git diff --staged', { cwd: worktree, encoding: 'utf-8' });
-                const diffBranch = execSync(`git diff ${baseBranch}...HEAD`, { cwd: worktree, encoding: 'utf-8' });
-                worktreeStates[req.agent] = `STATUS:\n${status}\n\nDIFF UNSTAGED:\n${diffUnstaged.slice(0, 5000)}\n\nDIFF STAGED:\n${diffStaged.slice(0, 5000)}\n\nCOMMITS against ${baseBranch}:\n${diffBranch.slice(0, 10000)}`;
+                
+                const diffStatUnstaged = execSync('git diff --stat', { cwd: worktree, encoding: 'utf-8' });
+                const diffStatStaged = execSync('git diff --staged --stat', { cwd: worktree, encoding: 'utf-8' });
+                const diffStatBranch = execSync(`git diff ${baseBranch}...HEAD --stat`, { cwd: worktree, encoding: 'utf-8' });
+                
+                let targetedDiffs = "";
+                try {
+                  const filesChanged = execSync(`git diff ${baseBranch}...HEAD --name-only`, { cwd: worktree, encoding: 'utf-8' }).split("\n").filter(Boolean);
+                  for (const file of filesChanged) {
+                    if (req.content.includes(file) || req.content.includes(path.basename(file))) {
+                      const fileDiff = execSync(`git diff ${baseBranch}...HEAD -- "${file}"`, { cwd: worktree, encoding: 'utf-8' });
+                      targetedDiffs += `\nFull diff for ${file}:\n${fileDiff.slice(0, 3000)}`;
+                    }
+                  }
+                } catch (e) {}
+
+                worktreeStates[req.agent] = `STATUS:\n${status}\n\nCHANGES (UNSTAGED):\n${diffStatUnstaged}\nCHANGES (STAGED):\n${diffStatStaged}\nCHANGES (COMMITS against ${baseBranch}):\n${diffStatBranch}${targetedDiffs ? '\n\nTARGETED DIFFS:\n' + targetedDiffs : ''}`;
               } catch (err: any) {
                 worktreeStates[req.agent] = `Failed to read worktree state: ${err.message}`;
               }

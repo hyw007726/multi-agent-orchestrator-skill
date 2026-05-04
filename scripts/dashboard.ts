@@ -23,6 +23,41 @@ process.on("SIGINT", handleAbort);
 process.on("SIGHUP", handleAbort);
 process.on("SIGTERM", handleAbort);
 
+function parseAgentState(cli: string, lines: string[]): string | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    if (line.match(/Editing file:?\s+(.*)/i)) {
+      return `Editing: ${line.match(/Editing file:?\s+(.*)/i)![1]}`;
+    }
+    if (line.match(/Tool Use:\s+(?:replace|write_file|edit)\s+.*?in\s+(.*)/i)) {
+      return `Editing: ${line.match(/Tool Use:\s+(?:replace|write_file|edit)\s+.*?in\s+(.*)/i)![1]}`;
+    }
+    // Also match simple "Tool Use: replace" etc which sometimes clis output
+    if (line.match(/Tool Use:\s+replace\s*(.*)/i)) {
+      return `Editing file`;
+    }
+    if (line.match(/Tool Use:\s+read_file\s+(.*)/i)) {
+      return `Reading: ${line.match(/Tool Use:\s+read_file\s+(.*)/i)![1]}`;
+    }
+    if (line.match(/Tool Use:\s+bash\s+(.*)/i) || line.match(/Running command:?\s+(.*)/i)) {
+      const cmd = line.match(/Tool Use:\s+bash\s+(.*)/i)?.[1] || line.match(/Running command:?\s+(.*)/i)?.[1];
+      return `Running: ${cmd?.substring(0, 30)}...`;
+    }
+    if (line.match(/Tokens:\s+(\d+)/i)) {
+      return `Processing... (Tokens: ${line.match(/Tokens:\s+(\d+)/i)![1]})`;
+    }
+    if (line.match(/Applied edit to\s+(.*)/i)) {
+      return `Saved: ${line.match(/Applied edit to\s+(.*)/i)![1]}`;
+    }
+    if (line.match(/Running tests/i)) {
+      return `Testing...`;
+    }
+  }
+  return null;
+}
+
 function render() {
   clearScreen();
   console.log(`=== KILO ORCHESTRATOR DASHBOARD ===  [${new Date().toLocaleTimeString()}]`);
@@ -43,11 +78,16 @@ function render() {
             const logPath = path.join(coordDir, "logs", `${name}.log`);
             if (fs.existsSync(logPath)) {
               const logs = fs.readFileSync(logPath, "utf-8").trim().split("\n");
-              const lastLine = logs.pop();
-              if (lastLine) {
-                if (agents[name].status === "errored") {
-                  extraInfo = `ERROR: ${lastLine.slice(0, 40)}`;
-                } else if (agents[name].status === "running") {
+              const lastLine = logs[logs.length - 1] || "";
+              
+              if (agents[name].status === "errored") {
+                extraInfo = `ERROR: ${lastLine.slice(0, 40)}`;
+              } else if (agents[name].status === "running") {
+                const tailLines = logs.slice(-50);
+                const parsedState = parseAgentState(agents[name].cli || "kilo", tailLines);
+                if (parsedState) {
+                  extraInfo = `👉 ${parsedState}`;
+                } else {
                   extraInfo = `[Log] ${lastLine.slice(0, 40)}`;
                 }
               }
