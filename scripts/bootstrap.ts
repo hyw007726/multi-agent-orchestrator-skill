@@ -108,10 +108,11 @@ When you need a decision, review, or clarification, append a SINGLE LINE of JSON
 If priority is \`high\`, STOP WORKING and wait for the orchestrator to update \`decisions.json\`.
 `;
 
-  fs.writeFileSync("AGENTS.md", agentsMd);
+  const agentsMdPath = path.join(coordDir, "AGENTS.md");
+  fs.writeFileSync(agentsMdPath, agentsMd);
 
   console.log(`Successfully bootstrapped multi-agent coordination in ${coordDir}`);
-  console.log(`Global rules written to AGENTS.md`);
+  console.log(`Global rules written to ${agentsMdPath}`);
 }
 
 bootstrap(parseArgs());

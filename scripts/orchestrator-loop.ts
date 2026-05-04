@@ -304,9 +304,9 @@ async function runLoop() {
               agentsChanged = true;
             }
           } catch (e) {
-            agentsForCheck[name].status = "errored";
+            agentsForCheck[name].status = "completed";
             agentsChanged = true;
-            appendLog(config.logFile, `⚠️ Agent ${name} (PID ${agentsForCheck[name].pid}) died unexpectedly!`);
+            appendLog(config.logFile, `ℹ️ Agent ${name} (PID ${agentsForCheck[name].pid}) process exited.`);
           }
         }
       }
@@ -331,9 +331,11 @@ async function runLoop() {
                 const status = execSync('git status -s', { cwd: worktree, encoding: 'utf-8' });
                 
                 let baseBranch = "main";
-                try { execSync('git show-ref --verify refs/heads/main', { cwd: worktree, stdio: 'ignore' }); } 
-                catch { baseBranch = "master"; }
-                
+                try {
+                  const wtList = execSync('git worktree list', { cwd: worktree, encoding: 'utf-8' });
+                  const match = wtList.match(/\[(.*?)\]/);
+                  if (match && match[1]) baseBranch = match[1];
+                } catch { baseBranch = "master"; }                
                 const diffUnstaged = execSync('git diff', { cwd: worktree, encoding: 'utf-8' });
                 const diffStaged = execSync('git diff --staged', { cwd: worktree, encoding: 'utf-8' });
                 const diffBranch = execSync(`git diff ${baseBranch}...HEAD`, { cwd: worktree, encoding: 'utf-8' });
@@ -351,26 +353,26 @@ async function runLoop() {
         if (!response) {
           appendLog(config.logFile, "Skipping cycle due to Claude failure.");
         } else {
-          // Process Actions
-          // Re-read agents.json to avoid overwriting agents that were spawned while Claude was processing
-          const latestAgents = readJSON<Record<string, AgentEntry>>(paths.agents);
-
+          // Process Actions atomically per-action
           for (const action of response.actions || []) {
             switch (action.type) {
               case "end_agent": {
-                if (latestAgents[action.agent]) {
-                  killAgentProcess(latestAgents[action.agent].pid, config.logFile);
-                  latestAgents[action.agent].status = "completed";
-                  latestAgents[action.agent].last_heartbeat = new Date().toISOString();
+                const agents = readJSON<Record<string, AgentEntry>>(paths.agents);
+                if (agents[action.agent]) {
+                  killAgentProcess(agents[action.agent].pid, config.logFile);
+                  agents[action.agent].status = "completed";
+                  agents[action.agent].last_heartbeat = new Date().toISOString();
+                  writeJSON(paths.agents, agents);
                   appendLog(config.logFile, `Agent ${action.agent} completed successfully.`);
                 }
                 break;
               }
               case "restart_agent": {
-                if (latestAgents[action.agent]) {
-                  const worktree = latestAgents[action.agent].worktree;
-                  const mode = latestAgents[action.agent].kilo_mode;
-                  killAgentProcess(latestAgents[action.agent].pid, config.logFile);
+                let agents = readJSON<Record<string, AgentEntry>>(paths.agents);
+                if (agents[action.agent]) {
+                  const worktree = agents[action.agent].worktree;
+                  const mode = agents[action.agent].kilo_mode;
+                  killAgentProcess(agents[action.agent].pid, config.logFile);
                   
                   if (action.rollback && fs.existsSync(worktree)) {
                     appendLog(config.logFile, `Rolling back worktree ${worktree}...`);
@@ -382,14 +384,16 @@ async function runLoop() {
                   }
                   
                   if (action.instruction) {
-                    latestAgents[action.agent].task = action.instruction;
+                    agents[action.agent].task = action.instruction;
                     const promptFile = path.join(require("os").tmpdir(), `prompt-${action.agent}-${Date.now()}.txt`);
                     fs.writeFileSync(promptFile, action.instruction, "utf-8");
                     
-                    const cliTool = latestAgents[action.agent].cli || "kilo";
+                    const cliTool = agents[action.agent].cli || "kilo";
                     appendLog(config.logFile, `Respawning agent ${action.agent} using ${cliTool}...`);
+                    
+                    // Write agent state before yielding to slow spawn process
+                    writeJSON(paths.agents, agents); 
                     try {
-                      writeJSON(paths.agents, latestAgents); // Ensure spawn-agent.ts sees the updated task
                       const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
                       require("child_process").spawnSync(npxCmd, [
                         "ts-node",
@@ -400,21 +404,14 @@ async function runLoop() {
                         "--coord", path.dirname(paths.agents),
                         "--cli", cliTool
                       ], { stdio: 'inherit' });
-                      
-                      // Fetch the new PID and timestamps from the updated disk file
-                      const diskAgents = readJSON<Record<string, AgentEntry>>(paths.agents);
-                      if (diskAgents[action.agent]) {
-                        latestAgents[action.agent].pid = diskAgents[action.agent].pid;
-                        latestAgents[action.agent].status = diskAgents[action.agent].status;
-                        latestAgents[action.agent].started_at = diskAgents[action.agent].started_at;
-                        latestAgents[action.agent].last_heartbeat = diskAgents[action.agent].last_heartbeat;
-                      }
+                      // We don't overwrite agents.json here, so concurrent spawns are preserved!
                     } catch (err: any) {
                       appendLog(config.logFile, `Failed to respawn agent: ${err.message}`);
                     }
                     try { fs.unlinkSync(promptFile); } catch {}
                   } else {
-                    latestAgents[action.agent].status = "terminated";
+                    agents[action.agent].status = "terminated";
+                    writeJSON(paths.agents, agents);
                     appendLog(config.logFile, `Agent ${action.agent} terminated.`);
                   }
                 }
@@ -423,14 +420,15 @@ async function runLoop() {
             }
           }
 
-          // Re-read requests to avoid overwriting any new ones that arrived during the Claude call or action processing
-          const latestRequests = readJSONL<Request>(paths.requests);
+          // Process Requests atomically with minimal block time
+          const currentRequests = readJSONL<Request>(paths.requests);
+          let requestsModified = false;
           
-          // Process Approved
           for (const approved of response.approved || []) {
-            const req = latestRequests.find((p) => p.request_id === approved.request_id);
+            const req = currentRequests.find((p) => p.request_id === approved.request_id);
             if (req) {
               req.status = "resolved";
+              requestsModified = true;
               decisions.push({
                 request_id: approved.request_id,
                 decision: approved.decision,
@@ -441,11 +439,11 @@ async function runLoop() {
             }
           }
 
-          // Process Rejected
           for (const rejected of response.rejected || []) {
-            const req = latestRequests.find((p) => p.request_id === rejected.request_id);
+            const req = currentRequests.find((p) => p.request_id === rejected.request_id);
             if (req) {
               req.status = "rejected";
+              requestsModified = true;
               appendLog(config.logFile, `Rejected Request ${rejected.request_id}: ${rejected.reason}`);
             }
           }
@@ -455,9 +453,10 @@ async function runLoop() {
             decisions.splice(0, decisions.length - 30);
           }
 
-          writeJSONL(paths.requests, latestRequests);
+          if (requestsModified) {
+            writeJSONL(paths.requests, currentRequests);
+          }
           writeJSON(paths.decisions, decisions);
-          writeJSON(paths.agents, latestAgents);
         }
       } else {
         const agents = readJSON<Record<string, AgentEntry>>(paths.agents);
@@ -470,10 +469,11 @@ async function runLoop() {
         if (allWorkersDone) {
           appendLog(config.logFile, "All worker agents completed. Spawning worker session for review summary...");
 
-          // Collect diffs and stats from all completed agents
+          // Collect info from all completed agents
           const agents = readJSON<Record<string, AgentEntry>>(paths.agents);
-          const diffSections: string[] = [];
+          const agentSummaries: string[] = [];
           let workerCli = "kilo";
+          let baseBranch = "main";
 
           for (const name in agents) {
             const a = agents[name];
@@ -482,32 +482,37 @@ async function runLoop() {
             const worktree = a.worktree;
             if (fs.existsSync(worktree)) {
               try {
-                let baseBranch = "main";
-                try { execSync('git show-ref --verify refs/heads/main', { cwd: worktree, stdio: 'ignore' }); }
-                catch { baseBranch = "master"; }
-
-                const stat = execSync(`git diff ${baseBranch}...${name} --stat`, { encoding: 'utf-8' }).trim();
-                const diff = execSync(`git diff ${baseBranch}...${name}`, { encoding: 'utf-8', maxBuffer: 1024 * 1024 * 5 });
-                diffSections.push(`Agent: ${name} [${a.status}]\nTask: ${a.task}\n\nChanged Files:\n${stat}\n\nDiff (truncated):\n${diff.slice(0, 5000)}`);
-              } catch (err: any) {
-                diffSections.push(`Agent: ${name} [${a.status}]\nTask: ${a.task}\nFailed to read diff: ${err.message}`);
-              }
-            } else {
-              diffSections.push(`Agent: ${name} [${a.status}]\nTask: ${a.task}\n(worktree not found)`);
+                const wtList = execSync('git worktree list', { cwd: worktree, encoding: 'utf-8' });
+                const match = wtList.match(/\[(.*?)\]/);
+                if (match && match[1]) baseBranch = match[1];
+              } catch {}
             }
+            agentSummaries.push(`- Agent: ${name}\n  Status: ${a.status}\n  Task: ${a.task}\n  Branch: ${name}`);
           }
 
-          const allDiffs = diffSections.join("\n\n---\n\n");
+          const agentsList = agentSummaries.join("\n\n");
           const summaryFile = path.join(config.coordDir, "review-summary.txt");
 
           // Build the review prompt for the worker agent
-          const reviewPrompt = `You are reviewing the completed output of a multi-agent coding project. Each agent worked in an isolated git worktree. Write a concise plain-text summary suitable for display in a terminal window. Include: 1) A 2-3 sentence executive summary. 2) For each agent: a bullet summarizing what was built and any concerns. 3) A short Merge Order recommendation. Keep the total output under 50 lines. Be direct. Here are the diffs:\n\n${allDiffs}`;
+          const shortPrompt = `You are reviewing the completed output of a multi-agent coding project. Each agent worked in an isolated git branch. 
+
+Please run git commands yourself (e.g., 'git diff ${baseBranch}...<branch-name>') to inspect the work done by the following agents:
+
+${agentsList}
+
+Write a concise plain-text summary suitable for display in a terminal window. Include: 
+1) A 2-3 sentence executive summary. 
+2) For each agent: a bullet summarizing what was built and any concerns you find by inspecting their diffs. 
+3) A short Merge Order recommendation. 
+
+Keep the total output under 50 lines. Be direct.`;
+
           const promptFile = path.join(os.tmpdir(), `review-prompt-${Date.now()}.txt`);
-          fs.writeFileSync(promptFile, reviewPrompt, "utf-8");
+          fs.writeFileSync(promptFile, shortPrompt, "utf-8");
 
           // Call the same worker CLI that the agents used
           let cmd = "kilo";
-          let cmdArgs = [fs.readFileSync(promptFile, "utf-8"), "--mode", "code", "--auto"];
+          let cmdArgs = [shortPrompt, "--mode", "code", "--auto"];
 
           switch (workerCli) {
             case "aider":
@@ -516,19 +521,19 @@ async function runLoop() {
               break;
             case "claude":
               cmd = "claude";
-              cmdArgs = ["-p", fs.readFileSync(promptFile, "utf-8"), "--dangerously-skip-permissions"];
+              cmdArgs = ["-p", shortPrompt, "--dangerously-skip-permissions"];
               break;
             case "codex":
               cmd = "codex";
-              cmdArgs = ["--exec", fs.readFileSync(promptFile, "utf-8")];
+              cmdArgs = ["--exec", shortPrompt];
               break;
             case "gemini":
               cmd = "gemini";
-              cmdArgs = ["--prompt", fs.readFileSync(promptFile, "utf-8"), "--yolo"];
+              cmdArgs = ["--prompt", shortPrompt, "--yolo"];
               break;
             case "opencode":
               cmd = "opencode";
-              cmdArgs = ["run", fs.readFileSync(promptFile, "utf-8"), "--yes"];
+              cmdArgs = ["run", shortPrompt, "--yes"];
               break;
           }
 
