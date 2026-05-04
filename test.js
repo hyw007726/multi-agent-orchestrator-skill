@@ -1,1 +1,0 @@
-execSync(`echo "test \`ls\`"`)
