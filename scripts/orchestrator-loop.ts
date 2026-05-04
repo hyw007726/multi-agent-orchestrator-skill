@@ -2,6 +2,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 import { execSync } from "child_process";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -36,6 +37,7 @@ interface AgentEntry {
   status: "running" | "completed" | "terminated" | "errored";
   worktree: string;
   kilo_mode: string;
+  cli?: string;
   pid: number;
   started_at: string;
   last_heartbeat: string;
@@ -73,8 +75,19 @@ function readJSON<T>(filePath: string): T {
   return JSON.parse(fs.readFileSync(filePath, "utf-8"));
 }
 
+function readJSONL<T>(filePath: string): T[] {
+  if (!fs.existsSync(filePath)) return [];
+  const lines = fs.readFileSync(filePath, "utf-8").split("\n").filter((line) => line.trim() !== "");
+  return lines.map((line) => JSON.parse(line));
+}
+
 function writeJSON<T>(filePath: string, data: T): void {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n");
+}
+
+function writeJSONL<T>(filePath: string, data: T[]): void {
+  const content = data.map(item => JSON.stringify(item)).join("\n") + (data.length > 0 ? "\n" : "");
+  fs.writeFileSync(filePath, content);
 }
 
 function appendLog(logFile: string, message: string): void {
@@ -121,7 +134,7 @@ function parseArgs(): Config {
 
 function getPaths(coordDir: string) {
   return {
-    requests: path.join(coordDir, "requests.json"),
+    requests: path.join(coordDir, "requests.jsonl"),
     decisions: path.join(coordDir, "decisions.json"),
     context: path.join(coordDir, "context.json"),
     agents: path.join(coordDir, "agents.json"),
@@ -191,14 +204,15 @@ Return ONLY valid JSON matching this exact structure (no markdown, no explanatio
 }
 
 function callClaude(prompt: string, model: string, maxRetries: number, logFile: string): OrchestratorResponse | null {
-  const escapedPrompt = prompt.replace(/"/g, '\\"').replace(/\$/g, '\\$');
-  const claudeCmd = `claude -p "${escapedPrompt}"`;
-
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       appendLog(logFile, `Calling Claude (Attempt ${attempt}/${maxRetries})...`);
-      const stdout = execSync(claudeCmd, { encoding: "utf-8", maxBuffer: 1024 * 1024 * 10 });
-
+      const result = require("child_process").spawnSync("claude", ["-p", prompt], { encoding: "utf-8", maxBuffer: 1024 * 1024 * 10 });
+      
+      if (result.error) throw result.error;
+      if (result.status !== 0) throw new Error(`Claude exited with status ${result.status}: ${result.stderr}`);
+      const stdout = result.stdout;
+      
       const match = stdout.match(/\{[\s\S]*\}/);
       if (!match) throw new Error("No JSON object found in Claude output.");
 
@@ -229,12 +243,16 @@ async function runLoop() {
 
   appendLog(config.logFile, `Starting Orchestrator Loop (Polling every ${config.pollIntervalMs}ms)`);
 
-  // Launch the live dashboard in a new macOS Terminal
+  // Launch the live dashboard in a new macOS Terminal if applicable
   try {
     const dashboardPath = path.join(__dirname, "dashboard.ts");
-    const scriptStr = `tell application "Terminal" to do script "cd '${process.cwd()}' && npx ts-node '${dashboardPath}' --coord '${config.coordDir}'"`;
-    execSync(`osascript -e '${scriptStr}'`);
-    appendLog(config.logFile, "Launched dashboard terminal.");
+    if (process.platform === "darwin") {
+      const scriptStr = `tell application "Terminal" to do script "cd '${process.cwd()}' && npx ts-node '${dashboardPath}' --coord '${config.coordDir}'"`;
+      execSync(`osascript -e '${scriptStr}'`);
+      appendLog(config.logFile, "Launched dashboard terminal.");
+    } else {
+      appendLog(config.logFile, `Dashboard can be run manually in another terminal: npx ts-node '${dashboardPath}' --coord '${config.coordDir}'`);
+    }
   } catch (e: any) {
     appendLog(config.logFile, `Failed to launch dashboard: ${e.message}`);
   }
@@ -294,7 +312,7 @@ async function runLoop() {
       }
       if (agentsChanged) writeJSON(paths.agents, agentsForCheck);
 
-      const requests = readJSON<Request[]>(paths.requests);
+      const requests = readJSONL<Request>(paths.requests);
       const pending = requests.filter((p) => p.status === "pending");
 
       if (pending.length > 0) {
@@ -310,15 +328,16 @@ async function runLoop() {
             const worktree = agents[req.agent].worktree;
             if (fs.existsSync(worktree)) {
               try {
-                execSync('git add -A', { cwd: worktree });
                 const status = execSync('git status -s', { cwd: worktree, encoding: 'utf-8' });
                 
                 let baseBranch = "main";
                 try { execSync('git show-ref --verify refs/heads/main', { cwd: worktree, stdio: 'ignore' }); } 
                 catch { baseBranch = "master"; }
                 
-                const diff = execSync(`git diff ${baseBranch}`, { cwd: worktree, encoding: 'utf-8' });
-                worktreeStates[req.agent] = `STATUS:\n${status}\n\nDIFF against ${baseBranch}:\n${diff.slice(0, 10000)}`;
+                const diffUnstaged = execSync('git diff', { cwd: worktree, encoding: 'utf-8' });
+                const diffStaged = execSync('git diff --staged', { cwd: worktree, encoding: 'utf-8' });
+                const diffBranch = execSync(`git diff ${baseBranch}...HEAD`, { cwd: worktree, encoding: 'utf-8' });
+                worktreeStates[req.agent] = `STATUS:\n${status}\n\nDIFF UNSTAGED:\n${diffUnstaged.slice(0, 5000)}\n\nDIFF STAGED:\n${diffStaged.slice(0, 5000)}\n\nCOMMITS against ${baseBranch}:\n${diffBranch.slice(0, 10000)}`;
               } catch (err: any) {
                 worktreeStates[req.agent] = `Failed to read worktree state: ${err.message}`;
               }
@@ -332,9 +351,84 @@ async function runLoop() {
         if (!response) {
           appendLog(config.logFile, "Skipping cycle due to Claude failure.");
         } else {
+          // Process Actions
+          // Re-read agents.json to avoid overwriting agents that were spawned while Claude was processing
+          const latestAgents = readJSON<Record<string, AgentEntry>>(paths.agents);
+
+          for (const action of response.actions || []) {
+            switch (action.type) {
+              case "end_agent": {
+                if (latestAgents[action.agent]) {
+                  killAgentProcess(latestAgents[action.agent].pid, config.logFile);
+                  latestAgents[action.agent].status = "completed";
+                  latestAgents[action.agent].last_heartbeat = new Date().toISOString();
+                  appendLog(config.logFile, `Agent ${action.agent} completed successfully.`);
+                }
+                break;
+              }
+              case "restart_agent": {
+                if (latestAgents[action.agent]) {
+                  const worktree = latestAgents[action.agent].worktree;
+                  const mode = latestAgents[action.agent].kilo_mode;
+                  killAgentProcess(latestAgents[action.agent].pid, config.logFile);
+                  
+                  if (action.rollback && fs.existsSync(worktree)) {
+                    appendLog(config.logFile, `Rolling back worktree ${worktree}...`);
+                    try {
+                      execSync(`git reset --hard HEAD && git clean -fd`, { cwd: worktree });
+                    } catch (err: any) {
+                      appendLog(config.logFile, `Rollback failed: ${err.message}`);
+                    }
+                  }
+                  
+                  if (action.instruction) {
+                    latestAgents[action.agent].task = action.instruction;
+                    const promptFile = path.join(require("os").tmpdir(), `prompt-${action.agent}-${Date.now()}.txt`);
+                    fs.writeFileSync(promptFile, action.instruction, "utf-8");
+                    
+                    const cliTool = latestAgents[action.agent].cli || "kilo";
+                    appendLog(config.logFile, `Respawning agent ${action.agent} using ${cliTool}...`);
+                    try {
+                      writeJSON(paths.agents, latestAgents); // Ensure spawn-agent.ts sees the updated task
+                      const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+                      require("child_process").spawnSync(npxCmd, [
+                        "ts-node",
+                        path.join(__dirname, "spawn-agent.ts"),
+                        "--agent", action.agent,
+                        "--mode", mode,
+                        "--prompt-file", promptFile,
+                        "--coord", path.dirname(paths.agents),
+                        "--cli", cliTool
+                      ], { stdio: 'inherit' });
+                      
+                      // Fetch the new PID and timestamps from the updated disk file
+                      const diskAgents = readJSON<Record<string, AgentEntry>>(paths.agents);
+                      if (diskAgents[action.agent]) {
+                        latestAgents[action.agent].pid = diskAgents[action.agent].pid;
+                        latestAgents[action.agent].status = diskAgents[action.agent].status;
+                        latestAgents[action.agent].started_at = diskAgents[action.agent].started_at;
+                        latestAgents[action.agent].last_heartbeat = diskAgents[action.agent].last_heartbeat;
+                      }
+                    } catch (err: any) {
+                      appendLog(config.logFile, `Failed to respawn agent: ${err.message}`);
+                    }
+                    try { fs.unlinkSync(promptFile); } catch {}
+                  } else {
+                    latestAgents[action.agent].status = "terminated";
+                    appendLog(config.logFile, `Agent ${action.agent} terminated.`);
+                  }
+                }
+                break;
+              }
+            }
+          }
+
+          // Re-read requests to avoid overwriting any new ones that arrived during the Claude call or action processing
+          const latestRequests = readJSONL<Request>(paths.requests);
+          
           // Process Approved
           for (const approved of response.approved || []) {
-            const req = requests.find((p) => p.request_id === approved.request_id);
+            const req = latestRequests.find((p) => p.request_id === approved.request_id);
             if (req) {
               req.status = "resolved";
               decisions.push({
@@ -349,60 +443,10 @@ async function runLoop() {
 
           // Process Rejected
           for (const rejected of response.rejected || []) {
-            const req = requests.find((p) => p.request_id === rejected.request_id);
+            const req = latestRequests.find((p) => p.request_id === rejected.request_id);
             if (req) {
               req.status = "rejected";
               appendLog(config.logFile, `Rejected Request ${rejected.request_id}: ${rejected.reason}`);
-            }
-          }
-
-          // Process Actions
-          for (const action of response.actions || []) {
-            switch (action.type) {
-              case "end_agent": {
-                if (agents[action.agent]) {
-                  killAgentProcess(agents[action.agent].pid, config.logFile);
-                  agents[action.agent].status = "completed";
-                  agents[action.agent].last_heartbeat = new Date().toISOString();
-                  appendLog(config.logFile, `Agent ${action.agent} completed successfully.`);
-                }
-                break;
-              }
-              case "restart_agent": {
-                if (agents[action.agent]) {
-                  const worktree = agents[action.agent].worktree;
-                  const mode = agents[action.agent].kilo_mode;
-                  killAgentProcess(agents[action.agent].pid, config.logFile);
-                  
-                  if (action.rollback && fs.existsSync(worktree)) {
-                    appendLog(config.logFile, `Rolling back worktree ${worktree}...`);
-                    try {
-                      execSync(`git reset --hard HEAD && git clean -fd`, { cwd: worktree });
-                    } catch (err: any) {
-                      appendLog(config.logFile, `Rollback failed: ${err.message}`);
-                    }
-                  }
-                  
-                  if (action.instruction) {
-                    agents[action.agent].task = action.instruction;
-                    const promptFile = path.join(require("os").tmpdir(), `prompt-${action.agent}-${Date.now()}.txt`);
-                    fs.writeFileSync(promptFile, action.instruction, "utf-8");
-                    
-                    const cliTool = agents[action.agent].cli || "kilo";
-                    appendLog(config.logFile, `Respawning agent ${action.agent} using ${cliTool}...`);
-                    try {
-                      execSync(`npx ts-node ${path.join(__dirname, "spawn-agent.ts")} --agent ${action.agent} --mode ${mode} --prompt-file "${promptFile}" --coord "${path.dirname(paths.agents)}" --cli ${cliTool}`);
-                    } catch (err: any) {
-                      appendLog(config.logFile, `Failed to respawn agent: ${err.message}`);
-                    }
-                    try { fs.unlinkSync(promptFile); } catch {}
-                  } else {
-                    agents[action.agent].status = "terminated";
-                    appendLog(config.logFile, `Agent ${action.agent} terminated.`);
-                  }
-                }
-                break;
-              }
             }
           }
 
@@ -411,9 +455,9 @@ async function runLoop() {
             decisions.splice(0, decisions.length - 30);
           }
 
-          writeJSON(paths.requests, requests);
+          writeJSONL(paths.requests, latestRequests);
           writeJSON(paths.decisions, decisions);
-          writeJSON(paths.agents, agents);
+          writeJSON(paths.agents, latestAgents);
         }
       } else {
         const agents = readJSON<Record<string, AgentEntry>>(paths.agents);
@@ -424,12 +468,107 @@ async function runLoop() {
           );
 
         if (allWorkersDone) {
-          appendLog(config.logFile, "All worker agents completed. Triggering macOS notification...");
-          try {
-            execSync(`osascript -e 'display notification "All Kilo agents have completed their tasks. Please return to your Claude session for the final review." with title "Kilo Orchestrator"'`);
-          } catch (err: any) {
-            appendLog(config.logFile, `Failed to send notification: ${err.message}`);
+          appendLog(config.logFile, "All worker agents completed. Spawning worker session for review summary...");
+
+          // Collect diffs and stats from all completed agents
+          const agents = readJSON<Record<string, AgentEntry>>(paths.agents);
+          const diffSections: string[] = [];
+          let workerCli = "kilo";
+
+          for (const name in agents) {
+            const a = agents[name];
+            if (a.cli) workerCli = a.cli;
+
+            const worktree = a.worktree;
+            if (fs.existsSync(worktree)) {
+              try {
+                let baseBranch = "main";
+                try { execSync('git show-ref --verify refs/heads/main', { cwd: worktree, stdio: 'ignore' }); }
+                catch { baseBranch = "master"; }
+
+                const stat = execSync(`git diff ${baseBranch}...${name} --stat`, { encoding: 'utf-8' }).trim();
+                const diff = execSync(`git diff ${baseBranch}...${name}`, { encoding: 'utf-8', maxBuffer: 1024 * 1024 * 5 });
+                diffSections.push(`Agent: ${name} [${a.status}]\nTask: ${a.task}\n\nChanged Files:\n${stat}\n\nDiff (truncated):\n${diff.slice(0, 5000)}`);
+              } catch (err: any) {
+                diffSections.push(`Agent: ${name} [${a.status}]\nTask: ${a.task}\nFailed to read diff: ${err.message}`);
+              }
+            } else {
+              diffSections.push(`Agent: ${name} [${a.status}]\nTask: ${a.task}\n(worktree not found)`);
+            }
           }
+
+          const allDiffs = diffSections.join("\n\n---\n\n");
+          const summaryFile = path.join(config.coordDir, "review-summary.txt");
+
+          // Build the review prompt for the worker agent
+          const reviewPrompt = `You are reviewing the completed output of a multi-agent coding project. Each agent worked in an isolated git worktree. Write a concise plain-text summary suitable for display in a terminal window. Include: 1) A 2-3 sentence executive summary. 2) For each agent: a bullet summarizing what was built and any concerns. 3) A short Merge Order recommendation. Keep the total output under 50 lines. Be direct. Here are the diffs:\n\n${allDiffs}`;
+          const promptFile = path.join(os.tmpdir(), `review-prompt-${Date.now()}.txt`);
+          fs.writeFileSync(promptFile, reviewPrompt, "utf-8");
+
+          // Call the same worker CLI that the agents used
+          let cmd = "kilo";
+          let cmdArgs = [fs.readFileSync(promptFile, "utf-8"), "--mode", "code", "--auto"];
+
+          switch (workerCli) {
+            case "aider":
+              cmd = "aider";
+              cmdArgs = ["--message-file", promptFile, "--yes"];
+              break;
+            case "claude":
+              cmd = "claude";
+              cmdArgs = ["-p", fs.readFileSync(promptFile, "utf-8"), "--dangerously-skip-permissions"];
+              break;
+            case "codex":
+              cmd = "codex";
+              cmdArgs = ["--exec", fs.readFileSync(promptFile, "utf-8")];
+              break;
+            case "gemini":
+              cmd = "gemini";
+              cmdArgs = ["--prompt", fs.readFileSync(promptFile, "utf-8"), "--yolo"];
+              break;
+            case "opencode":
+              cmd = "opencode";
+              cmdArgs = ["run", fs.readFileSync(promptFile, "utf-8"), "--yes"];
+              break;
+          }
+
+          let summaryOutput = "";
+          try {
+            appendLog(config.logFile, `Calling ${workerCli} for review summary...`);
+            const result = require("child_process").spawnSync(cmd, cmdArgs, {
+              encoding: 'utf-8',
+              maxBuffer: 1024 * 1024 * 10,
+              timeout: 120000,
+            });
+            if (result.error) throw result.error;
+            if (result.status !== 0) throw new Error(`${workerCli} exited with status ${result.status}: ${result.stderr}`);
+            summaryOutput = result.stdout;
+            fs.writeFileSync(summaryFile, summaryOutput, "utf-8");
+            appendLog(config.logFile, `Review summary generated by ${workerCli}.`);
+          } catch (err: any) {
+            appendLog(config.logFile, `Worker review failed (${err.message}). Writing raw stats fallback.`);
+            summaryOutput = `ALL AGENTS COMPLETED\n\n${allDiffs}\n\nNext: return to your Claude session and say "The agents are done. Please review and integrate their work."`;
+            fs.writeFileSync(summaryFile, summaryOutput, "utf-8");
+          }
+
+          try { fs.unlinkSync(promptFile); } catch {}
+
+          // Open summary in a new terminal window (cross-platform)
+          try {
+            if (process.platform === "darwin") {
+              const script = `tell application "Terminal" to do script "cat '${summaryFile}'; echo; echo 'Press any key to close...'; read -n 1"`;
+              execSync(`osascript -e '${script}'`);
+            } else if (process.platform === "win32") {
+              execSync(`start cmd /k "type ${summaryFile}"`, { shell: "cmd.exe" });
+            } else {
+              execSync(`x-terminal-emulator -e "cat '${summaryFile}'; read -p 'Press Enter to close...'" || xterm -e "cat '${summaryFile}'; read -p 'Press Enter to close...'"`, { shell: "/bin/bash" });
+            }
+            appendLog(config.logFile, "Opened review summary in new terminal window.");
+          } catch (err: any) {
+            appendLog(config.logFile, `Could not open new terminal: ${err.message}. Printing summary inline.`);
+            console.log("\n" + summaryOutput + "\n");
+          }
+
           appendLog(config.logFile, "Orchestrator loop ending.");
           break;
         }

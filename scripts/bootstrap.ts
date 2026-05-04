@@ -84,7 +84,7 @@ function bootstrap(config: BootstrapArgs): void {
   fs.writeFileSync(path.join(coordDir, "context.json"), JSON.stringify(context, null, 2) + "\n");
 
   fs.writeFileSync(path.join(coordDir, "decisions.json"), "[]\n");
-  fs.writeFileSync(path.join(coordDir, "requests.json"), "[]\n");
+  fs.writeFileSync(path.join(coordDir, "requests.jsonl"), "");
   fs.writeFileSync(path.join(coordDir, "agents.json"), "{}\n");
 
   const agentsMd = `# Kilo Code Multi-Agent Coordination
@@ -96,22 +96,14 @@ All agents MUST read and follow these rules.
 - Read \`coord/context.json\` and \`coord/decisions.json\` before starting work.
 - Follow all existing decisions strictly. Do not re-decide settled matters.
 - **NEVER invent API contracts or data schemas.** If you need to share data with another agent's domain, use the schemas defined in \`context.json\` or submit a request to agree on one.
-- If blocked or missing info, DO NOT ASSUME. Write a request to \`coord/requests.json\` and ask for review (see format below).
+- If blocked or missing info, DO NOT ASSUME. Write a request to \`coord/requests.jsonl\` and ask for review (see format below).
 - Do NOT modify files outside your assigned scope.
-- **When you finish your task, you MUST submit a \`review_request\` to \`coord/requests.json\`. Do not just stop working without notifying the orchestrator.**
+- **When you finish your task, you MUST submit a \`review_request\` to \`coord/requests.jsonl\`. Do not just stop working without notifying the orchestrator.**
 
 ## Request Format
-When you need a decision, review, or clarification, append to \`coord/requests.json\`:
+When you need a decision, review, or clarification, append a SINGLE LINE of JSON to \`coord/requests.jsonl\`. Do NOT format it across multiple lines:
 \`\`\`json
-{
-  "request_id": "<unique-id>",
-  "agent": "<your-agent-name>",
-  "type": "question|change|conflict|review_request",
-  "priority": "low|medium|high",
-  "content": "Detailed explanation of the issue or request. Include relevant code snippets.",
-  "status": "pending",
-  "created_at": "<ISO-timestamp>"
-}
+{"request_id": "<unique-id>", "agent": "<your-agent-name>", "type": "question|change|conflict|review_request", "priority": "low|medium|high", "content": "Detailed explanation...", "status": "pending", "created_at": "<ISO-timestamp>"}
 \`\`\`
 If priority is \`high\`, STOP WORKING and wait for the orchestrator to update \`decisions.json\`.
 `;

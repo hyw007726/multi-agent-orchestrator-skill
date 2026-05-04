@@ -26,8 +26,11 @@ Because the orchestration architecture (worktrees + JSON files) is completely CL
 *(If the user requests a specific worker CLI, **read the `scripts/spawn-agent.ts` file** to see the full list of supported `--cli` arguments and how they map to bash commands.)*
 
 Example:
-*   **For Aider**: Append `--cli aider` (runs `aider --message <prompt> --yes`)
-*   **For Claude Code**: Append `--cli claude --model claude-sonnet-4-6` (runs `claude -p <prompt> --model claude-sonnet-4-6`)
+*   **For Aider**: Append `--cli aider` (runs `aider --message-file <prompt-file> --yes`)
+*   **For Claude Code**: Append `--cli claude` (runs `claude -p <prompt> --dangerously-skip-permissions`). To specify a model, pass it after `--`: `--cli claude -- --model claude-sonnet-4-6`
+*   **For Gemini CLI**: Append `--cli gemini` (runs `gemini --prompt <prompt> --yolo`)
+
+> **Note:** All worker CLIs are automatically launched with their respective "bypass permissions" flags (`--yes`, `--dangerously-skip-permissions`, `--yolo`, `--auto`) so they run fully autonomously in the background. If a worker agent becomes unresponsive (no log output for 3 minutes), the orchestrator loop will automatically kill it and mark it as errored.
 
 The Orchestrator Loop will remember which CLI tool you spawned the agent with and will automatically use the exact same tool if it needs to respawn the agent after a rollback!
 
@@ -112,7 +115,11 @@ nohup npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/orchestrator-loop
 
 ## Phase 6 — Review and Integration
 
-When all worker agents finish, the `orchestrator-loop.ts` script will trigger a **macOS Desktop Notification** to alert the user and then automatically exit.
+When all worker agents finish, the `orchestrator-loop.ts` script will automatically:
+1. **Collect Diffs**: Gather git stats and diffs from all completed agent worktrees.
+2. **AI Summary**: Spawn a final **worker agent session** (using the same CLI the workers used) to generate a concise, plain-text review summary.
+3. **Popup Notification**: Open a **new terminal window** (cross-platform) displaying this summary, giving the user an immediate "at-a-glance" look at what was built.
+4. **Exit**: The orchestrator loop will then safely terminate.
 
 At this point, the user will return to Claude. They can either use their original chat window, or open a completely new chat window. They will give you a command like *"The agents are done. Please review and integrate their work."*
 

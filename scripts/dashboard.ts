@@ -5,7 +5,7 @@ import * as path from "path";
 
 const coordDir = process.argv[2] === "--coord" ? process.argv[3] : "./coord";
 const agentsFile = path.join(coordDir, "agents.json");
-const requestsFile = path.join(coordDir, "requests.json");
+const requestsFile = path.join(coordDir, "requests.jsonl");
 
 function clearScreen() {
   process.stdout.write("\x1Bc");
@@ -70,22 +70,27 @@ function render() {
 
   console.log("\n🟡 PENDING REQUESTS");
   try {
-    const requests = JSON.parse(fs.readFileSync(requestsFile, "utf-8"));
-    const pending = requests.filter((r: any) => r.status === "pending");
-    if (pending.length === 0) {
-      console.log("No pending requests.");
+    if (fs.existsSync(requestsFile)) {
+      const lines = fs.readFileSync(requestsFile, "utf-8").split("\n").filter((line) => line.trim() !== "");
+      const requests = lines.map((line) => JSON.parse(line));
+      const pending = requests.filter((r: any) => r.status === "pending");
+      if (pending.length === 0) {
+        console.log("No pending requests.");
+      } else {
+        console.table(
+          pending.map((r: any) => ({
+            ID: r.request_id,
+            Agent: r.agent,
+            Type: r.type,
+            Priority: r.priority,
+          }))
+        );
+      }
     } else {
-      console.table(
-        pending.map((r: any) => ({
-          ID: r.request_id,
-          Agent: r.agent,
-          Type: r.type,
-          Priority: r.priority,
-        }))
-      );
+      console.log("No pending requests.");
     }
   } catch (e) {
-    console.log("Waiting for requests.json...");
+    console.log("Waiting for requests.jsonl...");
   }
 
   console.log("\n📘 RECENT ORCHESTRATOR DECISIONS (Last 5)");

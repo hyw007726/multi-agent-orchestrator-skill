@@ -75,8 +75,7 @@ function spawnAgent() {
     process.exit(1);
   }
 
-  let prompt = fs.readFileSync(config.promptFile, "utf-8");
-  prompt += "\n\nCRITICAL SYSTEM INSTRUCTION: You are running in an automated, headless environment. You MUST NOT ask the user for permission, confirmation, or interactive input at any point. Proceed with all necessary file modifications autonomously. Asking for permission will hang the system.";
+  const prompt = fs.readFileSync(config.promptFile, "utf-8");
   
   const logsDir = path.join(config.coordDir, "logs");
   if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
@@ -91,10 +90,10 @@ function spawnAgent() {
 
   if (config.cli === "aider") {
     cmd = "aider";
-    cmdArgs = ["--message", prompt, "--yes"];
+    cmdArgs = ["--message-file", config.promptFile, "--yes"];
   } else if (config.cli === "claude") {
     cmd = "claude";
-    cmdArgs = ["-p", prompt];
+    cmdArgs = ["-p", prompt, "--dangerously-skip-permissions"];
   } else if (config.cli === "codex") {
     cmd = "codex";
     cmdArgs = ["--exec", prompt];
@@ -128,8 +127,10 @@ function spawnAgent() {
     agents = JSON.parse(fs.readFileSync(agentsFile, "utf-8"));
   }
 
+  const existingTask = agents[config.agent]?.task || "Initial prompt";
+
   agents[config.agent] = {
-    task: "Initial prompt",
+    task: existingTask,
     status: "running",
     worktree: worktree,
     cli: config.cli,

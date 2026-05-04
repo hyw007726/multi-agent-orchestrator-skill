@@ -14,26 +14,18 @@ Read `coord/context.json` for full requirements and constraints.
 4. Do not assume requirements that aren't in the context or decisions.
 5. Prefer asking (via requests) over guessing.
 6. Commit frequently with descriptive messages: "<agent-name>: <what changed>"
-7. **Actively ask for review**: If you are missing information or aren't sure about the right approach, do not assume. Write a request to `coord/requests.json`.
-8. **Signal Completion**: When you have finished your entire task, you MUST append a `review_request` to `coord/requests.json` stating that you are done. The orchestrator needs this to mark your session as completed.
+7. **Actively ask for review**: If you are missing information or aren't sure about the right approach, do not assume. Write a request to `coord/requests.jsonl`.
+8. **Signal Completion**: When you have finished your entire task, you MUST append a `review_request` to `coord/requests.jsonl` stating that you are done. The orchestrator needs this to mark your session as completed.
 
 ## When You're Blocked or Uncertain
-If you encounter a conflict, need clarification, or want to make a structural change that affects others, you must stop and log a request in `coord/requests.json`.
+If you encounter a conflict, need clarification, or want to make a structural change that affects others, you must stop and log a request in `coord/requests.jsonl`.
 
 **WARNING:** The orchestrator reviewing your requests cannot see your files. You MUST include relevant code snippets, error logs, and full context inside the `content` field of your request.
 
 ### Request Format
-Append this JSON object to the array in `coord/requests.json`:
+Append this SINGLE LINE of JSON to `coord/requests.jsonl`. Do NOT format it across multiple lines:
 ```json
-{
-  "request_id": "{AGENT_NAME}-req-<timestamp>",
-  "agent": "{AGENT_NAME}",
-  "type": "question|change|conflict|review_request",
-  "priority": "low|medium|high",
-  "content": "Detailed explanation. Include code snippets here so the blind orchestrator can understand.",
-  "status": "pending",
-  "created_at": "<ISO-timestamp>"
-}
+{"request_id": "{AGENT_NAME}-req-<timestamp>", "agent": "{AGENT_NAME}", "type": "question|change|conflict|review_request", "priority": "low|medium|high", "content": "Detailed explanation. Include code snippets here so the blind orchestrator can understand.", "status": "pending", "created_at": "<ISO-timestamp>"}
 ```
 
 ### Request Types

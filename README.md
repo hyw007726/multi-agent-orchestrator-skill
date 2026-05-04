@@ -5,11 +5,11 @@ A production-ready, CLI-agnostic skill that turns your Claude Code session into 
 It safely sandboxes workers into `git worktrees`, manages their lifecycles via a self-healing background daemon, and natively supports Kilo Code, Aider, Claude Code, Gemini CLI, and OpenCode.
 
 ## 🚀 Features
-- **Parallel Worktrees**: Agents work simultaneously in physically isolated `.kilocode/worktrees/` directories.
-- **Universal Dashboard**: A TUI dashboard that live-tails the logs of all your background agents.
-- **CLI Agnostic**: Natively supports Kilo Code (`--auto`), Aider (`--yes`), Claude (`-p`), and more.
-- **Self-Healing Loop**: The Orchestrator loop detects crashed agents via OS-level PID pinging and gracefully aborts.
-- **Proactive Schema Enforcement**: Claude actively prevents data-model conflicts by defining API contracts *before* spawning agents.
+- **Turn One Agent Into Many**: Break a complex task into parallel workstreams — Claude decomposes the work, spawns independent agents, and merges the results.
+- **CLI Agnostic**: Use any headless coding agent as a worker — Kilo Code, Aider, Claude Code, Gemini CLI, OpenCode, or Codex. Mix and match freely.
+- **Live Dashboard**: A real-time TUI that streams every agent's logs so you can watch the work unfold from a single terminal window.
+- **Built for Efficiency**: Pair a high-reasoning orchestrator (e.g. Claude Opus) with cheaper, faster, instruction-faithful worker models — strong architectural decisions at a fraction of the cost.
+- **Intelligent Auto-Review**: Once agents complete, the orchestrator automatically generates an AI-powered summary and pops open a new terminal window for an at-a-glance project review.
 
 ## 📦 Prerequisites
 
@@ -45,3 +45,5 @@ You can instruct Claude to use different CLIs by appending the `--cli` flag:
 
 ## ⚠️ Important Note
 Make sure your chosen worker CLI is fully authenticated and has a default model selected. Because the workers run as non-interactive background processes, they will hang indefinitely if they encounter an interactive login prompt!
+
+All workers are automatically launched with their respective "bypass permissions" flags so they execute autonomously without prompting for human approval.

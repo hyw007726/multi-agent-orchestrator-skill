@@ -26,19 +26,10 @@
 ]
 ```
 
-## requests.json
+## requests.jsonl
+(JSON Lines format - one JSON object per line)
 ```json
-[
-  {
-    "request_id": "string — unique ID",
-    "agent": "string — name of agent",
-    "type": "question | change | conflict | review_request",
-    "priority": "low | medium | high",
-    "content": "string — detailed request",
-    "status": "pending | resolved | rejected",
-    "created_at": "ISO 8601 timestamp"
-  }
-]
+{"request_id": "string — unique ID", "agent": "string — name of agent", "type": "question | change | conflict | review_request", "priority": "low | medium | high", "content": "string — detailed request", "status": "pending | resolved | rejected", "created_at": "ISO 8601 timestamp"}
 ```
 
 ## agents.json
