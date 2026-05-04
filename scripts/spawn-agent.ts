@@ -99,7 +99,7 @@ function spawnAgent() {
     cmdArgs = ["--exec", prompt];
   } else if (config.cli === "gemini") {
     cmd = "gemini";
-    cmdArgs = ["--prompt", prompt];
+    cmdArgs = ["--prompt", prompt, "--yolo"];
   } else if (config.cli === "opencode") {
     cmd = "opencode";
     cmdArgs = ["run", prompt];

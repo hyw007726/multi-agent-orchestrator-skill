@@ -6,7 +6,7 @@ It safely sandboxes workers into `git worktrees`, manages their lifecycles via a
 
 ## 🚀 Features
 - **Parallel Worktrees**: Agents work simultaneously in physically isolated `.kilocode/worktrees/` directories.
-- **Universal Dashboard**: A beautiful TUI dashboard that live-tails the logs of all your background agents.
+- **Universal Dashboard**: A TUI dashboard that live-tails the logs of all your background agents.
 - **CLI Agnostic**: Natively supports Kilo Code (`--auto`), Aider (`--yes`), Claude (`-p`), and more.
 - **Self-Healing Loop**: The Orchestrator loop detects crashed agents via OS-level PID pinging and gracefully aborts.
 - **Proactive Schema Enforcement**: Claude actively prevents data-model conflicts by defining API contracts *before* spawning agents.
