@@ -37,7 +37,8 @@ The Orchestrator Loop will remember which CLI tool you spawned the agent with an
 ## Phase 1 — Task Evaluation & Decomposition
 First, evaluate whether the user's overall task is suitable for multi-agent orchestration.
 - **Do not use this skill** if the task is small, trivial, or requires tightly coupled sequential steps. Advise the user to let you handle it normally.
-- **Proceed** if the task is large, complex, and can be safely split into non-overlapping boundaries (e.g., frontend vs backend, database vs UI).
+- **Handle Overlapping Foundations First:** If a large task contains overlapping boundaries (e.g., setting up shared database schemas, core routing, or shared type definitions that multiple parallel agents will need to touch), **reject the orchestration request initially**. Inform the user that the overlapping foundational work must be done sequentially first to prevent massive merge conflicts later. Offer to build this core foundation yourself in the current session. Once the foundation is solid and merged, the user can re-request orchestration for the remaining isolated, parallel tasks.
+- **Proceed** if the task is large, complex, and can be safely split into purely non-overlapping boundaries (e.g., building the User Authentication module vs. building the Payment Processing module).
 
 If proceeding:
 1. Break the work down into non-overlapping agent boundaries.
