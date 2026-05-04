@@ -265,10 +265,26 @@ async function runLoop() {
       // Check for crashed agents (e.g. network failures)
       const agentsForCheck = readJSON<Record<string, AgentEntry>>(paths.agents);
       let agentsChanged = false;
+      const IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+
       for (const name in agentsForCheck) {
         if (agentsForCheck[name].status === "running") {
           try {
             process.kill(agentsForCheck[name].pid, 0); // 0 signal tests if process is alive
+            
+            // Check for log file idle timeout (detects hanging agents)
+            const logFile = path.join(config.coordDir, "logs", `${name}.log`);
+            let lastActivity = new Date(agentsForCheck[name].started_at).getTime();
+            if (fs.existsSync(logFile)) {
+              lastActivity = fs.statSync(logFile).mtime.getTime();
+            }
+            
+            if (Date.now() - lastActivity > IDLE_TIMEOUT_MS) {
+              appendLog(config.logFile, `⏱️ Agent ${name} has been idle (no log output) for 3 minutes. Killing process.`);
+              killAgentProcess(agentsForCheck[name].pid, config.logFile);
+              agentsForCheck[name].status = "errored";
+              agentsChanged = true;
+            }
           } catch (e) {
             agentsForCheck[name].status = "errored";
             agentsChanged = true;

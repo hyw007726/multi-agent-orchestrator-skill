@@ -75,7 +75,8 @@ function spawnAgent() {
     process.exit(1);
   }
 
-  const prompt = fs.readFileSync(config.promptFile, "utf-8");
+  let prompt = fs.readFileSync(config.promptFile, "utf-8");
+  prompt += "\n\nCRITICAL SYSTEM INSTRUCTION: You are running in an automated, headless environment. You MUST NOT ask the user for permission, confirmation, or interactive input at any point. Proceed with all necessary file modifications autonomously. Asking for permission will hang the system.";
   
   const logsDir = path.join(config.coordDir, "logs");
   if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
@@ -102,7 +103,7 @@ function spawnAgent() {
     cmdArgs = ["--prompt", prompt, "--yolo"];
   } else if (config.cli === "opencode") {
     cmd = "opencode";
-    cmdArgs = ["run", prompt];
+    cmdArgs = ["run", prompt, "--yes"];
   }
 
   if (config.extraArgs.length > 0) {
