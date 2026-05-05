@@ -1,0 +1,24 @@
+# Multi-Agent Orchestrator Configuration
+# --------------------------------------
+# Uncomment and set these values to override the Orchestrator's dynamic defaults.
+
+# The background CLI worker to execute tasks
+default_cli: kilo
+
+# Command templates for supported CLIs. 
+# Use {prompt_file} as a placeholder for the generated prompt text file.
+# By centralizing these here, you can easily adapt if a tool changes its CLI flags.
+cli_templates:
+  kilo: "kilo \"$(cat {prompt_file})\" --auto"
+  aider: "aider --message-file {prompt_file} --yes"
+  claude: "claude -p \"$(cat {prompt_file})\" --dangerously-skip-permissions"
+  gemini: "gemini --prompt \"$(cat {prompt_file})\" --yolo"
+
+# How many minutes of NO logs before the agent is killed
+# default_timeout_mins: 10
+
+# How many minutes of NO code changes before triggering AI review
+# default_progress_timeout_mins: 15
+
+# Max tool loops before triggering AI review
+# default_max_iterations: 5

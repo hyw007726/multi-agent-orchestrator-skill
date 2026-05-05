@@ -16,34 +16,60 @@ Before using this skill, ensure you have:
 1. **A Headless Worker CLI**: Installed globally. This skill uses `kilo` (Kilo Code) by default, but it can easily orchestrate **Aider**, **OpenCode**, or any other CLI defined in the `scripts/spawn-agent.ts` file. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
 2. **TypeScript & TS-Node**: Installed to execute the orchestration scripts.
 
-> **Architectural Recommendation:** 
-> This skill is highly optimized for cost-efficiency without sacrificing quality. We strongly recommend using **Claude Code** as the **Orchestrator** with a high-tier reasoning model (like Claude Opus 4.7) to act as the "brains" of the orchestrator loop. Meanwhile, you should configure your **Worker CLI** to use cost-efficient models (like DeepSeek v4 or Kimi) for the worker agents. This ensures world-class decision making while keeping the bulk coding loops extremely cheap and fast!
+> **Architectural Recommendation & Intelligence Boundaries:** 
+> This skill is highly optimized for cost-efficiency without sacrificing quality. It relies on **three distinct decision-making contexts**:
+> 
+> 1. **Initial Decomposition (Interactive Session):** Your active Orchestrator session (e.g., Claude Code with a high-tier reasoning model like Opus 4.7) acts as the primary architect. It analyzes the task, breaks it into non-overlapping boundaries, writes the `coord/context.json`, and spawns the background agents.
+> 2. **The Background Orchestrator Loop (Headless Script):** Once launched, the background loop script has **no access to your chat history**. To evaluate agent progress, generate summaries (Phase 6), and make operational decisions (`end_agent`, `soft_restart`, `hard_restart`), the loop acts as an autonomous monitor. It automatically invokes its *own* headless, single-turn LLM calls using the configured **Worker CLI** based on the state in the `coord/` files. This means the loop's operational decisions are powered by whichever model the Worker CLI is configured to use (often a cost-efficient model like DeepSeek v4 or Kimi), ensuring monitoring remains cheap.
+> 3. **Final Integration (Interactive Session):** After the background loop completes, you return to a high-tier Orchestrator session to act as the integrator, reviewing the completed worktrees and safely merging them.
+> 
+> **Model Selection Strategy:** Use a powerful reasoning model for your interactive Orchestrator sessions (Contexts 1 & 3), but configure your **Worker CLI** (Context 2 and actual agent coding) to use cost-efficient fast models. This ensures world-class architectural planning and code review while keeping the bulk coding and background monitoring loops extremely cheap!
 
-## 🔄 Swapping the Worker CLI (Aider, Claude, Codex, Gemini, OpenCode, etc.)
-By default, `spawn-agent.ts` launches workers using Kilo Code (`kilo <prompt> --auto`). 
-Because the orchestration architecture (worktrees + JSON files) is completely CLI-agnostic, you can use any other tool by simply appending the `--cli` argument in Phase 4 when you spawn the agent!
+## ⚙️ Configuration (`orchestrator.config.yml`)
+Before beginning Phase 1, you MUST check if an `orchestrator.config.yml` file exists in the project root. This file acts as the dynamic source of truth for the user's preferences.
 
-*(If the user requests a specific worker CLI, **read the `scripts/spawn-agent.ts` file** to see the full list of supported `--cli` arguments and how they map to bash commands.)*
+If it exists, read it to determine:
+- **`default_cli`**: The Worker CLI to use.
+- **`cli_templates`**: The exact bash commands used to spawn the worker CLIs. This makes the system immune to third-party tool interface changes.
+- **`default_timeout_mins`**: The default time before an agent is considered hanging (Liveness).
+- **`default_progress_timeout_mins`**: The default time before an active agent with zero code changes is considered stuck (Progress).
+- **`default_max_iterations`**: The default cap on agent tool loops.
 
-Example:
-*   **For Aider**: Append `--cli aider` (runs `aider --message-file <prompt-file> --yes`)
-*   **For Claude Code**: Append `--cli claude` (runs `claude -p <prompt> --dangerously-skip-permissions`). To specify a model, pass it after `--`: `--cli claude -- --model claude-sonnet-4-6`
-*   **For Gemini CLI**: Append `--cli gemini` (runs `gemini --prompt <prompt> --yolo`)
+Example `orchestrator.config.yml`:
+```yaml
+# The background CLI worker to execute tasks
+default_cli: kilo
 
-> **Note:** All worker CLIs are automatically launched with their respective "bypass permissions" flags (`--yes`, `--dangerously-skip-permissions`, `--yolo`, `--auto`) so they run fully autonomously in the background. If a worker agent becomes unresponsive (no log output for 3 minutes), the orchestrator loop will automatically kill it and mark it as errored.
+# Command templates for supported CLIs. 
+# Use {prompt_file} as a placeholder for the generated prompt text file.
+cli_templates:
+  kilo: "kilo \"$(cat {prompt_file})\" --auto"
+  aider: "aider --message-file {prompt_file} --yes"
+  claude: "claude -p \"$(cat {prompt_file})\" --dangerously-skip-permissions"
+  gemini: "gemini --prompt \"$(cat {prompt_file})\" --yolo"
+```
 
-The Orchestrator Loop will remember which CLI tool you spawned the agent with and will automatically use the exact same tool if it needs to respawn the agent after a rollback!
+If the file does not exist, you MUST dynamically evaluate the overall size and complexity of the user's project to determine sensible default bounds (e.g., a simple script might only need a 5-minute progress timeout and 3 iterations, while a complex React app might need a 20-minute progress timeout and 10 iterations). You can also offer to create this config file for the user so they can explicitly customize their workflow bounds in the future!
+
+> **Note:** All worker CLIs are automatically launched with their respective "bypass permissions" flags (`--yes`, `--dangerously-skip-permissions`, `--yolo`, `--auto`) so they run fully autonomously in the background. The Orchestrator Loop will remember which CLI tool you spawned the agent with and will automatically use the exact same tool if it needs to respawn the agent after a rollback!
 
 ## Phase 1 — Task Evaluation & Decomposition
-First, evaluate whether the user's overall task is suitable for multi-agent orchestration.
+**Step 0:** Read `orchestrator.config.yml` (as described above) to load the user's preferred CLI and default bounds.
+
+Next, evaluate whether the user's overall task is suitable for multi-agent orchestration.
 - **Do not use this skill** if the task is small, trivial, or requires tightly coupled sequential steps. Advise the user to let you handle it normally.
-- **Handle Overlapping Foundations First:** If a large task contains overlapping boundaries (e.g., setting up shared database schemas, core routing, or shared type definitions that multiple parallel agents will need to touch), **reject the orchestration request initially**. Inform the user that the overlapping foundational work must be done sequentially first to prevent massive merge conflicts later. Offer to build this core foundation yourself in the current session. Once the foundation is solid and merged, the user can re-request orchestration for the remaining isolated, parallel tasks.
-- **Proceed** if the task is large, complex, and can be safely split into purely non-overlapping boundaries (e.g., building the User Authentication module vs. building the Payment Processing module).
+- **Handle Overlapping Foundations First (CRITICAL):** True non-overlapping boundaries are rare. If agents will need to touch shared files (e.g., `package.json`, generic `types.ts`, test config, database schemas, router setups), **you must handle these sequentially before spawning agents.** If you spawn parallel worktrees that modify the same foundational files, you will create impossible merge conflicts.
+  - *Action:* Tell the user: "I need to set up the shared foundation (schemas, package.json, etc.) first to prevent merge conflicts."
+  - *Action:* Implement these shared foundations yourself in the current session.
+  - *Action:* Commit the foundation.
+  - *Action:* Only then, split the remaining work into truly parallel, isolated agent tasks.
+- **Proceed** if the task is large, complex, and the foundation is either already set or has just been completed by you.
 
 If proceeding:
 1. Break the work down into non-overlapping agent boundaries.
-2. **CRITICAL:** Explicitly define the shared API contracts, data models, or schemas that bridge these boundaries (e.g., what does the `User` JSON object look like? What are the API endpoints?). This guarantees agents won't invent conflicting schemas!
-3. Prepare a mapping of agent names to their task descriptions.
+2. Explicitly map out what files each agent is allowed to touch.
+3. Determine a `validation_command` for each agent (e.g., `npm run test -- <path>`, `npm run build`, `tsc`, or `null` if no automated validation is possible/needed).
+4. Prepare a mapping of agent names to their task descriptions.
 
 ## Phase 2 — Bootstrap
 When starting a new orchestrated project, create the `coord/` directory at the project root and initialize these files.
@@ -53,27 +79,39 @@ When starting a new orchestrated project, create the `coord/` directory at the p
 ```bash
 npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/bootstrap.ts \
   --project "Your project description" \
-  --chat-context "Compacted history and unspoken preferences" \
   --coord ./coord
 ```
 
 ### `coord/context.json`
-Because the orchestrator loop runs after your Claude CLI session is done, it has **zero access** to your original chat history. **You must heavily compress all user preferences, architectural nuances, and conversational context into the `chat_context` field.**
+Because the orchestrator loop runs after your Claude CLI session is done, it has **zero access** to your original chat history. **You must heavily compress all user preferences, architectural nuances, and conversational context into a structured `chat_context` object.**
 
 You should also include the tasks you generated in Phase 1 under the `"tasks"` key.
 
 ```json
 {
   "project": "<one-line description of the user's task>",
-  "chat_context": "<heavily compacted summary of the original conversation and user preferences>",
+  "chat_context": {
+    "preferences": ["<e.g., Use explicit typing>", "<e.g., Prefer functional components>"],
+    "architecture": ["<e.g., MVVM pattern>", "<e.g., Redux for state>"],
+    "naming_conventions": ["<e.g., camelCase for variables>", "<e.g., PascalCase for interfaces>"],
+    "gotchas": ["<e.g., User is using an older version of Node>"]
+  },
   "requirements": ["<requirement 1>", "<requirement 2>"],
   "constraints": ["<constraint 1>", "<constraint 2>"],
   "created_at": "<ISO 8601 timestamp>",
   "tasks": {
-    "agent-name": "description of the boundary"
+    "agent-name": {
+      "description": "description of the boundary",
+      "timeout_mins": 10,
+      "progress_timeout_mins": 15,
+      "max_iterations": 5
+    }
   }
 }
 ```
+
+### `coord/DECISIONS.md`
+To ensure critical architectural rules are never lost in JSON compression, write a human-readable `coord/DECISIONS.md` file. This file acts as the ultimate source of truth for shared API contracts, data models, and structural decisions made in Phase 1. The worker agents are instructed to read this file before they begin coding.
 
 ## Phase 3 — Prompt Generation
 Use the `references/worker-prompt-template.md` to generate prompts for each agent.
@@ -92,6 +130,10 @@ For each agent:
      --mode <mode> \
      --prompt-file /tmp/prompt-<agent-name>.txt \
      --coord ./coord \
+     --validate "<validation_command>" \
+     --timeout <timeout_mins> \
+     --progress-timeout <progress_timeout_mins> \
+     --max-iterations <max_iterations> \
      --cli <cli-name> # Optional: e.g. aider, claude. Defaults to kilo.
    ```
 
@@ -107,12 +149,22 @@ nohup npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/orchestrator-loop
 
 **Once the loop is started, your job as the starter session is done. You should politely inform the user that the orchestration loop is running in the background and exit.**
 
+### Progress Monitoring
+The orchestrator loop doesn't just watch for crashes; it monitors for **actual code progress**. 
+- **The "Killer" Timeout (Liveness Detection)**: If an agent stops emitting logs for the configured `timeout_mins` duration, it is assumed hanging, killed, and marked as errored.
+- **The "Reviewer" Timeout (Progress Detection)**: If an agent is active (emitting logs) but fails to accumulate any git commits or unstaged code changes (`git diff --stat`) for the configured `progress_timeout_mins` duration (e.g., 15 minutes), it is assumed to be stuck in a runaway hallucination loop. 
+
+**Triggered AI Review**: When the Reviewer Timeout trips, the loop does *not* blindly restart the agent. Instead, it extracts the last 50 lines of the stuck agent's logs and spawns a single, stateless, headless LLM call (using the Worker CLI) with a targeted system prompt:
+> *"This agent is stuck. Look at its last 50 lines of logs. What is it failing to understand? Write a 1-sentence instruction I can send it to break it out of this loop."*
+
+The loop then uses this AI-generated instruction as the prompt for the `soft_restart`, ensuring the agent gets intelligent course-correction without the massive token cost of continuous monitoring.
+
 ### Action Types
 
 | Action | Effect |
 |--------|--------|
-| `end_agent` | Orchestrator loop sends SIGTERM to the process and marks it `"completed"`. |
-| `soft_restart` | Orchestrator loop kills the rogue process, creates a `WIP` commit to preserve uncommitted work, and respawns the agent with new `instruction`s so it can correct its course. |
+| `end_agent` | Orchestrator loop runs the agent's `validation_command` (if configured) inside its worktree. If it **passes**, it sends SIGTERM and marks it `"completed"`. If it **fails**, the loop automatically triggers a `soft_restart`, packaging the stderr/stdout back to the agent with instructions to fix its code. |
+| `soft_restart` | Orchestrator loop kills the rogue process, creates a `WIP` commit to preserve uncommitted work, and respawns the agent with new `instruction`s (e.g., test failure logs or the course-correction instruction generated by the Triggered AI Review) so it can correct its course. |
 | `hard_restart` | Orchestrator loop kills the process, aggressively wipes all uncommitted work via `git reset --hard`, and respawns the agent. Useful for escaping hallucination loops. |
 
 ## Phase 6 — Review and Integration
@@ -130,6 +182,26 @@ When you receive this instruction to perform the final integration, you should:
 2. Run `git diff main...<agent-name>` for each to review the code.
 3. Provide a summary of the work to the user.
 4. Once the user approves, perform the merge:
+   ```bash
+   git merge <agent-name>
+   git worktree remove <worktree-path>/<agent-name>
+   git branch -d <agent-name>
+   ```
+rform the merge:
+   ```bash
+   git merge <agent-name>
+   git worktree remove <worktree-path>/<agent-name>
+   git branch -d <agent-name>
+   ```
+ode.
+3. Provide a summary of the work to the user.
+4. Once the user approves, perform the merge:
+   ```bash
+   git merge <agent-name>
+   git worktree remove <worktree-path>/<agent-name>
+   git branch -d <agent-name>
+   ```
+rform the merge:
    ```bash
    git merge <agent-name>
    git worktree remove <worktree-path>/<agent-name>
