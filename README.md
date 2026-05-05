@@ -41,21 +41,46 @@ If the file is absent, the orchestrator picks sensible defaults based on project
    ```bash
    npm install -g @anthropic-ai/claude-code
    ```
-2. **Node deps** for the daemon scripts:
-   ```bash
-   npm install
-   ```
-3. **A Worker CLI**: at least one headless worker CLI installed and authenticated (e.g. Kilo Code, Aider).
+2. **A Worker CLI**: at least one headless worker CLI installed and authenticated (e.g. Kilo Code, Aider, Codex, Gemini, OpenCode, or a second `claude` invocation).
    ```bash
    npm install -g kilo-cli
    ```
 
-## 🛠️ Installation & Usage
+> **Note:** This is a **Claude Code skill**, not a Claude.ai (web) or Claude Desktop one. The orchestrator shells out to `nohup`, `git worktree`, `kill`, and `osascript`/terminal-spawning commands, none of which run inside the web/desktop sandbox. Install it under Claude Code as described below.
 
-1. **Import the Skill**: In your Claude Desktop app or Claude Code CLI, add this folder as a Custom Skill.
-2. **(Optional) Configure**: Edit `orchestrator.config.yml` to set your preferred CLIs, timeouts, and restart caps.
-3. **Start a Project**: Ask Claude to build a complex project using the Multi-Agent Orchestrator.
-4. **Sit Back**: Claude reads `SKILL.md`, decomposes the task, writes `coord/DECISIONS.md`, spawns the workers, and launches the Live Dashboard.
+## 🛠️ Installation
+
+One command — Claude Code auto-discovers any folder under `~/.claude/skills/` that contains a `SKILL.md`, and the skill self-installs its Node deps the first time you invoke it (no manual `npm install`).
+
+```bash
+git clone https://github.com/hyw007726/claud-multi-agent-orchestrator-skill.git \
+  ~/.claude/skills/multi-agent-orchestrator
+```
+
+That's it. Open Claude Code in any project and ask it to "split this large feature into parallel agents" — on first run, Claude will detect that `node_modules/` is missing in the skill folder, run `npm install` once (~5s), and proceed. Subsequent invocations skip the install. You can also invoke the skill explicitly with `/multi-agent-orchestrator`.
+
+**Updating:** `git pull` inside `~/.claude/skills/multi-agent-orchestrator`. Claude Code live-reloads skills with no restart; if a future update changes deps, the next invocation re-runs `npm install` automatically.
+
+**Uninstalling:** `rm -rf ~/.claude/skills/multi-agent-orchestrator`.
+
+**Project-only install** (e.g. shared via a team repo so only that project sees the skill): clone into `<your-project>/.claude/skills/multi-agent-orchestrator` instead of the user-level path. Self-install behavior is the same.
+
+**Developer install** (you want to hack on the skill itself and have changes show up live): clone wherever you keep your code, then symlink it into the skills directory.
+```bash
+git clone https://github.com/hyw007726/claud-multi-agent-orchestrator-skill.git ~/src/multi-agent-orchestrator
+mkdir -p ~/.claude/skills
+ln -s ~/src/multi-agent-orchestrator ~/.claude/skills/multi-agent-orchestrator
+```
+
+## 🚀 Using the Skill
+
+1. **(Optional) Configure**: Edit `orchestrator.config.yml` to set your preferred CLIs, timeouts, and restart caps. The shipped defaults work out of the box.
+2. **Verify the worker chain end-to-end** (catches missing API keys / unselected models in 5–10s instead of a 10-minute liveness timeout):
+   ```bash
+   npx ts-node ~/.claude/skills/multi-agent-orchestrator/scripts/preflight.ts --auth
+   ```
+3. **Start a project**: Ask Claude to build a complex project that genuinely benefits from parallelism. Claude reads `SKILL.md`, decomposes the task, writes `coord/DECISIONS.md`, spawns the workers, and launches the Live Dashboard.
+4. **Sit back**: when all agents finish, the loop opens a review-summary terminal window. Hand control back to Claude in a new (or the same) session and say *"The agents are done. Please review and integrate their work."*
 
 ## 🔄 Supported CLIs
 You can instruct Claude to use different CLIs by appending the `--cli` flag:

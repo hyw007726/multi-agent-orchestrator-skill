@@ -1,10 +1,6 @@
 ---
-name: Multi-Agent Orchestrator
-description: An autonomous loop that coordinates worker agents (Kilo, Aider, etc) with a dashboard to monitor the agents' activity. Best used with a powerful Orchestrator and cost-efficient workers.
-dependencies:
-  - headless-cli-agent (e.g. kilo-cli, aider)
-  - typescript
-  - ts-node
+name: multi-agent-orchestrator
+description: Decompose a large coding task into parallel worker agents (Kilo, Aider, Claude, Codex, Gemini, OpenCode) running in isolated git worktrees with self-healing supervision. Use when the user asks to "build something complex with multiple agents", "split this work in parallel", "spawn a swarm", or to coordinate background headless CLI workers.
 ---
 
 # FULL Claude Orchestrator Skill
@@ -73,9 +69,18 @@ If the file does not exist, you MUST dynamically evaluate the overall size and c
 > **Note:** All worker CLIs are automatically launched with their respective "bypass permissions" flags (`--yes`, `--dangerously-skip-permissions`, `--yolo`, `--auto`) so they run fully autonomously in the background. The Orchestrator Loop will remember which CLI tool you spawned the agent with and will automatically use the exact same tool if it needs to respawn the agent after a rollback!
 
 ## Phase 1 — Task Evaluation & Decomposition
-**Step 0:** Read `orchestrator.config.yml` (as described above) to load the user's preferred CLI and default bounds.
 
-**Step 0.5 — Preflight CLI health check (REQUIRED):** Before any decomposition or spawning, verify the worker CLI and the orchestrator CLI are actually runnable. Otherwise an unauthenticated CLI will hang on an interactive prompt for the full 10-minute liveness timeout per agent before failing.
+**Step 0 — Skill self-install (REQUIRED, idempotent):** Before running any of the helper scripts, verify that the skill's own Node deps are present. The bootstrap / spawn / loop / preflight scripts all import `js-yaml` and `proper-lockfile`; without them every `ts-node` invocation will fail at import time. Check whether `<ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/node_modules/js-yaml/package.json` exists. If it does NOT, run:
+
+```bash
+cd <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER> && npm install
+```
+
+This is a one-time, ~5-second install on a fresh clone and a no-op on subsequent invocations. Tell the user "Installing skill dependencies (one-time setup)..." before running it so they understand the brief delay. Do NOT skip the check — users following the README don't run `npm install` manually; they expect this skill to take care of itself.
+
+**Step 0.5 — Read configuration:** Read `orchestrator.config.yml` (as described above) to load the user's preferred CLI and default bounds.
+
+**Step 0.75 — Preflight CLI health check (REQUIRED):** Before any decomposition or spawning, verify the worker CLI and the orchestrator CLI are actually runnable. Otherwise an unauthenticated CLI will hang on an interactive prompt for the full 10-minute liveness timeout per agent before failing.
 
 ```bash
 npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.ts
