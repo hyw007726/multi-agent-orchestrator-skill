@@ -41,10 +41,14 @@ interface AgentEntry {
   pid: number;
   started_at: string;
   last_heartbeat: string;
+  validate_cmd?: string;
+  timeout_mins?: number;
+  progress_timeout_mins?: number;
+  max_iterations?: number;
 }
 
 interface OrchestratorAction {
-  type: "end_agent" | "restart_agent";
+  type: "end_agent" | "soft_restart" | "hard_restart" | "restart_agent";
   agent: string;
   instruction?: string;
   rollback?: boolean;
@@ -77,8 +81,8 @@ function readJSON<T>(filePath: string): T {
 
 function readJSONL<T>(filePath: string): T[] {
   if (!fs.existsSync(filePath)) return [];
-  const lines = fs.readFileSync(filePath, "utf-8").split("\n").filter((line) => line.trim() !== "");
-  return lines.map((line) => JSON.parse(line));
+  const lines = fs.readFileSync(filePath, "utf-8").split("\n").filter((line: string) => line.trim() !== "");
+  return lines.map((line: string) => JSON.parse(line));
 }
 
 function writeJSON<T>(filePath: string, data: T): void {
@@ -139,6 +143,51 @@ function getPaths(coordDir: string) {
     context: path.join(coordDir, "context.json"),
     agents: path.join(coordDir, "agents.json"),
   };
+}
+
+
+function loadConfig() {
+  const configPath = require("path").join(process.cwd(), "orchestrator.config.yml");
+  const parsed = {
+    cli_templates: {} as Record<string, string>,
+    default_timeout_mins: 10,
+    default_progress_timeout_mins: 15,
+    default_max_iterations: 5,
+    default_cli: "kilo"
+  };
+  if (require("fs").existsSync(configPath)) {
+    const content = require("fs").readFileSync(configPath, "utf-8");
+    let inTemplates = false;
+    for (let line of content.split("\n")) {
+      line = line.replace(/#.*$/, "").trimRight();
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      
+      if (trimmed.startsWith("cli_templates:")) {
+        inTemplates = true;
+        continue;
+      }
+      if (inTemplates && line.startsWith(" ") && trimmed.includes(":")) {
+        const match = trimmed.match(/^([^:]+):\s*(.*)$/);
+        if (match) {
+            let val = match[2];
+            if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+            else if (val.startsWith("'") && val.endsWith("'")) val = val.slice(1, -1);
+            parsed.cli_templates[match[1]] = val;
+        }
+      } else if (inTemplates && !line.startsWith(" ")) {
+        inTemplates = false;
+      }
+      
+      if (!inTemplates) {
+        if (trimmed.startsWith("default_timeout_mins:")) parsed.default_timeout_mins = parseInt(trimmed.split(":")[1].trim());
+        if (trimmed.startsWith("default_progress_timeout_mins:")) parsed.default_progress_timeout_mins = parseInt(trimmed.split(":")[1].trim());
+        if (trimmed.startsWith("default_max_iterations:")) parsed.default_max_iterations = parseInt(trimmed.split(":")[1].trim());
+        if (trimmed.startsWith("default_cli:")) parsed.default_cli = trimmed.split(":")[1].trim();
+      }
+    }
+  }
+  return parsed;
 }
 
 // ─── Claude CLI Integration ──────────────────────────────────────────────────
@@ -257,6 +306,9 @@ async function runLoop() {
     appendLog(config.logFile, `Failed to launch dashboard: ${e.message}`);
   }
 
+  const agentProgress: Record<string, { last_diff: string; last_progress_time: number }> = {};
+  const parsedConfig = loadConfig();
+
   while (true) {
     try {
       if (fs.existsSync(path.join(config.coordDir, "abort.flag"))) {
@@ -283,8 +335,7 @@ async function runLoop() {
       // Check for crashed agents (e.g. network failures)
       const agentsForCheck = readJSON<Record<string, AgentEntry>>(paths.agents);
       let agentsChanged = false;
-      const IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
-
+      
       for (const name in agentsForCheck) {
         if (agentsForCheck[name].status === "running") {
           try {
@@ -297,11 +348,104 @@ async function runLoop() {
               lastActivity = fs.statSync(logFile).mtime.getTime();
             }
             
+            const timeoutMins = agentsForCheck[name].timeout_mins || parsedConfig.default_timeout_mins || 10;
+            const IDLE_TIMEOUT_MS = timeoutMins * 60 * 1000;
+            
             if (Date.now() - lastActivity > IDLE_TIMEOUT_MS) {
-              appendLog(config.logFile, `⏱️ Agent ${name} has been idle (no log output) for 3 minutes. Killing process.`);
+              appendLog(config.logFile, `⏱️ Agent ${name} has been idle (no log output) for ${timeoutMins} minutes. Killing process.`);
               killAgentProcess(agentsForCheck[name].pid, config.logFile);
               agentsForCheck[name].status = "errored";
               agentsChanged = true;
+              continue;
+            }
+
+            // Reviewer Timeout (Progress Detection)
+            const progressTimeoutMins = agentsForCheck[name].progress_timeout_mins || parsedConfig.default_progress_timeout_mins || 15;
+            const PROGRESS_TIMEOUT_MS = progressTimeoutMins * 60 * 1000;
+            
+            const worktree = agentsForCheck[name].worktree;
+            let currentDiff = "";
+            if (fs.existsSync(worktree)) {
+              try {
+                const diffStatUnstaged = execSync('git diff --stat', { cwd: worktree, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+                const diffStatStaged = execSync('git diff --staged --stat', { cwd: worktree, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+                const commits = execSync('git log -n 5 --oneline', { cwd: worktree, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+                currentDiff = `${diffStatUnstaged}\n${diffStatStaged}\n${commits}`;
+              } catch(e) {}
+            }
+            
+            if (!agentProgress[name]) {
+              agentProgress[name] = { last_diff: currentDiff, last_progress_time: Date.now() };
+            } else if (agentProgress[name].last_diff !== currentDiff) {
+              agentProgress[name].last_diff = currentDiff;
+              agentProgress[name].last_progress_time = Date.now();
+            } else if (Date.now() - agentProgress[name].last_progress_time > PROGRESS_TIMEOUT_MS) {
+              appendLog(config.logFile, `⏱️ Agent ${name} stuck for ${progressTimeoutMins} mins (no code changes). Triggering AI Review.`);
+              
+              let logs = "";
+              if (fs.existsSync(logFile)) {
+                try {
+                  logs = execSync(`tail -n 50 "${logFile}"`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+                } catch(e) {}
+              }
+              
+              const reviewPrompt = `This agent is stuck. Look at its last 50 lines of logs:\n\n${logs}\n\nWhat is it failing to understand? Write a 1-sentence instruction I can send it to break it out of this loop.`;
+              
+              let reviewInstruction = "You seem stuck. Please review the logs and continue.";
+              const cliTool = agentsForCheck[name].cli || parsedConfig.default_cli || "kilo";
+              const template = parsedConfig.cli_templates[cliTool];
+              const promptFile = path.join(require("os").tmpdir(), `review-prompt-${Date.now()}.txt`);
+              fs.writeFileSync(promptFile, reviewPrompt, "utf-8");
+              
+              try {
+                if (template) {
+                  const cmdStr = template.replace(/\{prompt_file\}/g, promptFile);
+                  const result = require("child_process").spawnSync(cmdStr, { shell: true, encoding: 'utf-8', timeout: 60000 });
+                  if (result.stdout) reviewInstruction = result.stdout.trim();
+                } else {
+                  const result = require("child_process").spawnSync("claude", ["-p", reviewPrompt, "--dangerously-skip-permissions"], { encoding: 'utf-8', timeout: 60000 });
+                  if (result.stdout) reviewInstruction = result.stdout.trim();
+                }
+              } catch(e) {
+                appendLog(config.logFile, `Triggered AI Review failed: ${e.message}`);
+              }
+              try { fs.unlinkSync(promptFile); } catch {}
+              
+              appendLog(config.logFile, `AI Review fix: ${reviewInstruction}`);
+              
+              killAgentProcess(agentsForCheck[name].pid, config.logFile);
+              if (fs.existsSync(worktree)) {
+                appendLog(config.logFile, `Soft restarting: creating WIP commit in ${worktree}...`);
+                try {
+                  execSync(`git add .`, { cwd: worktree });
+                  try {
+                    execSync(`git commit -m "WIP: Stuck for ${progressTimeoutMins} mins - review new instructions"`, { cwd: worktree, stdio: "ignore" });
+                  } catch(e) {}
+                } catch(e) {}
+              }
+              
+              agentsForCheck[name].task = reviewInstruction;
+              const newPromptFile = path.join(require("os").tmpdir(), `prompt-${name}-${Date.now()}.txt`);
+              fs.writeFileSync(newPromptFile, reviewInstruction, "utf-8");
+              
+              appendLog(config.logFile, `Respawning agent ${name} using ${cliTool}...`);
+              try {
+                const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+                const child = require("child_process").spawn(npxCmd, [
+                  "ts-node",
+                  path.join(__dirname, "spawn-agent.ts"),
+                  "--agent", name,
+                  "--mode", agentsForCheck[name].kilo_mode,
+                  "--prompt-file", newPromptFile,
+                  "--coord", path.dirname(paths.agents),
+                  "--cli", cliTool
+                ], { detached: true, stdio: 'ignore' });
+                child.unref();
+              } catch (err) {}
+              
+              agentsChanged = true;
+              agentProgress[name].last_progress_time = Date.now();
+              continue;
             }
           } catch (e) {
             agentsForCheck[name].status = "completed";
@@ -370,16 +514,44 @@ async function runLoop() {
           for (const action of response.actions || []) {
             switch (action.type) {
               case "end_agent": {
-                const agents = readJSON<Record<string, AgentEntry>>(paths.agents);
+                let agents = readJSON<Record<string, AgentEntry>>(paths.agents);
                 if (agents[action.agent]) {
-                  killAgentProcess(agents[action.agent].pid, config.logFile);
-                  agents[action.agent].status = "completed";
-                  agents[action.agent].last_heartbeat = new Date().toISOString();
-                  writeJSON(paths.agents, agents);
-                  appendLog(config.logFile, `Agent ${action.agent} completed successfully.`);
+                  const agentData = agents[action.agent];
+                  const worktree = agentData.worktree;
+                  
+                  let validationPassed = true;
+                  let validationLog = "";
+                  
+                  if (agentData.validate_cmd && agentData.validate_cmd !== "null") {
+                    appendLog(config.logFile, `Running validation command for ${action.agent}: ${agentData.validate_cmd}`);
+                    try {
+                      execSync(agentData.validate_cmd, { cwd: worktree, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+                      appendLog(config.logFile, `Validation passed for ${action.agent}`);
+                    } catch (err: any) {
+                      validationPassed = false;
+                      validationLog = (err.stdout || "") + "\n" + (err.stderr || err.message);
+                      appendLog(config.logFile, `Validation failed for ${action.agent}`);
+                    }
+                  }
+                  
+                  if (validationPassed) {
+                    killAgentProcess(agentData.pid, config.logFile);
+                    agents[action.agent].status = "completed";
+                    agents[action.agent].last_heartbeat = new Date().toISOString();
+                    writeJSON(paths.agents, agents);
+                    appendLog(config.logFile, `Agent ${action.agent} completed successfully.`);
+                    break;
+                  } else {
+                    action.type = "soft_restart" as any;
+                    action.instruction = `Validation failed! Please fix the errors:\n\n${validationLog}`;
+                    appendLog(config.logFile, `Converting end_agent to soft_restart for ${action.agent} due to validation failure.`);
+                    // Fallthrough manually by not breaking, and re-read agents since we let it flow to soft_restart
+                  }
+                } else {
+                  break;
                 }
-                break;
               }
+              // eslint-disable-next-line no-fallthrough
               case "soft_restart":
               case "hard_restart": {
                 let agents = readJSON<Record<string, AgentEntry>>(paths.agents);
@@ -580,7 +752,7 @@ Keep the total output under 50 lines. Be direct.`;
             appendLog(config.logFile, `Review summary generated by ${workerCli}.`);
           } catch (err: any) {
             appendLog(config.logFile, `Worker review failed (${err.message}). Writing raw stats fallback.`);
-            summaryOutput = `ALL AGENTS COMPLETED\n\n${allDiffs}\n\nNext: return to your Claude session and say "The agents are done. Please review and integrate their work."`;
+            summaryOutput = `ALL AGENTS COMPLETED\n\n${agentsList}\n\nNext: return to your Claude session and say "The agents are done. Please review and integrate their work."`;
             fs.writeFileSync(summaryFile, summaryOutput, "utf-8");
           }
 

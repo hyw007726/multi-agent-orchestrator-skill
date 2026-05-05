@@ -30,10 +30,10 @@ function parseArgs(): BootstrapArgs {
         config.project = args[++i];
         break;
       case "--requirements":
-        config.requirements = args[++i].split(",").map((s) => s.trim());
+        config.requirements = args[++i].split(",").map((s: string) => s.trim());
         break;
       case "--constraints":
-        config.constraints = args[++i].split(",").map((s) => s.trim());
+        config.constraints = args[++i].split(",").map((s: string) => s.trim());
         break;
       case "--chat-context":
         config.chatContext = args[++i];
@@ -84,6 +84,9 @@ function bootstrap(config: BootstrapArgs): void {
   fs.writeFileSync(path.join(coordDir, "context.json"), JSON.stringify(context, null, 2) + "\n");
 
   fs.writeFileSync(path.join(coordDir, "decisions.json"), "[]\n");
+  
+  const decisionsMd = `# Architectural Decisions\n\nThis file acts as the ultimate source of truth for shared API contracts, data models, and structural decisions. Worker agents MUST read this file before they begin coding.\n`;
+  fs.writeFileSync(path.join(coordDir, "DECISIONS.md"), decisionsMd);
   fs.writeFileSync(path.join(coordDir, "requests.jsonl"), "");
   fs.writeFileSync(path.join(coordDir, "agents.json"), "{}\n");
 

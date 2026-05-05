@@ -187,23 +187,3 @@ When you receive this instruction to perform the final integration, you should:
    git worktree remove <worktree-path>/<agent-name>
    git branch -d <agent-name>
    ```
-rform the merge:
-   ```bash
-   git merge <agent-name>
-   git worktree remove <worktree-path>/<agent-name>
-   git branch -d <agent-name>
-   ```
-ode.
-3. Provide a summary of the work to the user.
-4. Once the user approves, perform the merge:
-   ```bash
-   git merge <agent-name>
-   git worktree remove <worktree-path>/<agent-name>
-   git branch -d <agent-name>
-   ```
-rform the merge:
-   ```bash
-   git merge <agent-name>
-   git worktree remove <worktree-path>/<agent-name>
-   git branch -d <agent-name>
-   ```

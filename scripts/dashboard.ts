@@ -111,9 +111,8 @@ function render() {
   console.log("\n🟡 PENDING REQUESTS");
   try {
     if (fs.existsSync(requestsFile)) {
-      const lines = fs.readFileSync(requestsFile, "utf-8").split("\n").filter((line) => line.trim() !== "");
-      const requests = lines.map((line) => JSON.parse(line));
-      const pending = requests.filter((r: any) => r.status === "pending");
+      const lines = fs.readFileSync(requestsFile, "utf-8").split("\n").filter((line: string) => line.trim() !== "");
+      const requests = lines.map((line: string) => JSON.parse(line));      const pending = requests.filter((r: any) => r.status === "pending");
       if (pending.length === 0) {
         console.log("No pending requests.");
       } else {
