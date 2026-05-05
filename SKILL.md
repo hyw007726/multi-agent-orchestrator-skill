@@ -31,7 +31,7 @@ Before using this skill, ensure you have:
 >
 > There is intentionally no separate `default_model` config key, because each CLI uses different flag names and model-id namespaces (and some don't take a flag at all), so keeping it close to the actual mechanism avoids a leaky aliasing layer.
 >
-> **Recommended default combination:** `default_cli: kilo` + DeepSeek V4 Pro (`deepseek-v4-pro`, 1M context, cheap and fast). Because Kilo is an external-config CLI, set this up by configuring DeepSeek as a BYOK provider in Kilo and selecting `deepseek-v4-pro` in its model picker — `cli_templates.kilo` does not need to change. Then run `npx ts-node <skill>/scripts/preflight.ts --auth` to confirm the chain (API key + provider + model selection) is actually exercising the API, not just confirming the binary is installed.
+> **Recommended default combination:** `default_cli: kilo` + DeepSeek V4 Pro (`deepseek-v4-pro`, 1M context, cheap and fast). Because Kilo is an external-config CLI, set this up by configuring DeepSeek as a BYOK provider in Kilo and selecting `deepseek-v4-pro` in its model picker — `cli_templates.kilo` does not need to change. Then run `npx ts-node <skill>/scripts/preflight.ts` to confirm the chain (API key + provider + model selection) is actually exercising the API, not just confirming the binary is installed.
 
 ## ⚙️ Configuration (`orchestrator.config.yml`)
 Before beginning Phase 1, you MUST check if an `orchestrator.config.yml` file exists in the project root. This file acts as the dynamic source of truth for the user's preferences.
@@ -84,11 +84,9 @@ This is a one-time, ~5-second install on a fresh clone and a no-op on subsequent
 
 ```bash
 npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.ts
-# Or pass --auth to also probe authentication (costs a few tokens per CLI):
-npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.ts --auth
 ```
 
-The script defaults to checking `default_cli` and `orchestrator_cli`. The default `<cli> --version` probe only confirms the binary is installed and runnable — it does **not** verify API keys, BYOK provider configuration, or model selection. For CLIs whose model selection lives outside the template (kilo, opencode, codex), use `--auth` to actually exercise `cli_templates` with a tiny prompt; this catches missing API keys, broken provider connections, and unselected models. If any check fails, abort and surface the diagnostic to the user — typical fixes are installing the CLI, putting it on `$PATH`, signing in / setting an API key, or selecting a default model.
+The script checks `default_cli` and `orchestrator_cli` by default. It runs two probes per CLI: a `--version` install check, then an auth probe that executes the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection are all wired up. Pass `--skip-auth` to run install checks only (useful in CI environments where credentials are not provisioned). If any check fails, abort and surface the diagnostic to the user — typical fixes are installing the CLI, putting it on `$PATH`, signing in / setting an API key, or selecting a default model.
 
 Next, evaluate whether the user's overall task is suitable for multi-agent orchestration.
 - **Do not use this skill** if the task is small, trivial, or requires tightly coupled sequential steps. Advise the user to let you handle it normally.

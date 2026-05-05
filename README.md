@@ -33,7 +33,7 @@ The skill reads `orchestrator.config.yml` at the project root. Key knobs:
 
 If the file is absent, the orchestrator picks sensible defaults based on project size.
 
-**Recommended default combination:** `default_cli: kilo` + DeepSeek V4 Pro (`deepseek-v4-pro`, 1M context, cheap and fast) for workers, with `orchestrator_cli: claude` (a stronger reasoning model) for arbitration. Kilo's model selection lives in its own BYOK provider settings, so no template change is needed — just pick `deepseek-v4-pro` in Kilo's model picker after you authenticate, and run `npx ts-node scripts/preflight.ts --auth` to confirm the chain is exercising the API end-to-end (a bare `--version` check only proves the binary is installed).
+**Recommended default combination:** `default_cli: kilo` + DeepSeek V4 Pro (`deepseek-v4-pro`, 1M context, cheap and fast) for workers, with `orchestrator_cli: claude` (a stronger reasoning model) for arbitration. Kilo's model selection lives in its own BYOK provider settings, so no template change is needed — just pick `deepseek-v4-pro` in Kilo's model picker after you authenticate, and run `npx ts-node scripts/preflight.ts` to confirm the chain is exercising the API end-to-end (a bare `--version` check only proves the binary is installed).
 
 ## 📦 Prerequisites
 
@@ -77,7 +77,7 @@ ln -s ~/src/multi-agent-orchestrator ~/.claude/skills/multi-agent-orchestrator
 1. **(Optional) Configure**: Edit `orchestrator.config.yml` to set your preferred CLIs, timeouts, and restart caps. The shipped defaults work out of the box.
 2. **Verify the worker chain end-to-end** (catches missing API keys / unselected models in 5–10s instead of a 10-minute liveness timeout):
    ```bash
-   npx ts-node ~/.claude/skills/multi-agent-orchestrator/scripts/preflight.ts --auth
+   npx ts-node ~/.claude/skills/multi-agent-orchestrator/scripts/preflight.ts
    ```
 3. **Start a project**: Ask Claude to build a complex project that genuinely benefits from parallelism. Claude reads `SKILL.md`, decomposes the task, writes `coord/DECISIONS.md`, spawns the workers, and launches the Live Dashboard.
 4. **Sit back**: when all agents finish, the loop opens a review-summary terminal window. Hand control back to Claude in a new (or the same) session and say *"The agents are done. Please review and integrate their work."*

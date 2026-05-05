@@ -7,7 +7,7 @@
 # Model selection for kilo happens inside Kilo's BYOK provider settings (UI / one-time
 # setup), NOT via a CLI flag — so the kilo template below stays simple and the model
 # id `deepseek-v4-pro` is selected in Kilo's model picker. After setup, run:
-#   npx ts-node scripts/preflight.ts --auth
+#   npx ts-node scripts/preflight.ts
 # to confirm the API key + provider + model chain is wired up (a bare --version check
 # only proves the binary is installed; it does not exercise the API).
 default_cli: kilo

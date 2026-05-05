@@ -6,9 +6,9 @@
  * 10-minute liveness timeout per agent.
  *
  * Usage:
- *   npx ts-node scripts/preflight.ts                   # checks default_cli + orchestrator_cli
+ *   npx ts-node scripts/preflight.ts                   # checks default_cli + orchestrator_cli (with auth)
+ *   npx ts-node scripts/preflight.ts --skip-auth       # binary-only check, no API calls (CI / offline)
  *   npx ts-node scripts/preflight.ts --cli kilo --cli aider
- *   npx ts-node scripts/preflight.ts --auth            # also runs the spawn template with a tiny prompt
  *   npx ts-node scripts/preflight.ts --timeout 15000   # per-CLI timeout in ms (default 10000)
  *
  * Exits 0 if every checked CLI is healthy, non-zero otherwise.
@@ -36,7 +36,8 @@ function runPreflight() {
     ? args.clis
     : Array.from(new Set([config.default_cli, config.orchestrator_cli]));
 
-  console.log(`Preflight: checking ${clis.length} CLI(s) — ${clis.join(", ")}\n`);
+  warnIfClaudeModelUnpinned(config);
+  console.log(`Preflight: checking ${clis.length} CLI(s) — ${clis.join(", ")} (${args.withAuth ? "install + auth" : "install only"})\n`);
 
   let allOk = true;
   for (const cli of clis) {
@@ -62,11 +63,12 @@ function runPreflight() {
 
   function parseArgs(): PreflightArgs {
     const argv = process.argv.slice(2);
-    const out: PreflightArgs = { clis: [], withAuth: false, timeoutMs: 10000 };
+    const out: PreflightArgs = { clis: [], withAuth: true, timeoutMs: 10000 };
     for (let i = 0; i < argv.length; i++) {
       switch (argv[i]) {
         case "--cli": out.clis.push(argv[++i]); break;
-        case "--auth": out.withAuth = true; break;
+        case "--skip-auth": out.withAuth = false; break;
+        case "--auth": break; // no-op — auth is now the default; kept for backwards compat
         case "--timeout": out.timeoutMs = parseInt(argv[++i], 10); break;
         case "--help":
         case "-h":
@@ -75,6 +77,15 @@ function runPreflight() {
       }
     }
     return out;
+  }
+
+  function warnIfClaudeModelUnpinned(config: OrchestratorConfig): void {
+    const claudeTemplate = config.cli_templates["claude"];
+    if (claudeTemplate && !claudeTemplate.includes("--model")) {
+      console.warn("  ⚠  cli_templates.claude does not include --model. Workers will inherit the");
+      console.warn("     parent session's model (likely Opus 4.7). Add --model <id> to pin a cheaper model.");
+      console.warn("");
+    }
   }
 
   // Runs the configured (or default) `--version`-style probe.
