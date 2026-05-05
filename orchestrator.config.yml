@@ -3,6 +3,13 @@
 # Uncomment and set these values to override the Orchestrator's dynamic defaults.
 
 # The background CLI worker that executes coding tasks inside each agent worktree.
+# Recommended default combination: kilo + DeepSeek V4 Pro (1M context, cheap, fast).
+# Model selection for kilo happens inside Kilo's BYOK provider settings (UI / one-time
+# setup), NOT via a CLI flag — so the kilo template below stays simple and the model
+# id `deepseek-v4-pro` is selected in Kilo's model picker. After setup, run:
+#   npx ts-node scripts/preflight.ts --auth
+# to confirm the API key + provider + model chain is wired up (a bare --version check
+# only proves the binary is installed; it does not exercise the API).
 default_cli: kilo
 
 # The CLI used by the background loop itself for request arbitration (Phase 5).
@@ -15,11 +22,34 @@ default_cli: kilo
 # By centralizing these here you can adapt if a tool changes its CLI flags, and
 # the same template is reused for the worker spawn, the orchestrator-CLI call,
 # and the AI-Review course-correction call.
+#
+# Model selection — two patterns depending on the CLI:
+#   (a) Inline flag CLIs (claude, aider, gemini): the template is executed
+#       verbatim, so add the CLI's --model flag inline. Examples:
+#         claude:  "claude -p \"$(cat {prompt_file})\" --dangerously-skip-permissions --model claude-haiku-4-5-20251001"
+#         aider:   "aider --message-file {prompt_file} --yes --model gpt-4o-mini"
+#         gemini:  "gemini --prompt \"$(cat {prompt_file})\" --yolo --model gemini-2.0-flash"
+#   (b) External-config CLIs (kilo, opencode, codex): model selection lives in
+#       the CLI's own settings (BYOK provider + model picker), not in the
+#       template. Leave the template simple — e.g. for the recommended kilo +
+#       DeepSeek V4 Pro combo, pick `deepseek-v4-pro` in Kilo's model selector
+#       and the existing `kilo "$(cat {prompt_file})" --auto` template will use it.
+# Common pattern: keep the WORKER (`default_cli`) on a cheap fast model and
+# use a stronger model for `orchestrator_cli`, since arbitration weighs
+# cross-cutting decisions while workers do narrower coding.
 cli_templates:
   kilo: "kilo \"$(cat {prompt_file})\" --auto"
   aider: "aider --message-file {prompt_file} --yes"
   claude: "claude -p \"$(cat {prompt_file})\" --dangerously-skip-permissions"
   gemini: "gemini --prompt \"$(cat {prompt_file})\" --yolo"
+
+# Health-check probes used by `scripts/preflight.ts` to fail fast when a CLI
+# isn't installed or is hanging on an interactive prompt. Defaults to
+# `<cli> --version` for every supported CLI; override here if a tool prefers
+# a different lightweight diagnostic command.
+# cli_health_checks:
+#   kilo: "kilo --version"
+#   aider: "aider --version"
 
 # How many minutes of NO logs before the agent is killed.
 # default_timeout_mins: 10
@@ -37,3 +67,10 @@ cli_templates:
 # Consecutive orchestrator-CLI failures (per cycle) before writing
 # coord/orchestrator-stalled.flag, which the dashboard surfaces as a red banner.
 # claude_failure_threshold: 5
+
+# Adaptive polling bounds. The loop polls fast right after seeing pending
+# requests, then exponentially backs off (×1.5 per idle cycle) up to poll_max_ms.
+# Pass `--poll-interval <ms>` to the loop to disable the heuristic and force a
+# fixed cadence.
+# poll_min_ms: 1000
+# poll_max_ms: 15000

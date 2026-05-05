@@ -26,6 +26,14 @@ Before using this skill, ensure you have:
 > 3. **Final Integration (Interactive Session):** After the background loop completes, you return to a high-tier Orchestrator session to act as the integrator, reviewing the completed worktrees and safely merging them.
 >
 > **Model Selection Strategy:** Use a powerful reasoning model for your interactive Orchestrator sessions (Contexts 1 & 3) and for the `orchestrator_cli` so request arbitration stays sound. Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for the bulk coding and the cheap monitor calls. If you want monitoring to be even cheaper, point `orchestrator_cli` at a fast worker too — the system will respect whichever CLI you configure.
+>
+> **How to pin a model:** Two patterns depending on the CLI.
+> - **Inline-flag CLIs** (claude, aider, gemini): model selection is part of `cli_templates`. The template string is what gets executed verbatim, so add the CLI's model flag inline — e.g. `claude -p ... --dangerously-skip-permissions --model claude-haiku-4-5-20251001` for Haiku, or `aider ... --model gpt-4o-mini`.
+> - **External-config CLIs** (kilo, opencode, codex): model selection lives in the CLI's own settings (BYOK provider + model picker), not the template. The template stays simple; the model is whatever the user has configured in that CLI.
+>
+> There is intentionally no separate `default_model` config key, because each CLI uses different flag names and model-id namespaces (and some don't take a flag at all), so keeping it close to the actual mechanism avoids a leaky aliasing layer.
+>
+> **Recommended default combination:** `default_cli: kilo` + DeepSeek V4 Pro (`deepseek-v4-pro`, 1M context, cheap and fast). Because Kilo is an external-config CLI, set this up by configuring DeepSeek as a BYOK provider in Kilo and selecting `deepseek-v4-pro` in its model picker — `cli_templates.kilo` does not need to change. Then run `npx ts-node <skill>/scripts/preflight.ts --auth` to confirm the chain (API key + provider + model selection) is actually exercising the API, not just confirming the binary is installed.
 
 ## ⚙️ Configuration (`orchestrator.config.yml`)
 Before beginning Phase 1, you MUST check if an `orchestrator.config.yml` file exists in the project root. This file acts as the dynamic source of truth for the user's preferences.
@@ -33,12 +41,14 @@ Before beginning Phase 1, you MUST check if an `orchestrator.config.yml` file ex
 If it exists, read it to determine:
 - **`default_cli`**: The Worker CLI to use for spawning agents and for the cheap AI-Review / final-summary calls.
 - **`orchestrator_cli`**: The CLI used by the background loop for request arbitration (defaults to `claude`). Set this independently from `default_cli` if you want arbitration to use a stronger reasoning model than your workers.
-- **`cli_templates`**: The exact bash commands used to spawn the worker CLIs. The same templates are reused for `orchestrator_cli` calls and the AI-Review calls, so the system is immune to third-party tool interface changes.
+- **`cli_templates`**: The exact bash commands used to spawn the worker CLIs. The same templates are reused for `orchestrator_cli` calls and the AI-Review calls, so the system is immune to third-party tool interface changes. **This is also where you pin a model** — append the CLI's model flag (`--model <id>`, `--llm <id>`, etc.) to the template string and that model is used for every spawn driven by it.
 - **`default_timeout_mins`**: The default time before an agent is considered hanging (Liveness).
 - **`default_progress_timeout_mins`**: The default time before an active agent with zero code changes is considered stuck (Progress).
 - **`default_max_iterations`**: The default cap on agent tool loops.
 - **`default_max_restarts`**: The maximum number of times the loop will respawn the same agent before marking it `errored` (defaults to 3). Counted across both validation-failure restarts and AI-Review restarts.
 - **`claude_failure_threshold`**: Consecutive arbitration-CLI failures before the loop writes `coord/orchestrator-stalled.flag` (which the dashboard surfaces). Defaults to 5.
+- **`poll_min_ms` / `poll_max_ms`**: Adaptive polling bounds for the orchestrator loop. The loop polls at `poll_min_ms` (default 1000) right after seeing pending requests, then exponentially backs off (×1.5 per idle cycle) up to `poll_max_ms` (default 15000). Pass `--poll-interval <ms>` to the loop to disable the heuristic and force a fixed cadence.
+- **`cli_health_checks`**: Per-CLI probe commands run by `scripts/preflight.ts` to fail fast on install / auth issues. Defaults to `<cli> --version` for every supported CLI.
 
 Example `orchestrator.config.yml`:
 ```yaml
@@ -60,6 +70,16 @@ If the file does not exist, you MUST dynamically evaluate the overall size and c
 
 ## Phase 1 — Task Evaluation & Decomposition
 **Step 0:** Read `orchestrator.config.yml` (as described above) to load the user's preferred CLI and default bounds.
+
+**Step 0.5 — Preflight CLI health check (REQUIRED):** Before any decomposition or spawning, verify the worker CLI and the orchestrator CLI are actually runnable. Otherwise an unauthenticated CLI will hang on an interactive prompt for the full 10-minute liveness timeout per agent before failing.
+
+```bash
+npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.ts
+# Or pass --auth to also probe authentication (costs a few tokens per CLI):
+npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.ts --auth
+```
+
+The script defaults to checking `default_cli` and `orchestrator_cli`. The default `<cli> --version` probe only confirms the binary is installed and runnable — it does **not** verify API keys, BYOK provider configuration, or model selection. For CLIs whose model selection lives outside the template (kilo, opencode, codex), use `--auth` to actually exercise `cli_templates` with a tiny prompt; this catches missing API keys, broken provider connections, and unselected models. If any check fails, abort and surface the diagnostic to the user — typical fixes are installing the CLI, putting it on `$PATH`, signing in / setting an API key, or selecting a default model.
 
 Next, evaluate whether the user's overall task is suitable for multi-agent orchestration.
 - **Do not use this skill** if the task is small, trivial, or requires tightly coupled sequential steps. Advise the user to let you handle it normally.

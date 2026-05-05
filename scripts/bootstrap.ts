@@ -40,7 +40,7 @@ function parseArgs(): BootstrapArgs {
         break;
       case "--help":
         console.log(`
-Bootstrap Kilo Code Multi-Agent Coordination
+Bootstrap Multi-Agent Orchestrator coordination
 
 Options:
   --coord <dir>              Path to coordination directory (default: ./coord)
@@ -90,9 +90,9 @@ function bootstrap(config: BootstrapArgs): void {
   fs.writeFileSync(path.join(coordDir, "requests.jsonl"), "");
   fs.writeFileSync(path.join(coordDir, "agents.json"), "{}\n");
 
-  const agentsMd = `# Kilo Code Multi-Agent Coordination
+  const agentsMd = `# Multi-Agent Coordination
 
-This project is being developed by multiple Kilo Code agents working in parallel.
+This project is being developed by multiple worker-CLI agents (Kilo Code, Aider, Claude Code, Codex, Gemini, OpenCode, etc.) working in parallel git worktrees.
 All agents MUST read and follow these rules.
 
 ## Coordination Protocol
@@ -115,7 +115,13 @@ If priority is \`high\`, STOP WORKING and wait for the orchestrator to update \`
   fs.writeFileSync(agentsMdPath, agentsMd);
 
   const gitignorePath = path.join(process.cwd(), ".gitignore");
-  const ignoreEntries = [".kilocode/worktrees/", ".agents/worktrees/", "coord/orchestrator-loop.out"];
+  const ignoreEntries = [
+    ".kilocode/worktrees/",
+    ".agents/worktrees/",
+    "coord/orchestrator-loop.out",
+    "coord/orchestrator.log",
+    "coord/logs/",
+  ];
   let gitignoreContent = "";
   if (fs.existsSync(gitignorePath)) {
     gitignoreContent = fs.readFileSync(gitignorePath, "utf-8");

@@ -6,12 +6,13 @@ import * as os from "os";
 import { execSync, spawnSync } from "child_process";
 import { loadConfig, OrchestratorConfig } from "./lib/config";
 import { safeKill } from "./lib/process";
+import { readJSON, readJSONL, updateJSON, updateJSONL } from "./lib/locking";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface Config {
   coordDir: string;
-  pollIntervalMs: number;
+  fixedPollIntervalMs?: number; // when set via --poll-interval, disables the adaptive heuristic
   maxRetries: number;
   logFile: string;
 }
@@ -86,44 +87,55 @@ async function runLoop() {
   }
 
   const log = (msg: string) => appendLog(config.logFile, msg);
-  log(`Starting Orchestrator Loop (Polling every ${config.pollIntervalMs}ms)`);
+  if (config.fixedPollIntervalMs) {
+    log(`Starting Orchestrator Loop (fixed poll: ${config.fixedPollIntervalMs}ms)`);
+  } else {
+    log(`Starting Orchestrator Loop (adaptive poll: ${parsedConfig.poll_min_ms}–${parsedConfig.poll_max_ms}ms; backs off when idle)`);
+  }
   log(`Orchestrator CLI: '${parsedConfig.orchestrator_cli}'  |  max restarts: ${parsedConfig.default_max_restarts}  |  CLI failure threshold: ${parsedConfig.claude_failure_threshold}`);
 
   launchDashboard(config, log);
 
   const agentProgress: Record<string, { last_diff: string; last_progress_time: number }> = {};
   let consecutiveCliFailures = 0;
+  let pollMs = parsedConfig.poll_min_ms; // adaptive interval, starts fast on boot
+  const POLL_BACKOFF = 1.5;
 
   while (true) {
+    let cycleHadPending = false;
     try {
       // ── Abort flag (soft stop — preserves worktrees) ─────────────────────
       if (fs.existsSync(path.join(config.coordDir, "abort.flag"))) {
         log("🛑 ABORT SIGNAL RECEIVED. Stopping running agents (worktrees preserved)...");
-        const agents = readJSON<Record<string, AgentEntry>>(paths.agents);
-        for (const name in agents) {
-          if (agents[name].status === "running") {
-            safeKill({ pid: agents[name].pid, expectedCli: agents[name].cli || "kilo", log });
-            agents[name].status = "terminated";
+        const toKill: Array<{ pid: number; cli: string }> = [];
+        updateJSON<Record<string, AgentEntry>>(paths.agents, (agents) => {
+          for (const name in agents) {
+            if (agents[name].status === "running") {
+              toKill.push({ pid: agents[name].pid, cli: agents[name].cli || "kilo" });
+              agents[name].status = "terminated";
+            }
           }
-        }
-        writeJSON(paths.agents, agents);
+        });
+        // Kill outside the lock — the lock's job is to protect agents.json, not gate signals.
+        for (const { pid, cli } of toKill) safeKill({ pid, expectedCli: cli, log });
         log("All running agents stopped. Worktree contents preserved (run `git status` in each worktree to inspect/discard).");
         try { fs.unlinkSync(path.join(config.coordDir, "abort.flag")); } catch {}
         break;
       }
 
       // ── Per-agent liveness + progress checks ─────────────────────────────
-      const agentsForCheck = readJSON<Record<string, AgentEntry>>(paths.agents);
-      let agentsChanged = false;
+      // Snapshot read for diagnostics; each actual mutation takes its own lock.
+      const snapshot = readJSON<Record<string, AgentEntry>>(paths.agents);
 
-      for (const name in agentsForCheck) {
-        if (agentsForCheck[name].status !== "running") continue;
-        const agent = agentsForCheck[name];
+      for (const name in snapshot) {
+        if (snapshot[name].status !== "running") continue;
+        const agent = snapshot[name];
 
         // Process gone? Mark completed and move on.
         if (!isProcessAlive(agent.pid)) {
-          agentsForCheck[name].status = "completed";
-          agentsChanged = true;
+          updateJSON<Record<string, AgentEntry>>(paths.agents, (agents) => {
+            if (agents[name] && agents[name].status === "running") agents[name].status = "completed";
+          });
           log(`ℹ️ Agent ${name} (PID ${agent.pid}) process exited.`);
           continue;
         }
@@ -137,8 +149,9 @@ async function runLoop() {
         if (Date.now() - lastActivity > timeoutMins * 60 * 1000) {
           log(`⏱️ Agent ${name} idle (no log output) for ${timeoutMins} mins. Killing.`);
           safeKill({ pid: agent.pid, expectedCli: agent.cli || "kilo", log });
-          agentsForCheck[name].status = "errored";
-          agentsChanged = true;
+          updateJSON<Record<string, AgentEntry>>(paths.agents, (agents) => {
+            if (agents[name] && agents[name].status === "running") agents[name].status = "errored";
+          });
           continue;
         }
 
@@ -159,7 +172,6 @@ async function runLoop() {
 
           const restarted = bumpRestartAndRespawn({
             name,
-            agents: agentsForCheck,
             instruction: reviewInstruction,
             reason: "progress timeout",
             paths,
@@ -167,24 +179,23 @@ async function runLoop() {
             mode: "soft",
             log,
           });
-          agentsChanged = true;
           if (restarted) tracker.last_progress_time = Date.now();
           continue;
         }
       }
-      if (agentsChanged) writeJSON(paths.agents, agentsForCheck);
 
       // ── Pending requests / arbitration ───────────────────────────────────
       const requests = readJSONL<Request>(paths.requests);
       const pending = requests.filter((p) => p.status === "pending");
 
       if (pending.length > 0) {
+        cycleHadPending = true;
         log(`Found ${pending.length} pending requests.`);
         const context = readJSON<ProjectContext>(paths.context);
         const decisions = readJSON<Decision[]>(paths.decisions);
-        const agents = readJSON<Record<string, AgentEntry>>(paths.agents);
+        const agentsForPrompt = readJSON<Record<string, AgentEntry>>(paths.agents);
 
-        const worktreeStates = collectWorktreeStates(pending, agents);
+        const worktreeStates = collectWorktreeStates(pending, agentsForPrompt);
         const prompt = buildOrchestratorPrompt(pending, context, decisions, worktreeStates);
         const response = callOrchestratorCli(prompt, parsedConfig, config.maxRetries, log);
 
@@ -200,7 +211,7 @@ async function runLoop() {
             clearStalledFlag(config.coordDir, log);
           }
           processActions(response.actions || [], paths, parsedConfig, log);
-          processApprovals(response, paths, decisions, log);
+          processApprovals(response, paths, log);
         }
       } else {
         // ── All-done check ────────────────────────────────────────────────
@@ -214,11 +225,26 @@ async function runLoop() {
         }
       }
 
-      await sleep(config.pollIntervalMs);
+      pollMs = nextPollMs(cycleHadPending);
+      await sleep(pollMs);
     } catch (error: any) {
       log(`Loop Error: ${error.message}`);
-      await sleep(config.pollIntervalMs);
+      // On error, fall back to min interval — usually transient and we want to recover quickly.
+      pollMs = config.fixedPollIntervalMs ?? parsedConfig.poll_min_ms;
+      await sleep(pollMs);
     }
+  }
+
+  // Single-use helper — only called from the main while loop above.
+  // Picks the next sleep based on whether this cycle saw pending requests:
+  //   • fixed override wins if --poll-interval was set
+  //   • pending found → reset to min (stay responsive while batch is being worked through)
+  //   • idle cycle  → multiply by POLL_BACKOFF, capped at max
+  function nextPollMs(activeCycle: boolean): number {
+    if (config.fixedPollIntervalMs) return config.fixedPollIntervalMs;
+    if (activeCycle) return parsedConfig.poll_min_ms;
+    const next = Math.round(pollMs * POLL_BACKOFF);
+    return Math.min(next, parsedConfig.poll_max_ms);
   }
 
   // ── Inner helpers ──────────────────────────────────────────────────────
@@ -249,22 +275,22 @@ async function runLoop() {
       const action: OrchestratorAction = rawAction.type === "restart_agent" ? { ...rawAction, type: "soft_restart" } : rawAction;
 
       if (action.type === "end_agent") {
-        const agents = readJSON<Record<string, AgentEntry>>(paths.agents);
-        if (!agents[action.agent]) continue;
-        const agent = agents[action.agent];
+        const snapshot = readJSON<Record<string, AgentEntry>>(paths.agents)[action.agent];
+        if (!snapshot) continue;
 
-        const validation = runValidation(agent, log);
+        const validation = runValidation(snapshot, log);
         if (validation.passed) {
-          safeKill({ pid: agent.pid, expectedCli: agent.cli || "kilo", log });
-          agents[action.agent].status = "completed";
-          agents[action.agent].last_heartbeat = new Date().toISOString();
-          writeJSON(paths.agents, agents);
+          safeKill({ pid: snapshot.pid, expectedCli: snapshot.cli || "kilo", log });
+          updateJSON<Record<string, AgentEntry>>(paths.agents, (agents) => {
+            if (!agents[action.agent]) return;
+            agents[action.agent].status = "completed";
+            agents[action.agent].last_heartbeat = new Date().toISOString();
+          });
           log(`Agent ${action.agent} completed successfully.`);
         } else {
           log(`Validation failed for ${action.agent} — converting to soft_restart.`);
           bumpRestartAndRespawn({
             name: action.agent,
-            agents,
             instruction: `Validation failed! Please fix the errors:\n\n${validation.log}`,
             reason: "validation failure",
             paths,
@@ -277,12 +303,8 @@ async function runLoop() {
       }
 
       if (action.type === "soft_restart" || action.type === "hard_restart") {
-        const agents = readJSON<Record<string, AgentEntry>>(paths.agents);
-        if (!agents[action.agent]) continue;
-
         bumpRestartAndRespawn({
           name: action.agent,
-          agents,
           instruction: action.instruction,
           reason: action.type,
           paths,
@@ -294,10 +316,12 @@ async function runLoop() {
     }
   }
 
-  // Mutates `agents`, writes agents.json, and respawns. Returns true if respawned.
+  // Atomically updates the agent's restart_count / status in agents.json, then performs
+  // the side effects (kill, recovery/WIP-commit, subprocess respawn) OUTSIDE the lock so
+  // we never hold the lock across a subprocess (which would deadlock on spawn-agent's own
+  // updateJSON write).
   function bumpRestartAndRespawn(args: {
     name: string;
-    agents: Record<string, AgentEntry>;
     instruction: string | undefined;
     reason: string;
     paths: ReturnType<typeof getPaths>;
@@ -305,24 +329,75 @@ async function runLoop() {
     mode: "soft" | "hard";
     log: (msg: string) => void;
   }): boolean {
-    const { name, agents, instruction, reason, paths, parsedConfig, mode, log } = args;
-    const agent = agents[name];
-    if (!agent) return false;
+    const { name, instruction, reason, paths, parsedConfig, mode, log } = args;
 
-    const cliTool = agent.cli || parsedConfig.default_cli;
-    safeKill({ pid: agent.pid, expectedCli: cliTool, log });
+    type Outcome =
+      | { kind: "missing" }
+      | { kind: "terminated"; pid: number; cliTool: string; worktree: string }
+      | { kind: "errored"; pid: number; cliTool: string; worktree: string }
+      | { kind: "respawn"; pid: number; cliTool: string; worktree: string; kiloMode: string; attempt: number };
+    // Wrapped in `{ value }` so TS doesn't narrow the let to its initializer through the closure boundary.
+    const outcomeRef: { value: Outcome } = { value: { kind: "missing" } };
 
-    if (fs.existsSync(agent.worktree)) {
+    updateJSON<Record<string, AgentEntry>>(paths.agents, (agents) => {
+      const agent = agents[name];
+      if (!agent) return;
+
+      const cliTool = agent.cli || parsedConfig.default_cli;
+
+      if (!instruction) {
+        agents[name].status = "terminated";
+        outcomeRef.value = { kind: "terminated", pid: agent.pid, cliTool, worktree: agent.worktree };
+        return;
+      }
+
+      const nextCount = (agent.restart_count ?? 0) + 1;
+      const maxRestarts = parsedConfig.default_max_restarts;
+      if (nextCount > maxRestarts) {
+        agents[name].status = "errored";
+        agents[name].task = `Exhausted ${maxRestarts} restart attempts (${reason}). Last instruction: ${instruction.slice(0, 200)}`;
+        outcomeRef.value = { kind: "errored", pid: agent.pid, cliTool, worktree: agent.worktree };
+        return;
+      }
+
+      agents[name].restart_count = nextCount;
+      agents[name].task = instruction;
+      outcomeRef.value = {
+        kind: "respawn",
+        pid: agent.pid,
+        cliTool,
+        worktree: agent.worktree,
+        kiloMode: agent.kilo_mode,
+        attempt: nextCount,
+      };
+    });
+
+    const outcome = outcomeRef.value;
+    if (outcome.kind === "missing") return false;
+
+    // Side effects below the lock — none of these should re-enter updateJSON on the same file.
+    safeKill({ pid: outcome.pid, expectedCli: outcome.cliTool, log });
+
+    if (outcome.kind === "terminated") {
+      log(`Agent ${name} terminated (no follow-up instruction).`);
+      return false;
+    }
+    if (outcome.kind === "errored") {
+      log(`⚠️ Agent ${name} exceeded ${parsedConfig.default_max_restarts} restarts (${reason}). Marking errored, not respawning.`);
+      return false;
+    }
+
+    // Worktree mutations (orthogonal to agents.json).
+    if (fs.existsSync(outcome.worktree)) {
       if (mode === "hard") {
-        const tag = captureRecoveryAndReset(agent.worktree, name, log);
+        const tag = captureRecoveryAndReset(outcome.worktree, name, log);
         if (tag) log(`Hard restart: wiped worktree but preserved state at tag ${tag}.`);
         else log(`Hard restart: worktree was already clean.`);
       } else {
-        // Soft restart: WIP-commit current work in place so respawned agent sees it.
         try {
-          execSync(`git add .`, { cwd: agent.worktree });
+          execSync(`git add .`, { cwd: outcome.worktree });
           try {
-            execSync(`git commit -m "WIP: orchestrator intervention (${reason})"`, { cwd: agent.worktree, stdio: "ignore" });
+            execSync(`git commit -m "WIP: orchestrator intervention (${reason})"`, { cwd: outcome.worktree, stdio: "ignore" });
           } catch {
             log(`No changes to commit for soft_restart on ${name}.`);
           }
@@ -332,61 +407,39 @@ async function runLoop() {
       }
     }
 
-    if (!instruction) {
-      // No new instruction means terminate, not restart.
-      agents[name].status = "terminated";
-      writeJSON(paths.agents, agents);
-      log(`Agent ${name} terminated (no follow-up instruction).`);
-      return false;
-    }
-
-    // Restart cap.
-    const nextCount = (agent.restart_count ?? 0) + 1;
-    const maxRestarts = parsedConfig.default_max_restarts;
-    if (nextCount > maxRestarts) {
-      agents[name].status = "errored";
-      agents[name].task = `Exhausted ${maxRestarts} restart attempts (${reason}). Last instruction: ${instruction.slice(0, 200)}`;
-      writeJSON(paths.agents, agents);
-      log(`⚠️ Agent ${name} exceeded ${maxRestarts} restarts (${reason}). Marking errored, not respawning.`);
-      return false;
-    }
-
-    agents[name].restart_count = nextCount;
-    agents[name].task = instruction;
-    writeJSON(paths.agents, agents); // persist count BEFORE spawn so spawn-agent preserves it
-
-    const respawned = respawnAgent({ name, agent: agents[name], cliTool, instruction, paths, log });
-
-    // spawn-agent writes its own update (pid, status="running") to agents.json.
-    // Pull that fresh entry back into the caller's view so any subsequent bulk-write
-    // by the iteration loop doesn't clobber the new pid/status.
-    try {
-      const fresh = readJSON<Record<string, AgentEntry>>(paths.agents);
-      if (fresh[name]) agents[name] = fresh[name];
-    } catch {}
-
-    return respawned;
+    return respawnAgent({
+      name,
+      kiloMode: outcome.kiloMode,
+      cliTool: outcome.cliTool,
+      attempt: outcome.attempt,
+      maxAttempts: parsedConfig.default_max_restarts,
+      instruction: instruction!,
+      paths,
+      log,
+    });
   }
 
   function respawnAgent(args: {
     name: string;
-    agent: AgentEntry;
+    kiloMode: string;
     cliTool: string;
+    attempt: number;
+    maxAttempts: number;
     instruction: string;
     paths: ReturnType<typeof getPaths>;
     log: (msg: string) => void;
   }): boolean {
-    const { name, agent, cliTool, instruction, paths, log } = args;
+    const { name, kiloMode, cliTool, attempt, maxAttempts, instruction, paths, log } = args;
     const promptFile = path.join(os.tmpdir(), `prompt-${name}-${Date.now()}.txt`);
     fs.writeFileSync(promptFile, instruction, "utf-8");
-    log(`Respawning agent ${name} using ${cliTool} (attempt ${agent.restart_count}/${loadConfig().default_max_restarts})...`);
+    log(`Respawning agent ${name} using ${cliTool} (attempt ${attempt}/${maxAttempts})...`);
     try {
       const npxCmd = process.platform === "win32" ? "npx.cmd" : "npx";
       spawnSync(npxCmd, [
         "ts-node",
         path.join(__dirname, "spawn-agent.ts"),
         "--agent", name,
-        "--mode", agent.kilo_mode,
+        "--mode", kiloMode,
         "--prompt-file", promptFile,
         "--coord", path.dirname(paths.agents),
         "--cli", cliTool,
@@ -400,43 +453,49 @@ async function runLoop() {
     }
   }
 
+  // Atomically marks resolved/rejected requests in requests.jsonl and appends decisions.
+  // The merge happens inside the lock, so worker appends that arrived during the
+  // arbitration call (slow CLI) are preserved.
   function processApprovals(
     response: OrchestratorResponse,
     paths: ReturnType<typeof getPaths>,
-    decisions: Decision[],
     log: (msg: string) => void,
   ) {
-    const currentRequests = readJSONL<Request>(paths.requests);
-    let modified = false;
+    const decisionsToAdd: Decision[] = [];
 
-    for (const approved of response.approved || []) {
-      const req = currentRequests.find((p) => p.request_id === approved.request_id);
-      if (req) {
-        req.status = "resolved";
-        modified = true;
-        decisions.push({
-          request_id: approved.request_id,
-          decision: approved.decision,
-          reason: approved.reason,
-          resolved_at: new Date().toISOString(),
-        });
-        log(`Approved Request ${approved.request_id}: ${approved.decision}`);
+    updateJSONL<Request>(paths.requests, (current) => {
+      for (const approved of response.approved || []) {
+        const req = current.find((p) => p.request_id === approved.request_id);
+        if (req) {
+          req.status = "resolved";
+          decisionsToAdd.push({
+            request_id: approved.request_id,
+            decision: approved.decision,
+            reason: approved.reason,
+            resolved_at: new Date().toISOString(),
+          });
+          log(`Approved Request ${approved.request_id}: ${approved.decision}`);
+        }
       }
-    }
-    for (const rejected of response.rejected || []) {
-      const req = currentRequests.find((p) => p.request_id === rejected.request_id);
-      if (req) {
-        req.status = "rejected";
-        modified = true;
-        log(`Rejected Request ${rejected.request_id}: ${rejected.reason}`);
+      for (const rejected of response.rejected || []) {
+        const req = current.find((p) => p.request_id === rejected.request_id);
+        if (req) {
+          req.status = "rejected";
+          log(`Rejected Request ${rejected.request_id}: ${rejected.reason}`);
+        }
       }
-    }
-    if (decisions.length > 30) {
-      log(`Archiving ${decisions.length - 30} old decisions to save tokens.`);
-      decisions.splice(0, decisions.length - 30);
-    }
-    if (modified) writeJSONL(paths.requests, currentRequests);
-    writeJSON(paths.decisions, decisions);
+    });
+
+    if (decisionsToAdd.length === 0) return;
+
+    updateJSON<Decision[]>(paths.decisions, (decisions) => {
+      decisions.push(...decisionsToAdd);
+      if (decisions.length > 30) {
+        const archive = decisions.length - 30;
+        log(`Archiving ${archive} old decisions to save tokens.`);
+        decisions.splice(0, archive);
+      }
+    });
   }
 }
 
@@ -446,13 +505,12 @@ function parseArgs(): Config {
   const args = process.argv.slice(2);
   const config: Config = {
     coordDir: "./coord",
-    pollIntervalMs: 5000,
     maxRetries: 3,
     logFile: "coord/orchestrator.log",
   };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--coord") config.coordDir = args[++i];
-    if (args[i] === "--poll-interval") config.pollIntervalMs = parseInt(args[++i], 10);
+    if (args[i] === "--poll-interval") config.fixedPollIntervalMs = parseInt(args[++i], 10);
   }
   return config;
 }
@@ -470,24 +528,6 @@ function getPaths(coordDir: string) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function readJSON<T>(filePath: string): T {
-  return JSON.parse(fs.readFileSync(filePath, "utf-8"));
-}
-
-function readJSONL<T>(filePath: string): T[] {
-  if (!fs.existsSync(filePath)) return [];
-  return fs.readFileSync(filePath, "utf-8").split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
-}
-
-function writeJSON<T>(filePath: string, data: T): void {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n");
-}
-
-function writeJSONL<T>(filePath: string, data: T[]): void {
-  const content = data.map((item) => JSON.stringify(item)).join("\n") + (data.length > 0 ? "\n" : "");
-  fs.writeFileSync(filePath, content);
 }
 
 function appendLog(logFile: string, message: string): void {

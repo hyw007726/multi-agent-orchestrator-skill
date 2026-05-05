@@ -8,6 +8,7 @@ import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { loadConfig } from "./lib/config";
+import { updateJSON } from "./lib/locking";
 
 interface SpawnArgs {
   agent: string;
@@ -71,28 +72,26 @@ function spawnAgent() {
   console.log(`✓ Logging output to ${logFile}`);
 
   const agentsFile = path.resolve(config.coordDir, "agents.json");
-  const agents: any = fs.existsSync(agentsFile)
-    ? JSON.parse(fs.readFileSync(agentsFile, "utf-8"))
-    : {};
+  if (!fs.existsSync(agentsFile)) fs.writeFileSync(agentsFile, "{}\n");
 
-  const existing = agents[config.agent];
-  agents[config.agent] = {
-    task: existing?.task ?? "Initial prompt",
-    status: "running",
-    worktree,
-    cli: config.cli,
-    kilo_mode: config.mode,
-    pid: child.pid,
-    started_at: existing?.started_at ?? new Date().toISOString(),
-    last_heartbeat: new Date().toISOString(),
-    validate_cmd: config.validateCmd,
-    timeout_mins: config.timeoutMins,
-    progress_timeout_mins: config.progressTimeoutMins,
-    max_iterations: config.maxIterations,
-    restart_count: existing?.restart_count ?? 0,
-  };
-
-  fs.writeFileSync(agentsFile, JSON.stringify(agents, null, 2) + "\n");
+  updateJSON<Record<string, any>>(agentsFile, (agents) => {
+    const existing = agents[config.agent];
+    agents[config.agent] = {
+      task: existing?.task ?? "Initial prompt",
+      status: "running",
+      worktree,
+      cli: config.cli,
+      kilo_mode: config.mode,
+      pid: child.pid,
+      started_at: existing?.started_at ?? new Date().toISOString(),
+      last_heartbeat: new Date().toISOString(),
+      validate_cmd: config.validateCmd,
+      timeout_mins: config.timeoutMins,
+      progress_timeout_mins: config.progressTimeoutMins,
+      max_iterations: config.maxIterations,
+      restart_count: existing?.restart_count ?? 0,
+    };
+  });
   console.log(`✓ Registered agent in ${agentsFile}`);
 }
 
