@@ -73,7 +73,7 @@ Next, evaluate whether the user's overall task is suitable for multi-agent orche
 If proceeding:
 1. Break the work down into non-overlapping agent boundaries.
 2. Explicitly map out what files each agent is allowed to touch.
-3. Determine a `validation_command` for each agent (e.g., `npm run test -- <path>`, `npm run build`, `tsc`, or `null` if no automated validation is possible/needed).
+3. Determine a `validation_command` for each agent. **Prefer JSON-argv form** so the loop can run it with no shell expansion (e.g. `--validate '["npm","run","test","--","src/foo"]'`); fall back to a shell string only when you need pipes / `&&` / env expansion (e.g. `--validate "npm run lint && npm test"`). Use `null` if no automated validation is possible/needed.
 4. Prepare a mapping of agent names to their task descriptions.
 
 ## Phase 2 — Bootstrap
@@ -135,7 +135,7 @@ For each agent:
      --mode <mode> \
      --prompt-file /tmp/prompt-<agent-name>.txt \
      --coord ./coord \
-     --validate "<validation_command>" \
+     --validate '<validation_command>' \   # JSON argv (e.g. '["npm","test"]') is preferred over a shell string
      --timeout <timeout_mins> \
      --progress-timeout <progress_timeout_mins> \
      --max-iterations <max_iterations> \

@@ -16,7 +16,7 @@ interface SpawnArgs {
   coordDir: string;
   cli: string;
   extraArgs: string[];
-  validateCmd?: string;
+  validateCmd?: string | string[];
   timeoutMins?: number;
   progressTimeoutMins?: number;
   maxIterations?: number;
@@ -122,7 +122,7 @@ function parseArgs(): SpawnArgs {
       case "--prompt-file": config.promptFile = args[++i]; break;
       case "--coord": config.coordDir = args[++i]; break;
       case "--cli": config.cli = args[++i]; break;
-      case "--validate": config.validateCmd = args[++i]; break;
+      case "--validate": config.validateCmd = parseValidateArg(args[++i]); break;
       case "--timeout": config.timeoutMins = parseInt(args[++i], 10); break;
       case "--progress-timeout": config.progressTimeoutMins = parseInt(args[++i], 10); break;
       case "--max-iterations": config.maxIterations = parseInt(args[++i], 10); break;
@@ -134,6 +134,19 @@ function parseArgs(): SpawnArgs {
     process.exit(1);
   }
   return config;
+
+  // Accepts either a JSON array of argv strings (preferred — no shell expansion) or a raw shell
+  // command string (legacy). The argv form lets the loop run validation with shell:false.
+  function parseValidateArg(raw: string): string | string[] {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) return parsed;
+      } catch {}
+    }
+    return raw;
+  }
 }
 
 // Shared — used only by spawnAgent above when no CLI template is configured.

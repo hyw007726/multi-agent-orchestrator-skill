@@ -42,7 +42,7 @@ interface AgentEntry {
   pid: number;
   started_at: string;
   last_heartbeat: string;
-  validate_cmd?: string;
+  validate_cmd?: string | string[];
   timeout_mins?: number;
   progress_timeout_mins?: number;
   max_iterations?: number;
@@ -560,18 +560,37 @@ function captureRecoveryAndReset(worktree: string, agent: string, log: (msg: str
   }
 }
 
+// Runs the agent's validation command in its worktree. Two forms are accepted:
+//   • argv array (e.g. ["npm", "run", "test"]) — runs with shell:false, no expansion, no injection surface.
+//   • shell string (e.g. "npm run test -- src") — runs through /bin/sh -c, retained for ergonomics
+//     (pipes, &&, env vars). Logged as "(shell form)" so the trust requirement stays visible.
 function runValidation(agent: AgentEntry, log: (msg: string) => void): { passed: boolean; log: string } {
-  if (!agent.validate_cmd || agent.validate_cmd === "null") return { passed: true, log: "" };
-  log(`Running validation: ${agent.validate_cmd}`);
-  try {
-    execSync(agent.validate_cmd, { cwd: agent.worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
-    log(`Validation passed.`);
-    return { passed: true, log: "" };
-  } catch (err: any) {
-    const out = (err.stdout || "") + "\n" + (err.stderr || err.message || "");
-    log(`Validation failed.`);
+  const cmd = agent.validate_cmd;
+  if (!cmd || cmd === "null") return { passed: true, log: "" };
+  if (Array.isArray(cmd) && cmd.length === 0) return { passed: true, log: "" };
+
+  const isArgv = Array.isArray(cmd);
+  log(`Running validation${isArgv ? "" : " (shell form)"}: ${isArgv ? (cmd as string[]).join(" ") : cmd}`);
+
+  const result = isArgv
+    ? spawnSync((cmd as string[])[0], (cmd as string[]).slice(1), {
+        cwd: agent.worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], shell: false,
+      })
+    : spawnSync(cmd as string, {
+        cwd: agent.worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], shell: true,
+      });
+
+  if (result.error) {
+    log(`Validation invocation failed: ${result.error.message}`);
+    return { passed: false, log: result.error.message };
+  }
+  if (result.status !== 0) {
+    const out = (result.stdout || "") + "\n" + (result.stderr || "");
+    log(`Validation failed (exit ${result.status}).`);
     return { passed: false, log: out };
   }
+  log(`Validation passed.`);
+  return { passed: true, log: "" };
 }
 
 function collectWorktreeStates(pending: Request[], agents: Record<string, AgentEntry>): Record<string, string> {
