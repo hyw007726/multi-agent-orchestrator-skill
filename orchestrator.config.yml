@@ -40,8 +40,21 @@ default_cli: kilo
 cli_templates:
   kilo: "kilo \"$(cat {prompt_file})\" --auto"
   aider: "aider --message-file {prompt_file} --yes"
-  claude: "claude -p \"$(cat {prompt_file})\" --dangerously-skip-permissions"
+  # claude is the one CLI that NEEDS --model pinned in this template. The other CLIs
+  # (kilo / aider / gemini / codex / opencode) read their model from their own
+  # independent config — env vars, BYOK providers, model files — so spawning them
+  # as workers picks up the user's existing setup. The `claude` CLI is different:
+  # without --model, the spawned worker silently inherits the model of the parent
+  # Claude Code session running this skill — typically Opus 4.7 (your "starter"
+  # orchestrator session's model), which is far too expensive for bulk worker coding.
+  # Pinning Sonnet 4.6 here keeps workers on a fast, cheap, capable model regardless
+  # of what your interactive orchestrator session is using. Swap the id for a
+  # different one (claude-haiku-4-5-20251001 to go even cheaper, or claude-opus-4-7
+  # if you want this template to double as `orchestrator_cli`).
+  claude: "claude -p \"$(cat {prompt_file})\" --dangerously-skip-permissions --model claude-sonnet-4-6"
   gemini: "gemini --prompt \"$(cat {prompt_file})\" --yolo"
+  codex: "codex --exec \"$(cat {prompt_file})\""
+  opencode: "opencode run \"$(cat {prompt_file})\" --yes"
 
 # Health-check probes used by `scripts/preflight.ts` to fail fast when a CLI
 # isn't installed or is hanging on an interactive prompt. Defaults to

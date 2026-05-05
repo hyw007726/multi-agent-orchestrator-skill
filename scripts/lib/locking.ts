@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as path from "path";
 import * as lockfile from "proper-lockfile";
 
 // Lock acquisition: spin briefly, give up after ~10s. `stale` covers a holder
@@ -7,6 +8,46 @@ const LOCK_OPTS: lockfile.LockOptions = {
   retries: { retries: 20, factor: 1.3, minTimeout: 50, maxTimeout: 1000 },
   stale: 30000,
 };
+
+// Long-lived advisory lock taken once per orchestrator-loop process to make a second
+// `nohup ... orchestrator-loop.ts --coord <same-dir>` invocation refuse to start
+// instead of racing the first one (both arbitrating the same requests, both
+// respawning the same agents, restart counts double-bumping). Held for the full
+// lifetime of the loop; released on graceful exit and on SIGINT/SIGTERM.
+//
+// Returns a release function — proper-lockfile's `stale` option (60s) lets the
+// next invocation take over automatically if the prior loop SIGKILL'd without
+// running its teardown.
+export function acquireInstanceLock(coordDir: string): { release: () => void; markerPath: string } {
+  const instanceFile = path.join(coordDir, "orchestrator.instance");
+  if (!fs.existsSync(instanceFile)) fs.writeFileSync(instanceFile, "");
+  try {
+    const release = lockfile.lockSync(instanceFile, {
+      retries: 0,        // fail immediately so a second loop sees a clear error
+      stale: 60_000,     // recover from a hard-killed predecessor after 60s
+      realpath: false,
+    });
+    return {
+      markerPath: instanceFile,
+      release: () => {
+        try { release(); } catch {}
+      },
+    };
+  } catch (err: any) {
+    if (err && err.code === "ELOCKED") {
+      const lockMarker = `${instanceFile}.lock`;
+      console.error(
+        `Another orchestrator loop is already running on '${coordDir}'.\n` +
+        `Refusing to start a second instance — concurrent loops would double-arbitrate ` +
+        `pending requests and double-bump restart counts on the same agents.\n\n` +
+        `If you're certain no other loop is running (e.g. it crashed without cleanup), ` +
+        `remove the stale lock marker:  rm -rf '${lockMarker}'`,
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
+}
 
 // Atomic read-modify-write of a JSON file. The mutator may either mutate `data`
 // in place or return a new value. The lock is held only for the duration of the

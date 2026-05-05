@@ -74,12 +74,21 @@ function bootstrap(config: BootstrapArgs): void {
     fs.mkdirSync(coordDir, { recursive: true });
   }
 
+  // Schema (see references/schemas.md):
+  //   chat_context: structured object — { preferences, architecture, naming_conventions, gotchas, ... }
+  //   tasks:        Record<agent-name, { description, timeout_mins?, progress_timeout_mins?, max_iterations? }>
+  // The orchestrator session is expected to populate both via the Edit tool between Phase 2 and Phase 4.
+  // For backwards compatibility, a legacy `--chat-context "<string>"` is wrapped under a `summary` key
+  // so callers that still pass a flat string continue to produce a valid object-shaped context.
+  const chat_context = chatContext.trim() === "" ? {} : { summary: chatContext };
+
   const context = {
     project,
-    chat_context: chatContext,
+    chat_context,
     requirements,
     constraints,
     created_at: new Date().toISOString(),
+    tasks: {},
   };
   fs.writeFileSync(path.join(coordDir, "context.json"), JSON.stringify(context, null, 2) + "\n");
 
@@ -121,6 +130,11 @@ If priority is \`high\`, STOP WORKING and wait for the orchestrator to update \`
     "coord/orchestrator-loop.out",
     "coord/orchestrator.log",
     "coord/logs/",
+    // proper-lockfile creates `<file>.lock` marker directories during RMW operations and the
+    // long-lived `coord/orchestrator.instance.lock` for the singleton lock — none of these are
+    // committable state.
+    "coord/*.lock/",
+    "coord/orchestrator.instance",
   ];
   let gitignoreContent = "";
   if (fs.existsSync(gitignorePath)) {

@@ -28,8 +28,10 @@ Before using this skill, ensure you have:
 > **Model Selection Strategy:** Use a powerful reasoning model for your interactive Orchestrator sessions (Contexts 1 & 3) and for the `orchestrator_cli` so request arbitration stays sound. Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for the bulk coding and the cheap monitor calls. If you want monitoring to be even cheaper, point `orchestrator_cli` at a fast worker too — the system will respect whichever CLI you configure.
 >
 > **How to pin a model:** Two patterns depending on the CLI.
-> - **Inline-flag CLIs** (claude, aider, gemini): model selection is part of `cli_templates`. The template string is what gets executed verbatim, so add the CLI's model flag inline — e.g. `claude -p ... --dangerously-skip-permissions --model claude-haiku-4-5-20251001` for Haiku, or `aider ... --model gpt-4o-mini`.
+> - **Inline-flag CLIs** (claude, aider, gemini): model selection is part of `cli_templates`. The template string is what gets executed verbatim, so add the CLI's model flag inline — e.g. `claude -p ... --dangerously-skip-permissions --model claude-sonnet-4-6` for Sonnet, or `aider ... --model gpt-4o-mini`.
 > - **External-config CLIs** (kilo, opencode, codex): model selection lives in the CLI's own settings (BYOK provider + model picker), not the template. The template stays simple; the model is whatever the user has configured in that CLI.
+>
+> **`claude` is the one CLI where pinning is effectively required, not optional.** The other inline-flag CLIs (aider, gemini) read their model from independent config (env vars, model files), so a worker spawn picks up the user's existing setup. `claude` is different — without `--model`, the spawned worker silently inherits the model of the parent Claude Code session running this skill (typically Opus 4.7 if you launched from an Opus orchestrator session), routing bulk worker coding to the orchestrator's expensive reasoning model. The shipped `cli_templates.claude` already pins Sonnet 4.6 for this reason.
 >
 > There is intentionally no separate `default_model` config key, because each CLI uses different flag names and model-id namespaces (and some don't take a flag at all), so keeping it close to the actual mechanism avoids a leaky aliasing layer.
 >
@@ -60,8 +62,10 @@ default_cli: kilo
 cli_templates:
   kilo: "kilo \"$(cat {prompt_file})\" --auto"
   aider: "aider --message-file {prompt_file} --yes"
-  claude: "claude -p \"$(cat {prompt_file})\" --dangerously-skip-permissions"
+  claude: "claude -p \"$(cat {prompt_file})\" --dangerously-skip-permissions --model claude-sonnet-4-6"
   gemini: "gemini --prompt \"$(cat {prompt_file})\" --yolo"
+  codex: "codex --exec \"$(cat {prompt_file})\""
+  opencode: "opencode run \"$(cat {prompt_file})\" --yes"
 ```
 
 If the file does not exist, you MUST dynamically evaluate the overall size and complexity of the user's project to determine sensible default bounds (e.g., a simple script might only need a 5-minute progress timeout and 3 iterations, while a complex React app might need a 20-minute progress timeout and 10 iterations). You can also offer to create this config file for the user so they can explicitly customize their workflow bounds in the future!
@@ -112,6 +116,8 @@ Because the orchestrator loop runs after your Claude CLI session is done, it has
 
 You should also include the tasks you generated in Phase 1 under the `"tasks"` key.
 
+`bootstrap.ts` only scaffolds an empty skeleton (`chat_context: {}`, `tasks: {}`). After running it, use the `Edit` tool to fill `context.json` with the structured shape below before you spawn any workers.
+
 ```json
 {
   "project": "<one-line description of the user's task>",
@@ -159,7 +165,7 @@ For each agent:
      --timeout <timeout_mins> \
      --progress-timeout <progress_timeout_mins> \
      --max-iterations <max_iterations> \
-     --cli <cli-name> # Optional: e.g. aider, claude. Defaults to kilo.
+     --cli <cli-name> # Optional: e.g. aider, claude. Defaults to `default_cli` from orchestrator.config.yml (kilo if unset).
    ```
 
 > **💡 Tip for Kilo Code Users:** Because the agents are physically spawned inside the `.kilocode/worktrees/` directory path by default, they will automatically appear in your **Kilo Code Agent Manager UI** inside VS Code! You can monitor the specific files they are editing in real-time natively in your IDE.

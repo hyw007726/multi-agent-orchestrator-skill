@@ -6,7 +6,7 @@ import * as os from "os";
 import { execSync, spawnSync } from "child_process";
 import { loadConfig, OrchestratorConfig } from "./lib/config";
 import { safeKill } from "./lib/process";
-import { readJSON, readJSONL, updateJSON, updateJSONL } from "./lib/locking";
+import { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL } from "./lib/locking";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -63,13 +63,28 @@ interface OrchestratorResponse {
   actions: OrchestratorAction[];
 }
 
+// Per-agent task entry under context.tasks. Matches the structure SKILL.md instructs the
+// orchestrator session to write in Phase 2. The loop never reads individual fields itself
+// (it just JSON-stringifies `context` into the arbitration prompt), so additional keys are
+// permitted — but `description` is what makes the entry meaningful to the orchestrator CLI.
+interface ProjectContextTask {
+  description: string;
+  timeout_mins?: number;
+  progress_timeout_mins?: number;
+  max_iterations?: number;
+  [key: string]: unknown;
+}
+
 interface ProjectContext {
   project: string;
-  chat_context?: string;
+  // Structured object form per SKILL.md Phase 2 (preferences / architecture / naming_conventions / gotchas).
+  // Typed as Record<string, unknown> because the keys are advisory, not enforced — the loop only
+  // serializes the whole thing into the arbitration prompt.
+  chat_context?: Record<string, unknown>;
   requirements: string[];
   constraints: string[];
   created_at: string;
-  tasks?: Record<string, string>;
+  tasks?: Record<string, ProjectContextTask>;
 }
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
@@ -86,6 +101,20 @@ async function runLoop() {
     process.exit(1);
   }
 
+  // Refuse to start a second loop on the same coord/. Held for the full run; released
+  // on every teardown path below. proper-lockfile's `stale` option recovers automatically
+  // if a prior loop was SIGKILL'd without running its teardown.
+  const instanceLock = acquireInstanceLock(config.coordDir);
+  const releaseInstanceLock = () => { instanceLock.release(); };
+  process.once("SIGTERM", () => { releaseInstanceLock(); process.exit(0); });
+  process.once("SIGINT",  () => { releaseInstanceLock(); process.exit(0); });
+  process.once("beforeExit", releaseInstanceLock);
+  process.once("uncaughtException", (err) => {
+    console.error(err);
+    releaseInstanceLock();
+    process.exit(1);
+  });
+
   const log = (msg: string) => appendLog(config.logFile, msg);
   if (config.fixedPollIntervalMs) {
     log(`Starting Orchestrator Loop (fixed poll: ${config.fixedPollIntervalMs}ms)`);
@@ -93,6 +122,7 @@ async function runLoop() {
     log(`Starting Orchestrator Loop (adaptive poll: ${parsedConfig.poll_min_ms}–${parsedConfig.poll_max_ms}ms; backs off when idle)`);
   }
   log(`Orchestrator CLI: '${parsedConfig.orchestrator_cli}'  |  max restarts: ${parsedConfig.default_max_restarts}  |  CLI failure threshold: ${parsedConfig.claude_failure_threshold}`);
+  log(`Acquired singleton lock on ${instanceLock.markerPath} (PID ${process.pid}).`);
 
   launchDashboard(config, log);
 
@@ -234,6 +264,12 @@ async function runLoop() {
       await sleep(pollMs);
     }
   }
+
+  // Natural exit (abort flag handled, or all agents done + finalized). Release the singleton
+  // lock explicitly — beforeExit covers most cases, but doing it here is robust against
+  // node's lifecycle quirks and makes the marker disappear immediately when the loop ends.
+  releaseInstanceLock();
+  log(`Released singleton lock on ${instanceLock.markerPath}.`);
 
   // Single-use helper — only called from the main while loop above.
   // Picks the next sleep based on whether this cycle saw pending requests:

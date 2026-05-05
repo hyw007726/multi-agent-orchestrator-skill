@@ -1,18 +1,38 @@
 # Orchestrator Shared State Schemas
 
 ## context.json
+Written by the orchestrator session in Phase 2. The orchestrator CLI sees this
+verbatim (JSON-stringified) on every arbitration call, so this is where you
+encode anything the headless background loop won't otherwise know.
+
 ```json
 {
   "project": "string — one-line project description",
-  "chat_context": "string — compacted summary of original conversation context and user preferences",
+  "chat_context": {
+    "preferences": ["string — e.g. 'Use explicit typing'"],
+    "architecture": ["string — e.g. 'MVVM pattern', 'Redux for state'"],
+    "naming_conventions": ["string — e.g. 'camelCase for variables'"],
+    "gotchas": ["string — e.g. 'User is on Node 18, no top-level await'"]
+  },
   "requirements": ["string — each requirement"],
   "constraints": ["string — each constraint"],
   "created_at": "ISO 8601 timestamp",
   "tasks": {
-    "agent-name": "string — task description (added during decomposition)"
+    "agent-name": {
+      "description": "string — what this agent is allowed to build",
+      "timeout_mins": "integer | omitted — overrides default_timeout_mins",
+      "progress_timeout_mins": "integer | omitted — overrides default_progress_timeout_mins",
+      "max_iterations": "integer | omitted — overrides default_max_iterations"
+    }
   }
 }
 ```
+
+`bootstrap.ts` initializes `chat_context` and `tasks` as empty objects (or wraps
+a `--chat-context` string as `{ "summary": "<string>" }` for backward compat);
+the orchestrator session is expected to use the `Edit` tool to populate them
+between Phase 2 and Phase 4. The keys under `chat_context` are advisory — the
+loop only serializes the whole object into the arbitration prompt.
 
 ## decisions.json
 ```json

@@ -8,7 +8,7 @@ We are building: {PROJECT_DESCRIPTION}
 Read `coord/context.json` for full requirements and constraints.
 
 ## Your Constraints
-1. **Isolated Workspace**: You are operating in your own git worktree (`.kilocode/worktrees/{AGENT_NAME}`).
+1. **Isolated Workspace**: You are operating in your own git worktree at `{WORKTREE_PATH}` (e.g. `.kilocode/worktrees/{AGENT_NAME}` for kilo workers, `.agents/worktrees/{AGENT_NAME}` otherwise — substitute the real path when generating the prompt).
 2. **Path Restrictions**: To prevent merge conflicts, you MUST respect these path constraints.
    - **ALLOWED PATHS**: {ALLOWED_PATHS_LIST} (You may freely create/edit files here)
    - **FORBIDDEN PATHS**: {FORBIDDEN_PATHS_LIST} (e.g. package.json, shared types, configurations. Assume the orchestrator has already handled these. Do not touch them.)

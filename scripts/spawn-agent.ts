@@ -28,6 +28,10 @@ spawnAgent();
 function spawnAgent() {
   const config = parseArgs();
   const parsedConfig = loadConfig();
+  // Resolve --cli: explicit flag wins, otherwise fall back to `default_cli` from orchestrator.config.yml.
+  // (Pre-fix this defaulted to literal "kilo" regardless of config, which silently routed users to
+  //  `.kilocode/worktrees/` even when their config said `default_cli: aider`.)
+  if (!config.cli) config.cli = parsedConfig.default_cli;
 
   const worktreeBase = config.cli === "kilo" ? ".kilocode/worktrees" : ".agents/worktrees";
   const worktree = path.resolve(process.cwd(), worktreeBase, config.agent);
@@ -102,7 +106,7 @@ function parseArgs(): SpawnArgs {
     mode: "auto",
     promptFile: "",
     coordDir: "./coord",
-    cli: "kilo",
+    cli: "", // resolved against `default_cli` from orchestrator.config.yml in spawnAgent if --cli is omitted.
     extraArgs: [],
     validateCmd: undefined,
     timeoutMins: undefined,
