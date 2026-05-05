@@ -16,24 +16,29 @@ Before using this skill, ensure you have:
 1. **A Headless Worker CLI**: Installed globally. This skill uses `kilo` (Kilo Code) by default, but it can easily orchestrate **Aider**, **OpenCode**, or any other CLI defined in the `scripts/spawn-agent.ts` file. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
 2. **TypeScript & TS-Node**: Installed to execute the orchestration scripts.
 
-> **Architectural Recommendation & Intelligence Boundaries:** 
-> This skill is highly optimized for cost-efficiency without sacrificing quality. It relies on **three distinct decision-making contexts**:
-> 
+> **Architectural Recommendation & Intelligence Boundaries:**
+> This skill is highly optimized for cost-efficiency without sacrificing quality. It relies on **three distinct decision-making contexts**, each driven by a configurable CLI in `orchestrator.config.yml`:
+>
 > 1. **Initial Decomposition (Interactive Session):** Your active Orchestrator session (e.g., Claude Code with a high-tier reasoning model like Opus 4.7) acts as the primary architect. It analyzes the task, breaks it into non-overlapping boundaries, writes the `coord/context.json`, and spawns the background agents.
-> 2. **The Background Orchestrator Loop (Headless Script):** Once launched, the background loop script has **no access to your chat history**. To evaluate agent progress, generate summaries (Phase 6), and make operational decisions (`end_agent`, `soft_restart`, `hard_restart`), the loop acts as an autonomous monitor. It automatically invokes its *own* headless, single-turn LLM calls using the configured **Worker CLI** based on the state in the `coord/` files. This means the loop's operational decisions are powered by whichever model the Worker CLI is configured to use (often a cost-efficient model like DeepSeek v4 or Kimi), ensuring monitoring remains cheap.
+> 2. **The Background Orchestrator Loop (Headless Script):** Once launched, the background loop has **no access to your chat history**. It splits its LLM work across two CLIs:
+>     - **Request arbitration** (cross-cutting decisions over pending requests, plus `end_agent` / `soft_restart` / `hard_restart` actions) is invoked through the **`orchestrator_cli`** (defaults to `claude`). Arbitration benefits from a stronger reasoning model since it weighs conflicts and architectural trade-offs.
+>     - **Triggered AI-Review** (the 1-sentence course-correction sent when an agent stalls) and the **final review summary** in Phase 6 are invoked through the **Worker CLI** (`default_cli`). These are narrow, single-turn calls that stay cheap.
 > 3. **Final Integration (Interactive Session):** After the background loop completes, you return to a high-tier Orchestrator session to act as the integrator, reviewing the completed worktrees and safely merging them.
-> 
-> **Model Selection Strategy:** Use a powerful reasoning model for your interactive Orchestrator sessions (Contexts 1 & 3), but configure your **Worker CLI** (Context 2 and actual agent coding) to use cost-efficient fast models. This ensures world-class architectural planning and code review while keeping the bulk coding and background monitoring loops extremely cheap!
+>
+> **Model Selection Strategy:** Use a powerful reasoning model for your interactive Orchestrator sessions (Contexts 1 & 3) and for the `orchestrator_cli` so request arbitration stays sound. Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for the bulk coding and the cheap monitor calls. If you want monitoring to be even cheaper, point `orchestrator_cli` at a fast worker too — the system will respect whichever CLI you configure.
 
 ## ⚙️ Configuration (`orchestrator.config.yml`)
 Before beginning Phase 1, you MUST check if an `orchestrator.config.yml` file exists in the project root. This file acts as the dynamic source of truth for the user's preferences.
 
 If it exists, read it to determine:
-- **`default_cli`**: The Worker CLI to use.
-- **`cli_templates`**: The exact bash commands used to spawn the worker CLIs. This makes the system immune to third-party tool interface changes.
+- **`default_cli`**: The Worker CLI to use for spawning agents and for the cheap AI-Review / final-summary calls.
+- **`orchestrator_cli`**: The CLI used by the background loop for request arbitration (defaults to `claude`). Set this independently from `default_cli` if you want arbitration to use a stronger reasoning model than your workers.
+- **`cli_templates`**: The exact bash commands used to spawn the worker CLIs. The same templates are reused for `orchestrator_cli` calls and the AI-Review calls, so the system is immune to third-party tool interface changes.
 - **`default_timeout_mins`**: The default time before an agent is considered hanging (Liveness).
 - **`default_progress_timeout_mins`**: The default time before an active agent with zero code changes is considered stuck (Progress).
 - **`default_max_iterations`**: The default cap on agent tool loops.
+- **`default_max_restarts`**: The maximum number of times the loop will respawn the same agent before marking it `errored` (defaults to 3). Counted across both validation-failure restarts and AI-Review restarts.
+- **`claude_failure_threshold`**: Consecutive arbitration-CLI failures before the loop writes `coord/orchestrator-stalled.flag` (which the dashboard surfaces). Defaults to 5.
 
 Example `orchestrator.config.yml`:
 ```yaml
@@ -165,7 +170,15 @@ The loop then uses this AI-generated instruction as the prompt for the `soft_res
 |--------|--------|
 | `end_agent` | Orchestrator loop runs the agent's `validation_command` (if configured) inside its worktree. If it **passes**, it sends SIGTERM and marks it `"completed"`. If it **fails**, the loop automatically triggers a `soft_restart`, packaging the stderr/stdout back to the agent with instructions to fix its code. |
 | `soft_restart` | Orchestrator loop kills the rogue process, creates a `WIP` commit to preserve uncommitted work, and respawns the agent with new `instruction`s (e.g., test failure logs or the course-correction instruction generated by the Triggered AI Review) so it can correct its course. |
-| `hard_restart` | Orchestrator loop kills the process, aggressively wipes all uncommitted work via `git reset --hard`, and respawns the agent. Useful for escaping hallucination loops. |
+| `hard_restart` | Orchestrator loop kills the process, captures any uncommitted+untracked work as a `recovery/<agent>/<timestamp>` git tag, then resets the worktree clean and respawns the agent. The tag preserves the wiped state so it can be inspected with `git show <tag>` or recovered later. Useful for escaping hallucination loops. |
+
+**Restart cap:** Every restart (soft or hard, whether triggered by validation failure, the AI-Review course-correction, or an orchestrator action) increments the agent's `restart_count`. Once it exceeds `default_max_restarts` (default 3), the loop stops respawning the agent and marks it `errored` so failures can't thrash forever.
+
+**PID safety:** Before sending any signal the loop validates that the stored PID still matches the spawned worker CLI's command line (POSIX `ps`). If the PID has been recycled to an unrelated process, the signal is skipped — so the orchestrator cannot accidentally SIGTERM an editor or shell that happens to inherit the worker's old PID.
+
+**Aborting:** Closing the dashboard window (SIGHUP/SIGTERM) leaves the agents running. Pressing Ctrl+C asks for confirmation, then writes `coord/abort.flag`. The loop's abort path performs a soft stop only — it kills the running agent processes and marks them `terminated`, but **does not** `git reset --hard` the worktrees. Any in-flight work is preserved and can be inspected with `git status` in each worktree.
+
+**Stalled CLI surfacing:** If the orchestrator CLI fails `claude_failure_threshold` cycles in a row (default 5), the loop writes `coord/orchestrator-stalled.flag` with a diagnostic payload. The dashboard renders a red banner so you can see at a glance that arbitration is stuck (e.g., `claude` is unauthenticated, rate-limited, or down). The flag is removed automatically as soon as a cycle succeeds.
 
 ## Phase 6 — Review and Integration
 

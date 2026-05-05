@@ -1,0 +1,18 @@
+{
+  "name": "multi-agent-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude skill that turns a session into an orchestrator coordinating headless worker agents in git worktrees.",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.11.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}
