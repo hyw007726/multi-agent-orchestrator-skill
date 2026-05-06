@@ -234,3 +234,7 @@ When you receive this instruction to perform the final integration, you should:
    git worktree remove <worktree-path>/<agent-name>
    git branch -d <agent-name>
    ```
+
+## For Maintainers
+
+Run `node scripts/run-tests.js` to syntax-check scripts and execute dependency-free smoke tests.

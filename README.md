@@ -98,6 +98,14 @@ You can instruct Claude to use different CLIs by appending the `--cli` flag:
 
 The same set is supported for the orchestrator CLI itself via `orchestrator_cli` in `orchestrator.config.js` — point it at a high-tier model for arbitration, or at a fast worker if you want monitoring to stay cheap.
 
+## Testing
+
+```bash
+node scripts/run-tests.js
+```
+
+Tests are dependency-free and use only Node.js built-ins. They run fake CLIs against temporary git repositories, so they do not require real Kilo, Aider, Claude, Codex, Gemini, or OpenCode credentials.
+
 ## ⚠️ Important Note
 Make sure your chosen worker CLI is fully authenticated and has a default model selected. Because the workers run as non-interactive background processes, they will hang indefinitely if they encounter an interactive login prompt!
 
