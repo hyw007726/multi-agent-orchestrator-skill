@@ -20,7 +20,12 @@ encode anything the headless background loop won't otherwise know.
   "tasks": {
     "agent-name": {
       "description": "string — what this agent is allowed to build",
-      "timeout_mins": "integer | omitted — overrides default_timeout_mins",
+      "cli": "string — which worker CLI to spawn (kilo | aider | claude | codex | gemini | opencode); falls back to default_cli when omitted",
+      "mode": "string | omitted — kilo-specific mode (code | architect | debug | ask); ignored by other CLIs",
+      "allowed_paths": ["string — glob or path the agent may create/edit (e.g. 'scripts/launch-all.js', 'test/**')"],
+      "forbidden_paths": ["string — glob or path the agent must NOT touch (e.g. 'SKILL.md', 'package.json')"],
+      "validation_command": "string[] | string | null — JSON argv preferred (no shell expansion); shell-string fallback for pipes / && / env; null disables automated validation",
+      "timeout_mins": "integer | omitted — overrides default_timeout_mins (liveness)",
       "progress_timeout_mins": "integer | omitted — overrides default_progress_timeout_mins"
     }
   }
@@ -32,6 +37,33 @@ a `--chat-context` string as `{ "summary": "<string>" }` for backward compat);
 the orchestrator session is expected to use the `Edit` tool to populate them
 between Phase 2 and Phase 4. The keys under `chat_context` are advisory — the
 loop only serializes the whole object into the arbitration prompt.
+
+The full per-agent record under `tasks` is the canonical contract — `launch-all.js`
+reads it to drive worktree creation, prompt rendering, and the `spawn-agent.js`
+invocation, and the orchestrator loop reads `validation_command` / `timeout_mins`
+/ `progress_timeout_mins` from the matching `agents.json` row. Anything not in
+this shape is the orchestrator session's free-form context (`chat_context`,
+`requirements`, `constraints`).
+
+## Worker-prompt placeholder grammar
+
+`launch-all.js` machine-substitutes the placeholders in
+`references/worker-prompt-template.md` from the per-agent record above plus a
+small set of values it derives at spawn time. Every placeholder is matched
+verbatim (`{NAME}`) and replaced once.
+
+| Placeholder              | Source                                                          |
+|--------------------------|-----------------------------------------------------------------|
+| `{ASSIGNED_TASK}`        | `tasks[<agent>].description`                                    |
+| `{PROJECT_DESCRIPTION}`  | `project` (top-level)                                           |
+| `{AGENT_NAME}`           | the key under `tasks`                                           |
+| `{WORKTREE_PATH}`        | derived: `.kilocode/worktrees/<agent>` for kilo, else `.agents/worktrees/<agent>` |
+| `{ALLOWED_PATHS_LIST}`   | comma-joined `tasks[<agent>].allowed_paths`                     |
+| `{FORBIDDEN_PATHS_LIST}` | comma-joined `tasks[<agent>].forbidden_paths`                   |
+
+Any placeholder whose source field is missing is replaced with the literal
+string `"(unspecified)"` so the worker still receives a syntactically intact
+prompt and can ask via `coord/requests.jsonl` for clarification.
 
 ## decisions.json
 ```json
