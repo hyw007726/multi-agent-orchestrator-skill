@@ -1,4 +1,4 @@
-#!/usr/bin/env ts-node
+#!/usr/bin/env node
 
 /**
  * Preflight CLI health check. Run this in Phase 1 before any agents are spawned
@@ -6,25 +6,19 @@
  * 10-minute liveness timeout per agent.
  *
  * Usage:
- *   npx ts-node scripts/preflight.ts                   # checks default_cli + orchestrator_cli (with auth)
- *   npx ts-node scripts/preflight.ts --skip-auth       # binary-only check, no API calls (CI / offline)
- *   npx ts-node scripts/preflight.ts --cli kilo --cli aider
- *   npx ts-node scripts/preflight.ts --timeout 15000   # per-CLI timeout in ms (default 10000)
+ *   node scripts/preflight.js                   # checks default_cli + orchestrator_cli (with auth)
+ *   node scripts/preflight.js --skip-auth       # binary-only check, no API calls (CI / offline)
+ *   node scripts/preflight.js --cli kilo --cli aider
+ *   node scripts/preflight.js --timeout 15000   # per-CLI timeout in ms (default 10000)
  *
  * Exits 0 if every checked CLI is healthy, non-zero otherwise.
  */
 
-import { spawnSync } from "child_process";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
-import { loadConfig, OrchestratorConfig } from "./lib/config";
-
-interface PreflightArgs {
-  clis: string[];
-  withAuth: boolean;
-  timeoutMs: number;
-}
+const { spawnSync } = require("child_process");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { loadConfig } = require("./lib/config");
 
 runPreflight();
 
@@ -61,9 +55,9 @@ function runPreflight() {
 
   // Single-use helpers — only used by runPreflight above. ────────────────────
 
-  function parseArgs(): PreflightArgs {
+  function parseArgs() {
     const argv = process.argv.slice(2);
-    const out: PreflightArgs = { clis: [], withAuth: true, timeoutMs: 10000 };
+    const out = { clis: [], withAuth: true, timeoutMs: 10000 };
     for (let i = 0; i < argv.length; i++) {
       switch (argv[i]) {
         case "--cli": out.clis.push(argv[++i]); break;
@@ -79,47 +73,46 @@ function runPreflight() {
     return out;
   }
 
-  function warnIfClaudeModelUnpinned(config: OrchestratorConfig): void {
+  function warnIfClaudeModelUnpinned(config) {
     const claudeTemplate = config.cli_templates["claude"];
     if (claudeTemplate && !claudeTemplate.includes("--model")) {
-      console.warn("  ⚠  cli_templates.claude does not include --model. Workers will inherit the");
+      console.warn("  Warning: cli_templates.claude does not include --model. Workers will inherit the");
       console.warn("     parent session's model (likely Opus 4.7). Add --model <id> to pin a cheaper model.");
       console.warn("");
     }
   }
 
   // Runs the configured (or default) `--version`-style probe.
-  function runVersionCheck(cli: string, config: OrchestratorConfig, timeoutMs: number): CheckResult {
+  function runVersionCheck(cli, config, timeoutMs) {
     const cmd = config.cli_health_checks[cli];
     if (!cmd) {
-      return { ok: false, message: `No health check configured for '${cli}'. Add it under cli_health_checks in orchestrator.config.yml.` };
+      return { ok: false, message: `No health check configured for '${cli}'. Add it under cli_health_checks in orchestrator.config.js.` };
     }
     return runShell(cmd, timeoutMs);
   }
 
-  // Runs the spawn template with a tiny prompt so we can confirm the CLI is
-  // actually authenticated (not just installed). Costs a few tokens per CLI.
-  function runAuthCheck(cli: string, config: OrchestratorConfig, timeoutMs: number): CheckResult {
+  // Runs the spawn template with a tiny prompt to confirm the CLI is actually
+  // authenticated (not just installed). Costs a few tokens per CLI.
+  function runAuthCheck(cli, config, timeoutMs) {
     const template = config.cli_templates[cli];
     if (!template) {
-      return { ok: false, message: `No spawn template for '${cli}' to drive an auth check. Add cli_templates.${cli} in orchestrator.config.yml.` };
+      return { ok: false, message: `No spawn template for '${cli}' to drive an auth check. Add cli_templates.${cli} in orchestrator.config.js.` };
     }
     const promptFile = path.join(os.tmpdir(), `preflight-${cli}-${Date.now()}.txt`);
     fs.writeFileSync(promptFile, "Reply with the single word: OK", "utf-8");
     try {
       const cmdStr = template.replace(/\{prompt_file\}/g, promptFile);
-      const result = runShell(cmdStr, timeoutMs);
+      return runShell(cmdStr, timeoutMs);
       // Don't require "OK" in output — some CLIs print extra chatter. Non-zero exit / timeout are the real signals.
-      return result;
     } finally {
       try { fs.unlinkSync(promptFile); } catch {}
     }
   }
 
-  function runShell(cmd: string, timeoutMs: number): CheckResult {
+  function runShell(cmd, timeoutMs) {
     const result = spawnSync(cmd, { shell: true, encoding: "utf-8", timeout: timeoutMs, maxBuffer: 1024 * 1024 });
     if (result.error) {
-      const code = (result.error as any).code;
+      const code = result.error.code;
       if (code === "ETIMEDOUT") {
         return { ok: false, message: `Timed out after ${timeoutMs}ms — likely hanging on an interactive prompt (auth / model selection?).` };
       }
@@ -138,13 +131,8 @@ function runPreflight() {
     return { ok: true, message: summary };
   }
 
-  function printResult(cli: string, phase: "install" | "auth", result: CheckResult) {
+  function printResult(cli, phase, result) {
     const mark = result.ok ? "✓" : "✗";
     console.log(`  ${mark} ${cli} (${phase}): ${result.message}`);
   }
-}
-
-interface CheckResult {
-  ok: boolean;
-  message: string;
 }

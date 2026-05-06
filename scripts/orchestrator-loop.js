@@ -1,91 +1,12 @@
-#!/usr/bin/env ts-node
+#!/usr/bin/env node
 
-import * as fs from "fs";
-import * as path from "path";
-import * as os from "os";
-import { execSync, spawnSync } from "child_process";
-import { loadConfig, OrchestratorConfig } from "./lib/config";
-import { safeKill } from "./lib/process";
-import { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL } from "./lib/locking";
-
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-interface Config {
-  coordDir: string;
-  fixedPollIntervalMs?: number; // when set via --poll-interval, disables the adaptive heuristic
-  maxRetries: number;
-  logFile: string;
-}
-
-interface Request {
-  request_id: string;
-  agent: string;
-  type: "question" | "change" | "conflict" | "review_request";
-  priority: "low" | "medium" | "high";
-  content: string;
-  status: "pending" | "resolved" | "rejected";
-  created_at: string;
-}
-
-interface Decision {
-  request_id: string;
-  decision: string;
-  reason: string;
-  resolved_at: string;
-}
-
-interface AgentEntry {
-  task: string;
-  status: "running" | "completed" | "terminated" | "errored";
-  worktree: string;
-  kilo_mode: string;
-  cli?: string;
-  pid: number;
-  started_at: string;
-  last_heartbeat: string;
-  validate_cmd?: string | string[];
-  timeout_mins?: number;
-  progress_timeout_mins?: number;
-  max_iterations?: number;
-  restart_count?: number;
-}
-
-interface OrchestratorAction {
-  type: "end_agent" | "soft_restart" | "hard_restart" | "restart_agent";
-  agent: string;
-  instruction?: string;
-  rollback?: boolean;
-}
-
-interface OrchestratorResponse {
-  approved: Array<{ request_id: string; decision: string; reason: string }>;
-  rejected: Array<{ request_id: string; reason: string }>;
-  actions: OrchestratorAction[];
-}
-
-// Per-agent task entry under context.tasks. Matches the structure SKILL.md instructs the
-// orchestrator session to write in Phase 2. The loop never reads individual fields itself
-// (it just JSON-stringifies `context` into the arbitration prompt), so additional keys are
-// permitted — but `description` is what makes the entry meaningful to the orchestrator CLI.
-interface ProjectContextTask {
-  description: string;
-  timeout_mins?: number;
-  progress_timeout_mins?: number;
-  max_iterations?: number;
-  [key: string]: unknown;
-}
-
-interface ProjectContext {
-  project: string;
-  // Structured object form per SKILL.md Phase 2 (preferences / architecture / naming_conventions / gotchas).
-  // Typed as Record<string, unknown> because the keys are advisory, not enforced — the loop only
-  // serializes the whole thing into the arbitration prompt.
-  chat_context?: Record<string, unknown>;
-  requirements: string[];
-  constraints: string[];
-  created_at: string;
-  tasks?: Record<string, ProjectContextTask>;
-}
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const { execSync, spawnSync } = require("child_process");
+const { loadConfig } = require("./lib/config");
+const { safeKill } = require("./lib/process");
+const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL } = require("./lib/locking");
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
@@ -102,8 +23,8 @@ async function runLoop() {
   }
 
   // Refuse to start a second loop on the same coord/. Held for the full run; released
-  // on every teardown path below. proper-lockfile's `stale` option recovers automatically
-  // if a prior loop was SIGKILL'd without running its teardown.
+  // on every teardown path below. The stale option recovers automatically if a prior
+  // loop was SIGKILL'd without running its teardown.
   const instanceLock = acquireInstanceLock(config.coordDir);
   const releaseInstanceLock = () => { instanceLock.release(); };
   process.once("SIGTERM", () => { releaseInstanceLock(); process.exit(0); });
@@ -115,7 +36,7 @@ async function runLoop() {
     process.exit(1);
   });
 
-  const log = (msg: string) => appendLog(config.logFile, msg);
+  const log = (msg) => appendLog(config.logFile, msg);
   if (config.fixedPollIntervalMs) {
     log(`Starting Orchestrator Loop (fixed poll: ${config.fixedPollIntervalMs}ms)`);
   } else {
@@ -126,9 +47,10 @@ async function runLoop() {
 
   launchDashboard(config, log);
 
-  const agentProgress: Record<string, { last_diff: string; last_progress_time: number }> = {};
+  const agentProgress = {};
   let consecutiveCliFailures = 0;
-  let pollMs = parsedConfig.poll_min_ms; // adaptive interval, starts fast on boot
+  let pollMs = parsedConfig.poll_min_ms;
+  let aborted = false;
   const POLL_BACKOFF = 1.5;
 
   while (true) {
@@ -136,9 +58,9 @@ async function runLoop() {
     try {
       // ── Abort flag (soft stop — preserves worktrees) ─────────────────────
       if (fs.existsSync(path.join(config.coordDir, "abort.flag"))) {
-        log("🛑 ABORT SIGNAL RECEIVED. Stopping running agents (worktrees preserved)...");
-        const toKill: Array<{ pid: number; cli: string }> = [];
-        updateJSON<Record<string, AgentEntry>>(paths.agents, (agents) => {
+        log("ABORT SIGNAL RECEIVED. Stopping running agents (worktrees preserved)...");
+        const toKill = [];
+        updateJSON(paths.agents, (agents) => {
           for (const name in agents) {
             if (agents[name].status === "running") {
               toKill.push({ pid: agents[name].pid, cli: agents[name].cli || "kilo" });
@@ -150,12 +72,13 @@ async function runLoop() {
         for (const { pid, cli } of toKill) safeKill({ pid, expectedCli: cli, log });
         log("All running agents stopped. Worktree contents preserved (run `git status` in each worktree to inspect/discard).");
         try { fs.unlinkSync(path.join(config.coordDir, "abort.flag")); } catch {}
+        aborted = true;
         break;
       }
 
       // ── Per-agent liveness + progress checks ─────────────────────────────
       // Snapshot read for diagnostics; each actual mutation takes its own lock.
-      const snapshot = readJSON<Record<string, AgentEntry>>(paths.agents);
+      const snapshot = readJSON(paths.agents);
 
       for (const name in snapshot) {
         if (snapshot[name].status !== "running") continue;
@@ -163,10 +86,10 @@ async function runLoop() {
 
         // Process gone? Mark completed and move on.
         if (!isProcessAlive(agent.pid)) {
-          updateJSON<Record<string, AgentEntry>>(paths.agents, (agents) => {
+          updateJSON(paths.agents, (agents) => {
             if (agents[name] && agents[name].status === "running") agents[name].status = "completed";
           });
-          log(`ℹ️ Agent ${name} (PID ${agent.pid}) process exited.`);
+          log(`Agent ${name} (PID ${agent.pid}) process exited.`);
           continue;
         }
 
@@ -177,9 +100,9 @@ async function runLoop() {
 
         const timeoutMins = agent.timeout_mins || parsedConfig.default_timeout_mins;
         if (Date.now() - lastActivity > timeoutMins * 60 * 1000) {
-          log(`⏱️ Agent ${name} idle (no log output) for ${timeoutMins} mins. Killing.`);
+          log(`Agent ${name} idle (no log output) for ${timeoutMins} mins. Killing.`);
           safeKill({ pid: agent.pid, expectedCli: agent.cli || "kilo", log });
-          updateJSON<Record<string, AgentEntry>>(paths.agents, (agents) => {
+          updateJSON(paths.agents, (agents) => {
             if (agents[name] && agents[name].status === "running") agents[name].status = "errored";
           });
           continue;
@@ -195,7 +118,7 @@ async function runLoop() {
           tracker.last_diff = currentDiff;
           tracker.last_progress_time = Date.now();
         } else if (Date.now() - tracker.last_progress_time > progressMins * 60 * 1000) {
-          log(`⏱️ Agent ${name} stuck for ${progressMins} mins (no code changes). Triggering AI Review.`);
+          log(`Agent ${name} stuck for ${progressMins} mins (no code changes). Triggering AI Review.`);
           const tailLines = readTail(logFile, 50);
           const reviewInstruction = generateAiReviewInstruction(tailLines, parsedConfig, log);
           log(`AI Review fix: ${reviewInstruction}`);
@@ -215,15 +138,15 @@ async function runLoop() {
       }
 
       // ── Pending requests / arbitration ───────────────────────────────────
-      const requests = readJSONL<Request>(paths.requests);
+      const requests = readJSONL(paths.requests);
       const pending = requests.filter((p) => p.status === "pending");
 
       if (pending.length > 0) {
         cycleHadPending = true;
         log(`Found ${pending.length} pending requests.`);
-        const context = readJSON<ProjectContext>(paths.context);
-        const decisions = readJSON<Decision[]>(paths.decisions);
-        const agentsForPrompt = readJSON<Record<string, AgentEntry>>(paths.agents);
+        const context = readJSON(paths.context);
+        const decisions = readJSON(paths.decisions);
+        const agentsForPrompt = readJSON(paths.agents);
 
         const worktreeStates = collectWorktreeStates(pending, agentsForPrompt);
         const prompt = buildOrchestratorPrompt(pending, context, decisions, worktreeStates);
@@ -245,38 +168,40 @@ async function runLoop() {
         }
       } else {
         // ── All-done check ────────────────────────────────────────────────
-        const agents = readJSON<Record<string, AgentEntry>>(paths.agents);
+        const agents = readJSON(paths.agents);
         const entries = Object.values(agents);
         const allDone = entries.length > 0 &&
           entries.every((a) => a.status === "completed" || a.status === "terminated" || a.status === "errored");
         if (allDone) {
-          finalize(config, paths, log);
+          finalize(config, paths, parsedConfig, log);
           break;
         }
       }
 
       pollMs = nextPollMs(cycleHadPending);
       await sleep(pollMs);
-    } catch (error: any) {
+    } catch (error) {
       log(`Loop Error: ${error.message}`);
-      // On error, fall back to min interval — usually transient and we want to recover quickly.
       pollMs = config.fixedPollIntervalMs ?? parsedConfig.poll_min_ms;
       await sleep(pollMs);
     }
   }
 
-  // Natural exit (abort flag handled, or all agents done + finalized). Release the singleton
-  // lock explicitly — beforeExit covers most cases, but doing it here is robust against
-  // node's lifecycle quirks and makes the marker disappear immediately when the loop ends.
+  // Natural exit — release the singleton lock explicitly for prompt cleanup.
   releaseInstanceLock();
   log(`Released singleton lock on ${instanceLock.markerPath}.`);
+
+  if (aborted) {
+    log("Cleaning up coordination directory (worktrees preserved).");
+    try { fs.rmSync(config.coordDir, { recursive: true, force: true }); } catch {}
+  }
 
   // Single-use helper — only called from the main while loop above.
   // Picks the next sleep based on whether this cycle saw pending requests:
   //   • fixed override wins if --poll-interval was set
   //   • pending found → reset to min (stay responsive while batch is being worked through)
   //   • idle cycle  → multiply by POLL_BACKOFF, capped at max
-  function nextPollMs(activeCycle: boolean): number {
+  function nextPollMs(activeCycle) {
     if (config.fixedPollIntervalMs) return config.fixedPollIntervalMs;
     if (activeCycle) return parsedConfig.poll_min_ms;
     const next = Math.round(pollMs * POLL_BACKOFF);
@@ -285,39 +210,34 @@ async function runLoop() {
 
   // ── Inner helpers ──────────────────────────────────────────────────────
 
-  function launchDashboard(config: Config, log: (msg: string) => void) {
+  function launchDashboard(config, log) {
     try {
-      const dashboardPath = path.join(__dirname, "dashboard.ts");
+      const dashboardPath = path.join(__dirname, "dashboard.js");
       if (process.platform === "darwin") {
-        const scriptStr = `tell application "Terminal" to do script "cd '${process.cwd()}' && npx ts-node '${dashboardPath}' --coord '${config.coordDir}'"`;
+        const scriptStr = `tell application "Terminal" to do script "cd '${process.cwd()}' && node '${dashboardPath}' --coord '${config.coordDir}'"`;
         execSync(`osascript -e '${scriptStr}'`);
         log("Launched dashboard terminal.");
       } else {
-        log(`Dashboard can be run manually in another terminal: npx ts-node '${dashboardPath}' --coord '${config.coordDir}'`);
+        log(`Dashboard can be run manually in another terminal: node '${dashboardPath}' --coord '${config.coordDir}'`);
       }
-    } catch (e: any) {
+    } catch (e) {
       log(`Failed to launch dashboard: ${e.message}`);
     }
   }
 
-  function processActions(
-    actions: OrchestratorAction[],
-    paths: ReturnType<typeof getPaths>,
-    parsedConfig: OrchestratorConfig,
-    log: (msg: string) => void,
-  ) {
+  function processActions(actions, paths, parsedConfig, log) {
     for (const rawAction of actions) {
       // restart_agent is a legacy alias for soft_restart.
-      const action: OrchestratorAction = rawAction.type === "restart_agent" ? { ...rawAction, type: "soft_restart" } : rawAction;
+      const action = rawAction.type === "restart_agent" ? { ...rawAction, type: "soft_restart" } : rawAction;
 
       if (action.type === "end_agent") {
-        const snapshot = readJSON<Record<string, AgentEntry>>(paths.agents)[action.agent];
+        const snapshot = readJSON(paths.agents)[action.agent];
         if (!snapshot) continue;
 
         const validation = runValidation(snapshot, log);
         if (validation.passed) {
           safeKill({ pid: snapshot.pid, expectedCli: snapshot.cli || "kilo", log });
-          updateJSON<Record<string, AgentEntry>>(paths.agents, (agents) => {
+          updateJSON(paths.agents, (agents) => {
             if (!agents[action.agent]) return;
             agents[action.agent].status = "completed";
             agents[action.agent].last_heartbeat = new Date().toISOString();
@@ -352,30 +272,15 @@ async function runLoop() {
     }
   }
 
+  // Shared — used by the progress-timeout handler above and by processActions.
   // Atomically updates the agent's restart_count / status in agents.json, then performs
   // the side effects (kill, recovery/WIP-commit, subprocess respawn) OUTSIDE the lock so
   // we never hold the lock across a subprocess (which would deadlock on spawn-agent's own
   // updateJSON write).
-  function bumpRestartAndRespawn(args: {
-    name: string;
-    instruction: string | undefined;
-    reason: string;
-    paths: ReturnType<typeof getPaths>;
-    parsedConfig: OrchestratorConfig;
-    mode: "soft" | "hard";
-    log: (msg: string) => void;
-  }): boolean {
-    const { name, instruction, reason, paths, parsedConfig, mode, log } = args;
+  function bumpRestartAndRespawn({ name, instruction, reason, paths, parsedConfig, mode, log }) {
+    const outcomeRef = { value: { kind: "missing" } };
 
-    type Outcome =
-      | { kind: "missing" }
-      | { kind: "terminated"; pid: number; cliTool: string; worktree: string }
-      | { kind: "errored"; pid: number; cliTool: string; worktree: string }
-      | { kind: "respawn"; pid: number; cliTool: string; worktree: string; kiloMode: string; attempt: number };
-    // Wrapped in `{ value }` so TS doesn't narrow the let to its initializer through the closure boundary.
-    const outcomeRef: { value: Outcome } = { value: { kind: "missing" } };
-
-    updateJSON<Record<string, AgentEntry>>(paths.agents, (agents) => {
+    updateJSON(paths.agents, (agents) => {
       const agent = agents[name];
       if (!agent) return;
 
@@ -419,7 +324,7 @@ async function runLoop() {
       return false;
     }
     if (outcome.kind === "errored") {
-      log(`⚠️ Agent ${name} exceeded ${parsedConfig.default_max_restarts} restarts (${reason}). Marking errored, not respawning.`);
+      log(`Agent ${name} exceeded ${parsedConfig.default_max_restarts} restarts (${reason}). Marking errored, not respawning.`);
       return false;
     }
 
@@ -437,7 +342,7 @@ async function runLoop() {
           } catch {
             log(`No changes to commit for soft_restart on ${name}.`);
           }
-        } catch (err: any) {
+        } catch (err) {
           log(`Soft-restart WIP commit failed for ${name}: ${err.message}`);
         }
       }
@@ -449,57 +354,42 @@ async function runLoop() {
       cliTool: outcome.cliTool,
       attempt: outcome.attempt,
       maxAttempts: parsedConfig.default_max_restarts,
-      instruction: instruction!,
+      instruction,
       paths,
       log,
     });
-  }
 
-  function respawnAgent(args: {
-    name: string;
-    kiloMode: string;
-    cliTool: string;
-    attempt: number;
-    maxAttempts: number;
-    instruction: string;
-    paths: ReturnType<typeof getPaths>;
-    log: (msg: string) => void;
-  }): boolean {
-    const { name, kiloMode, cliTool, attempt, maxAttempts, instruction, paths, log } = args;
-    const promptFile = path.join(os.tmpdir(), `prompt-${name}-${Date.now()}.txt`);
-    fs.writeFileSync(promptFile, instruction, "utf-8");
-    log(`Respawning agent ${name} using ${cliTool} (attempt ${attempt}/${maxAttempts})...`);
-    try {
-      const npxCmd = process.platform === "win32" ? "npx.cmd" : "npx";
-      spawnSync(npxCmd, [
-        "ts-node",
-        path.join(__dirname, "spawn-agent.ts"),
-        "--agent", name,
-        "--mode", kiloMode,
-        "--prompt-file", promptFile,
-        "--coord", path.dirname(paths.agents),
-        "--cli", cliTool,
-      ], { stdio: "inherit" });
-      return true;
-    } catch (err: any) {
-      log(`Failed to respawn agent ${name}: ${err.message}`);
-      return false;
-    } finally {
-      try { fs.unlinkSync(promptFile); } catch {}
+    // Single-use helper — only called from bumpRestartAndRespawn above.
+    function respawnAgent({ name, kiloMode, cliTool, attempt, maxAttempts, instruction, paths, log }) {
+      const promptFile = path.join(os.tmpdir(), `prompt-${name}-${Date.now()}.txt`);
+      fs.writeFileSync(promptFile, instruction, "utf-8");
+      log(`Respawning agent ${name} using ${cliTool} (attempt ${attempt}/${maxAttempts})...`);
+      try {
+        spawnSync("node", [
+          path.join(__dirname, "spawn-agent.js"),
+          "--agent", name,
+          "--mode", kiloMode,
+          "--prompt-file", promptFile,
+          "--coord", path.dirname(paths.agents),
+          "--cli", cliTool,
+        ], { stdio: "inherit" });
+        return true;
+      } catch (err) {
+        log(`Failed to respawn agent ${name}: ${err.message}`);
+        return false;
+      } finally {
+        try { fs.unlinkSync(promptFile); } catch {}
+      }
     }
   }
 
   // Atomically marks resolved/rejected requests in requests.jsonl and appends decisions.
   // The merge happens inside the lock, so worker appends that arrived during the
   // arbitration call (slow CLI) are preserved.
-  function processApprovals(
-    response: OrchestratorResponse,
-    paths: ReturnType<typeof getPaths>,
-    log: (msg: string) => void,
-  ) {
-    const decisionsToAdd: Decision[] = [];
+  function processApprovals(response, paths, log) {
+    const decisionsToAdd = [];
 
-    updateJSONL<Request>(paths.requests, (current) => {
+    updateJSONL(paths.requests, (current) => {
       for (const approved of response.approved || []) {
         const req = current.find((p) => p.request_id === approved.request_id);
         if (req) {
@@ -524,7 +414,7 @@ async function runLoop() {
 
     if (decisionsToAdd.length === 0) return;
 
-    updateJSON<Decision[]>(paths.decisions, (decisions) => {
+    updateJSON(paths.decisions, (decisions) => {
       decisions.push(...decisionsToAdd);
       if (decisions.length > 30) {
         const archive = decisions.length - 30;
@@ -537,9 +427,9 @@ async function runLoop() {
 
 // ─── Argument parsing ────────────────────────────────────────────────────────
 
-function parseArgs(): Config {
+function parseArgs() {
   const args = process.argv.slice(2);
-  const config: Config = {
+  const config = {
     coordDir: "./coord",
     maxRetries: 3,
     logFile: "coord/orchestrator.log",
@@ -551,7 +441,7 @@ function parseArgs(): Config {
   return config;
 }
 
-function getPaths(coordDir: string) {
+function getPaths(coordDir) {
   return {
     requests: path.join(coordDir, "requests.jsonl"),
     decisions: path.join(coordDir, "decisions.json"),
@@ -562,11 +452,11 @@ function getPaths(coordDir: string) {
 
 // ─── IO helpers ──────────────────────────────────────────────────────────────
 
-function sleep(ms: number) {
+function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function appendLog(logFile: string, message: string): void {
+function appendLog(logFile, message) {
   const timestamp = new Date().toISOString();
   const line = `[${timestamp}] ${message}\n`;
   fs.appendFileSync(logFile, line);
@@ -575,12 +465,12 @@ function appendLog(logFile: string, message: string): void {
 
 // ─── Process / git helpers ───────────────────────────────────────────────────
 
-function isProcessAlive(pid: number): boolean {
+function isProcessAlive(pid) {
   if (!pid) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-function readDiffSnapshot(worktree: string): string {
+function readDiffSnapshot(worktree) {
   if (!fs.existsSync(worktree)) return "";
   try {
     const unstaged = execSync("git diff --stat", { cwd: worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
@@ -590,7 +480,7 @@ function readDiffSnapshot(worktree: string): string {
   } catch { return ""; }
 }
 
-function readTail(filePath: string, lines: number): string {
+function readTail(filePath, lines) {
   if (!fs.existsSync(filePath)) return "";
   try {
     return execSync(`tail -n ${lines} "${filePath}"`, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
@@ -599,7 +489,7 @@ function readTail(filePath: string, lines: number): string {
 
 // Captures uncommitted+untracked state in a recovery tag, then resets the worktree.
 // Returns the tag name on success, or null if nothing was preserved.
-function captureRecoveryAndReset(worktree: string, agent: string, log: (msg: string) => void): string | null {
+function captureRecoveryAndReset(worktree, agent, log) {
   try {
     const headBefore = execSync("git rev-parse HEAD", { cwd: worktree, encoding: "utf-8" }).trim();
     let createdRecovery = false;
@@ -611,17 +501,17 @@ function captureRecoveryAndReset(worktree: string, agent: string, log: (msg: str
       } catch {
         // nothing to commit
       }
-    } catch (err: any) {
+    } catch (err) {
       log(`Recovery staging failed: ${err.message}`);
     }
 
-    let tag: string | null = null;
+    let tag = null;
     if (createdRecovery) {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
       tag = `recovery/${agent}/${ts}`;
       try {
         execSync(`git tag "${tag}"`, { cwd: worktree, stdio: "ignore" });
-      } catch (err: any) {
+      } catch (err) {
         log(`Failed to create recovery tag: ${err.message}`);
         tag = null;
       }
@@ -630,7 +520,7 @@ function captureRecoveryAndReset(worktree: string, agent: string, log: (msg: str
     execSync(`git reset --hard ${headBefore}`, { cwd: worktree, stdio: "ignore" });
     execSync("git clean -fd", { cwd: worktree, stdio: "ignore" });
     return tag;
-  } catch (err: any) {
+  } catch (err) {
     log(`Hard reset failed: ${err.message}`);
     return null;
   }
@@ -640,19 +530,19 @@ function captureRecoveryAndReset(worktree: string, agent: string, log: (msg: str
 //   • argv array (e.g. ["npm", "run", "test"]) — runs with shell:false, no expansion, no injection surface.
 //   • shell string (e.g. "npm run test -- src") — runs through /bin/sh -c, retained for ergonomics
 //     (pipes, &&, env vars). Logged as "(shell form)" so the trust requirement stays visible.
-function runValidation(agent: AgentEntry, log: (msg: string) => void): { passed: boolean; log: string } {
+function runValidation(agent, log) {
   const cmd = agent.validate_cmd;
   if (!cmd || cmd === "null") return { passed: true, log: "" };
   if (Array.isArray(cmd) && cmd.length === 0) return { passed: true, log: "" };
 
   const isArgv = Array.isArray(cmd);
-  log(`Running validation${isArgv ? "" : " (shell form)"}: ${isArgv ? (cmd as string[]).join(" ") : cmd}`);
+  log(`Running validation${isArgv ? "" : " (shell form)"}: ${isArgv ? cmd.join(" ") : cmd}`);
 
   const result = isArgv
-    ? spawnSync((cmd as string[])[0], (cmd as string[]).slice(1), {
+    ? spawnSync(cmd[0], cmd.slice(1), {
         cwd: agent.worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], shell: false,
       })
-    : spawnSync(cmd as string, {
+    : spawnSync(cmd, {
         cwd: agent.worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], shell: true,
       });
 
@@ -669,8 +559,8 @@ function runValidation(agent: AgentEntry, log: (msg: string) => void): { passed:
   return { passed: true, log: "" };
 }
 
-function collectWorktreeStates(pending: Request[], agents: Record<string, AgentEntry>): Record<string, string> {
-  const states: Record<string, string> = {};
+function collectWorktreeStates(pending, agents) {
+  const states = {};
   for (const req of pending) {
     if (states[req.agent] || !agents[req.agent]) continue;
     const worktree = agents[req.agent].worktree;
@@ -700,7 +590,7 @@ function collectWorktreeStates(pending: Request[], agents: Record<string, AgentE
       } catch {}
 
       states[req.agent] = `STATUS:\n${status}\n\nCHANGES (UNSTAGED):\n${diffStatUnstaged}\nCHANGES (STAGED):\n${diffStatStaged}\nCHANGES (COMMITS against ${baseBranch}):\n${diffStatBranch}${targetedDiffs ? "\n\nTARGETED DIFFS:\n" + targetedDiffs : ""}`;
-    } catch (err: any) {
+    } catch (err) {
       states[req.agent] = `Failed to read worktree state: ${err.message}`;
     }
   }
@@ -710,12 +600,7 @@ function collectWorktreeStates(pending: Request[], agents: Record<string, AgentE
 // ─── Orchestrator CLI invocation ─────────────────────────────────────────────
 
 // Builds the arbitration prompt sent to the orchestrator CLI for each pending-request cycle.
-function buildOrchestratorPrompt(
-  requests: Request[],
-  context: ProjectContext,
-  decisions: Decision[],
-  worktreeStates: Record<string, string>,
-): string {
+function buildOrchestratorPrompt(requests, context, decisions, worktreeStates) {
   return `You are the system orchestrator for a multi-agent project.
 
 Worker agents are running as headless CLI sessions, each in an isolated git worktree.
@@ -759,14 +644,8 @@ Return ONLY valid JSON matching this exact structure (no markdown, no explanatio
 }
 
 // Calls the orchestrator CLI for arbitration. Honors `orchestrator_cli` + `cli_templates`
-// in orchestrator.config.yml so monitoring runs through a configurable (often cheap) model,
-// matching the "background monitoring loops extremely cheap" claim in SKILL.md.
-function callOrchestratorCli(
-  prompt: string,
-  parsedConfig: OrchestratorConfig,
-  maxRetries: number,
-  log: (msg: string) => void,
-): OrchestratorResponse | null {
+// in orchestrator.config.js so monitoring runs through a configurable (often cheap) model.
+function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
   const cli = parsedConfig.orchestrator_cli;
   const template = parsedConfig.cli_templates[cli];
 
@@ -788,7 +667,7 @@ function callOrchestratorCli(
       const parsed = JSON.parse(match[0]);
       log(`Orchestrator CLI call succeeded.`);
       return parsed;
-    } catch (err: any) {
+    } catch (err) {
       log(`JSON parse failed: ${err.message}`);
       if (attempt === maxRetries) return null;
     }
@@ -796,7 +675,7 @@ function callOrchestratorCli(
   return null;
 
   // Single-use helper — only called from the retry loop above.
-  function invokeOrchestratorCli(cli: string, template: string | undefined, prompt: string): { stdout: string; error?: string } {
+  function invokeOrchestratorCli(cli, template, prompt) {
     if (template) {
       const promptFile = path.join(os.tmpdir(), `orch-prompt-${Date.now()}.txt`);
       fs.writeFileSync(promptFile, prompt, "utf-8");
@@ -818,7 +697,7 @@ function callOrchestratorCli(
   }
 }
 
-function generateAiReviewInstruction(tailLogs: string, parsedConfig: OrchestratorConfig, log: (msg: string) => void): string {
+function generateAiReviewInstruction(tailLogs, parsedConfig, log) {
   const reviewPrompt = `This agent is stuck. Look at its last 50 lines of logs:\n\n${tailLogs}\n\nWhat is it failing to understand? Write a 1-sentence instruction I can send it to break it out of this loop.`;
   const cli = parsedConfig.default_cli;
   const template = parsedConfig.cli_templates[cli];
@@ -833,7 +712,7 @@ function generateAiReviewInstruction(tailLogs: string, parsedConfig: Orchestrato
       const result = spawnSync("claude", ["-p", reviewPrompt, "--dangerously-skip-permissions"], { encoding: "utf-8", timeout: 60000 });
       if (result.stdout?.trim()) return result.stdout.trim();
     }
-  } catch (e: any) {
+  } catch (e) {
     log(`Triggered AI Review failed: ${e.message}`);
   } finally {
     try { fs.unlinkSync(promptFile); } catch {}
@@ -843,13 +722,7 @@ function generateAiReviewInstruction(tailLogs: string, parsedConfig: Orchestrato
 
 // ─── Stalled-flag handling ───────────────────────────────────────────────────
 
-function writeStalledFlag(
-  coordDir: string,
-  consecutiveFailures: number,
-  pending: Request[],
-  parsedConfig: OrchestratorConfig,
-  log: (msg: string) => void,
-): void {
+function writeStalledFlag(coordDir, consecutiveFailures, pending, parsedConfig, log) {
   const stalledFlag = path.join(coordDir, "orchestrator-stalled.flag");
   const high = pending.filter((p) => p.priority === "high").length;
   const info = {
@@ -862,13 +735,13 @@ function writeStalledFlag(
   };
   try {
     fs.writeFileSync(stalledFlag, JSON.stringify(info, null, 2));
-    log(`⚠️  Wrote stalled flag (${stalledFlag}). Dashboard will surface this until the CLI recovers.`);
-  } catch (err: any) {
+    log(`Wrote stalled flag (${stalledFlag}). Dashboard will surface this until the CLI recovers.`);
+  } catch (err) {
     log(`Failed to write stalled flag: ${err.message}`);
   }
 }
 
-function clearStalledFlag(coordDir: string, log: (msg: string) => void): void {
+function clearStalledFlag(coordDir, log) {
   const stalledFlag = path.join(coordDir, "orchestrator-stalled.flag");
   if (fs.existsSync(stalledFlag)) {
     try {
@@ -880,10 +753,10 @@ function clearStalledFlag(coordDir: string, log: (msg: string) => void): void {
 
 // ─── Final summary phase ─────────────────────────────────────────────────────
 
-function finalize(config: Config, paths: ReturnType<typeof getPaths>, log: (msg: string) => void) {
+function finalize(config, paths, parsedConfig, log) {
   log("All worker agents completed. Spawning worker session for review summary...");
-  const agents = readJSON<Record<string, AgentEntry>>(paths.agents);
-  const summaries: string[] = [];
+  const agents = readJSON(paths.agents);
+  const summaries = [];
   let workerCli = "kilo";
   let baseBranch = "main";
 
@@ -918,17 +791,24 @@ Keep the total output under 50 lines. Be direct.`;
   const promptFile = path.join(os.tmpdir(), `review-prompt-${Date.now()}.txt`);
   fs.writeFileSync(promptFile, shortPrompt, "utf-8");
 
-  const { cmd, cmdArgs } = workerCliCommand(workerCli, shortPrompt, promptFile);
   let summaryOutput = "";
   try {
     log(`Calling ${workerCli} for review summary...`);
-    const result = spawnSync(cmd, cmdArgs, { encoding: "utf-8", maxBuffer: 1024 * 1024 * 10, timeout: 120000 });
+    const template = parsedConfig.cli_templates[workerCli];
+    let result;
+    if (template) {
+      const cmdStr = template.replace(/\{prompt_file\}/g, promptFile);
+      result = spawnSync(cmdStr, { shell: true, encoding: "utf-8", maxBuffer: 1024 * 1024 * 10, timeout: 120000 });
+    } else {
+      const { cmd, cmdArgs } = defaultCliCommand(workerCli, shortPrompt, promptFile);
+      result = spawnSync(cmd, cmdArgs, { encoding: "utf-8", maxBuffer: 1024 * 1024 * 10, timeout: 120000 });
+    }
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`${workerCli} exited with status ${result.status}: ${result.stderr}`);
     summaryOutput = result.stdout;
     fs.writeFileSync(summaryFile, summaryOutput, "utf-8");
     log(`Review summary generated by ${workerCli}.`);
-  } catch (err: any) {
+  } catch (err) {
     log(`Worker review failed (${err.message}). Writing raw stats fallback.`);
     summaryOutput = `ALL AGENTS COMPLETED\n\n${agentsList}\n\nNext: return to your Claude session and say "The agents are done. Please review and integrate their work."`;
     fs.writeFileSync(summaryFile, summaryOutput, "utf-8");
@@ -945,21 +825,21 @@ Keep the total output under 50 lines. Be direct.`;
       execSync(`x-terminal-emulator -e "cat '${summaryFile}'; read -p 'Press Enter to close...'" || xterm -e "cat '${summaryFile}'; read -p 'Press Enter to close...'"`, { shell: "/bin/bash" });
     }
     log("Opened review summary in new terminal window.");
-  } catch (err: any) {
+  } catch (err) {
     log(`Could not open new terminal: ${err.message}. Printing summary inline.`);
     console.log("\n" + summaryOutput + "\n");
   }
   log("Orchestrator loop ending.");
 
-  // Single-use helper — used only by `finalize`.
-  function workerCliCommand(workerCli: string, shortPrompt: string, promptFile: string): { cmd: string; cmdArgs: string[] } {
-    switch (workerCli) {
+  // Single-use helper — only used by finalize above, when no template is configured for the CLI.
+  function defaultCliCommand(cli, prompt, promptFile) {
+    switch (cli) {
       case "aider":    return { cmd: "aider",    cmdArgs: ["--message-file", promptFile, "--yes"] };
-      case "claude":   return { cmd: "claude",   cmdArgs: ["-p", shortPrompt, "--dangerously-skip-permissions"] };
-      case "codex":    return { cmd: "codex",    cmdArgs: ["--exec", shortPrompt] };
-      case "gemini":   return { cmd: "gemini",   cmdArgs: ["--prompt", shortPrompt, "--yolo"] };
-      case "opencode": return { cmd: "opencode", cmdArgs: ["run", shortPrompt, "--yes"] };
-      default:         return { cmd: "kilo",     cmdArgs: [shortPrompt, "--mode", "code", "--auto"] };
+      case "claude":   return { cmd: "claude",   cmdArgs: ["-p", prompt, "--dangerously-skip-permissions"] };
+      case "codex":    return { cmd: "codex",    cmdArgs: ["--exec", prompt] };
+      case "gemini":   return { cmd: "gemini",   cmdArgs: ["--prompt", prompt, "--yolo"] };
+      case "opencode": return { cmd: "opencode", cmdArgs: ["run", prompt, "--yes"] };
+      default:         return { cmd: "kilo",     cmdArgs: ["run", prompt, "--auto"] };
     }
   }
 }

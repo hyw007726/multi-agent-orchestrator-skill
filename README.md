@@ -22,8 +22,8 @@ It safely sandboxes workers into `git worktrees`, manages their lifecycles via a
 - **Stalled-CLI surfacing** — if the arbitration CLI fails repeatedly the dashboard renders a banner with diagnostics, so you know whether the loop is making progress or stuck.
 - **Argv-form validation** — `validation_command` accepts a JSON argv array (`["npm","run","test"]`) so it runs with `shell:false` — no shell expansion, no injection surface. Shell-string form still works for pipes / `&&`.
 
-## ⚙️ Configuration (`orchestrator.config.yml`)
-The skill reads `orchestrator.config.yml` at the project root. Key knobs:
+## ⚙️ Configuration (`orchestrator.config.js`)
+The skill reads `orchestrator.config.js` at the project root. Key knobs:
 - `default_cli` — worker CLI for spawning agents and the cheap monitor calls.
 - `orchestrator_cli` — CLI used by the loop for request arbitration (defaults to `claude`).
 - `cli_templates` — exact bash invocations for each supported CLI; insulates the system from third-party flag changes.
@@ -33,7 +33,7 @@ The skill reads `orchestrator.config.yml` at the project root. Key knobs:
 
 If the file is absent, the orchestrator picks sensible defaults based on project size.
 
-**Recommended default combination:** `default_cli: kilo` + DeepSeek V4 Pro (`deepseek-v4-pro`, 1M context, cheap and fast) for workers, with `orchestrator_cli: claude` (a stronger reasoning model) for arbitration. Kilo's model selection lives in its own BYOK provider settings, so no template change is needed — just pick `deepseek-v4-pro` in Kilo's model picker after you authenticate, and run `npx ts-node scripts/preflight.ts` to confirm the chain is exercising the API end-to-end (a bare `--version` check only proves the binary is installed).
+**Recommended default combination:** `default_cli: kilo` + DeepSeek V4 Pro (`deepseek-v4-pro`, 1M context, cheap and fast) for workers, with `orchestrator_cli: claude` (a stronger reasoning model) for arbitration. Kilo's model selection lives in its own BYOK provider settings, so no template change is needed — just pick `deepseek-v4-pro` in Kilo's model picker after you authenticate, and run `node scripts/preflight.js` to confirm the chain is exercising the API end-to-end (a bare `--version` check only proves the binary is installed).
 
 ## 📦 Prerequisites
 
@@ -45,22 +45,23 @@ If the file is absent, the orchestrator picks sensible defaults based on project
    ```bash
    npm install -g kilo-cli
    ```
-*(Note: `typescript` and `ts-node` are also required globally, but the skill's automated `setup.js` script will install them for you on first use!)*
+
+That's it for prerequisites — the skill itself ships zero external dependencies. Every script runs on Node.js built-ins, so there's no `npm install`, no `node_modules/`, no build step at any point.
 
 > **Note:** This is a **Claude Code skill**, not a Claude.ai (web) or Claude Desktop one. The orchestrator shells out to `nohup`, `git worktree`, `kill`, and `osascript`/terminal-spawning commands, none of which run inside the web/desktop sandbox. Install it under Claude Code as described below.
 
 ## 🛠️ Installation
 
-One command — Claude Code auto-discovers any folder under `~/.claude/skills/` that contains a `SKILL.md`, and the skill self-installs its Node deps the first time you invoke it (no manual `npm install`).
+One command — Claude Code auto-discovers any folder under `~/.claude/skills/` that contains a `SKILL.md`.
 
 ```bash
 git clone https://github.com/hyw007726/claud-multi-agent-orchestrator-skill.git \
   ~/.claude/skills/multi-agent-orchestrator
 ```
 
-That's it. Open Claude Code in any project and ask it to "split this large feature into parallel agents" — on first run, Claude will detect that `node_modules/` is missing in the skill folder, run `npm install` once (~5s), and proceed. Subsequent invocations skip the install. You can also invoke the skill explicitly with `/multi-agent-orchestrator`.
+That's it. Open Claude Code in any project and ask it to "split this large feature into parallel agents", or invoke the skill explicitly with `/multi-agent-orchestrator`. Nothing to install or build inside the skill folder.
 
-**Updating:** `git pull` inside `~/.claude/skills/multi-agent-orchestrator`. Claude Code live-reloads skills with no restart; if a future update changes deps, the next invocation re-runs `npm install` automatically.
+**Updating:** `git pull` inside `~/.claude/skills/multi-agent-orchestrator`. Claude Code live-reloads skills with no restart.
 
 **Uninstalling:** `rm -rf ~/.claude/skills/multi-agent-orchestrator`.
 
@@ -75,10 +76,10 @@ ln -s ~/src/multi-agent-orchestrator ~/.claude/skills/multi-agent-orchestrator
 
 ## 🚀 Using the Skill
 
-1. **(Optional) Configure**: Edit `orchestrator.config.yml` to set your preferred CLIs, timeouts, and restart caps. The shipped defaults work out of the box.
+1. **(Optional) Configure**: Edit `orchestrator.config.js` to set your preferred CLIs, timeouts, and restart caps. The shipped defaults work out of the box.
 2. **Verify the worker chain end-to-end** (catches missing API keys / unselected models in 5–10s instead of a 10-minute liveness timeout):
    ```bash
-   npx ts-node ~/.claude/skills/multi-agent-orchestrator/scripts/preflight.ts
+   node ~/.claude/skills/multi-agent-orchestrator/scripts/preflight.js
    ```
 3. **Start a project**: Ask Claude to build a complex project that genuinely benefits from parallelism. Claude reads `SKILL.md`, decomposes the task, writes `coord/DECISIONS.md`, spawns the workers, and launches the Live Dashboard.
 4. **Sit back**: when all agents finish, the loop opens a review-summary terminal window. Hand control back to Claude in a new (or the same) session and say *"The agents are done. Please review and integrate their work."*
@@ -94,7 +95,7 @@ You can instruct Claude to use different CLIs by appending the `--cli` flag:
 
 *(You can also pass custom arguments to your chosen CLI by appending them after `--`, e.g., `--cli aider -- --model gpt-4o`)*
 
-The same set is supported for the orchestrator CLI itself via `orchestrator_cli` in `orchestrator.config.yml` — point it at a high-tier model for arbitration, or at a fast worker if you want monitoring to stay cheap.
+The same set is supported for the orchestrator CLI itself via `orchestrator_cli` in `orchestrator.config.js` — point it at a high-tier model for arbitration, or at a fast worker if you want monitoring to stay cheap.
 
 ## ⚠️ Important Note
 Make sure your chosen worker CLI is fully authenticated and has a default model selected. Because the workers run as non-interactive background processes, they will hang indefinitely if they encounter an interactive login prompt!

@@ -1,11 +1,2 @@
 TODO.md
-node_modules/
 .claude/
-.kilocode/worktrees/
-.agents/worktrees/
-coord/
-coord/orchestrator-loop.out
-coord/orchestrator.log
-coord/logs/
-coord/*.lock/
-coord/orchestrator.instance

@@ -21,14 +21,13 @@ encode anything the headless background loop won't otherwise know.
     "agent-name": {
       "description": "string — what this agent is allowed to build",
       "timeout_mins": "integer | omitted — overrides default_timeout_mins",
-      "progress_timeout_mins": "integer | omitted — overrides default_progress_timeout_mins",
-      "max_iterations": "integer | omitted — overrides default_max_iterations"
+      "progress_timeout_mins": "integer | omitted — overrides default_progress_timeout_mins"
     }
   }
 }
 ```
 
-`bootstrap.ts` initializes `chat_context` and `tasks` as empty objects (or wraps
+`bootstrap.js` initializes `chat_context` and `tasks` as empty objects (or wraps
 a `--chat-context` string as `{ "summary": "<string>" }` for backward compat);
 the orchestrator session is expected to use the `Edit` tool to populate them
 between Phase 2 and Phase 4. The keys under `chat_context` are advisory — the
@@ -53,7 +52,7 @@ loop only serializes the whole object into the arbitration prompt.
 ```
 
 ## agents.json
-Written by `spawn-agent.ts` and mutated by `orchestrator-loop.ts`. The full
+Written by `spawn-agent.js` and mutated by `orchestrator-loop.js`. The full
 shape — every field the loop actually depends on — is:
 
 ```json
@@ -68,9 +67,8 @@ shape — every field the loop actually depends on — is:
     "started_at": "ISO 8601 timestamp",
     "last_heartbeat": "ISO 8601 timestamp",
     "validate_cmd": "string | string[] | null — JSON argv array (preferred, runs with shell:false) or shell-string fallback; null disables validation",
-    "timeout_mins": "integer | null — liveness threshold (no log output); falls back to default_timeout_mins from orchestrator.config.yml",
+    "timeout_mins": "integer | null — liveness threshold (no log output); falls back to default_timeout_mins from orchestrator.config.js",
     "progress_timeout_mins": "integer | null — progress threshold (no code change while logs flow); falls back to default_progress_timeout_mins",
-    "max_iterations": "integer | null — cap on tool loops",
     "restart_count": "integer — bumped on every respawn (validation failure, AI-Review course-correction, explicit soft/hard restart); once it exceeds default_max_restarts the loop marks the agent `errored` instead of respawning"
   }
 }

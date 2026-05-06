@@ -9,12 +9,11 @@ This skill defines a COMPLETE, CLI-agnostic multi-agent orchestration system.
 
 ## Prerequisites & Recommendations
 Before using this skill, ensure you have:
-1. **A Headless Worker CLI**: Installed globally. This skill uses `kilo` (Kilo Code) by default, but it can orchestrate **Aider**, **Claude Code**, **Gemini**, **Codex**, **OpenCode**, or any other CLI added to `cli_templates` in `orchestrator.config.yml`. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
+1. **A Headless Worker CLI**: Installed globally. This skill uses `kilo` (Kilo Code) by default, but it can orchestrate **Aider**, **Claude Code**, **Gemini**, **Codex**, **OpenCode**, or any other CLI added to `cli_templates` in `orchestrator.config.js`. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
 
-All other dependencies (Node packages, TypeScript, ts-node) are installed automatically by `setup.js` during Step 0.
 
 > **Architectural Recommendation & Intelligence Boundaries:**
-> This skill is highly optimized for cost-efficiency without sacrificing quality. It relies on **three distinct decision-making contexts**, each driven by a configurable CLI in `orchestrator.config.yml`:
+> This skill is highly optimized for cost-efficiency without sacrificing quality. It relies on **three distinct decision-making contexts**, each driven by a configurable CLI in `orchestrator.config.js`:
 >
 > 1. **Initial Decomposition (Interactive Session):** Your active Orchestrator session (e.g., Claude Code with a high-tier reasoning model like Opus 4.7) acts as the primary architect. It analyzes the task, breaks it into non-overlapping boundaries, writes the `coord/context.json`, and spawns the background agents.
 > 2. **The Background Orchestrator Loop (Headless Script):** Once launched, the background loop has **no access to your chat history**. It splits its LLM work across two CLIs:
@@ -32,10 +31,10 @@ All other dependencies (Node packages, TypeScript, ts-node) are installed automa
 >
 > There is intentionally no separate `default_model` config key, because each CLI uses different flag names and model-id namespaces (and some don't take a flag at all), so keeping it close to the actual mechanism avoids a leaky aliasing layer.
 >
-> **Recommended default combination:** `default_cli: kilo` + DeepSeek V4 Pro (`deepseek-v4-pro`, 1M context, cheap and fast). Because Kilo is an external-config CLI, set this up by configuring DeepSeek as a BYOK provider in Kilo and selecting `deepseek-v4-pro` in its model picker — `cli_templates.kilo` does not need to change. Then run `npx ts-node <skill>/scripts/preflight.ts` to confirm the chain (API key + provider + model selection) is actually exercising the API, not just confirming the binary is installed.
+> **Recommended default combination:** `default_cli: kilo` + DeepSeek V4 Pro (`deepseek-v4-pro`, 1M context, cheap and fast). Because Kilo is an external-config CLI, set this up by configuring DeepSeek as a BYOK provider in Kilo and selecting `deepseek-v4-pro` in its model picker — `cli_templates.kilo` does not need to change. Then run `node <skill>/scripts/preflight.js` to confirm the chain (API key + provider + model selection) is actually exercising the API, not just confirming the binary is installed.
 
-## ⚙️ Configuration (`orchestrator.config.yml`)
-Before beginning Phase 1, you MUST check if an `orchestrator.config.yml` file exists in the project root. This file acts as the dynamic source of truth for the user's preferences.
+## ⚙️ Configuration (`orchestrator.config.js`)
+Before beginning Phase 1, you MUST check if an `orchestrator.config.js` file exists in the project root. This file acts as the dynamic source of truth for the user's preferences.
 
 If it exists, read it to determine:
 - **`default_cli`**: The Worker CLI to use for spawning agents and for the cheap AI-Review / final-summary calls.
@@ -43,26 +42,29 @@ If it exists, read it to determine:
 - **`cli_templates`**: The exact bash commands used to spawn the worker CLIs. The same templates are reused for `orchestrator_cli` calls and the AI-Review calls, so the system is immune to third-party tool interface changes. **This is also where you pin a model** — append the CLI's model flag (`--model <id>`, `--llm <id>`, etc.) to the template string and that model is used for every spawn driven by it.
 - **`default_timeout_mins`**: The default time before an agent is considered hanging (Liveness).
 - **`default_progress_timeout_mins`**: The default time before an active agent with zero code changes is considered stuck (Progress).
-- **`default_max_iterations`**: The default cap on agent tool loops.
 - **`default_max_restarts`**: The maximum number of times the loop will respawn the same agent before marking it `errored` (defaults to 3). Counted across both validation-failure restarts and AI-Review restarts.
 - **`claude_failure_threshold`**: Consecutive arbitration-CLI failures before the loop writes `coord/orchestrator-stalled.flag` (which the dashboard surfaces). Defaults to 5.
 - **`poll_min_ms` / `poll_max_ms`**: Adaptive polling bounds for the orchestrator loop. The loop polls at `poll_min_ms` (default 1000) right after seeing pending requests, then exponentially backs off (×1.5 per idle cycle) up to `poll_max_ms` (default 15000). Pass `--poll-interval <ms>` to the loop to disable the heuristic and force a fixed cadence.
-- **`cli_health_checks`**: Per-CLI probe commands run by `scripts/preflight.ts` to fail fast on install / auth issues. Defaults to `<cli> --version` for every supported CLI.
+- **`cli_health_checks`**: Per-CLI probe commands run by `scripts/preflight.js` to fail fast on install / auth issues. Defaults to `<cli> --version` for every supported CLI.
 
-Example `orchestrator.config.yml`:
-```yaml
-# The background CLI worker to execute tasks
-default_cli: kilo
+Example `orchestrator.config.js`:
+```js
+// Toggle options by commenting/uncommenting lines.
+module.exports = {
+  // The background CLI worker to execute tasks
+  default_cli: "kilo",
 
-# Command templates for supported CLIs. 
-# Use {prompt_file} as a placeholder for the generated prompt text file.
-cli_templates:
-  kilo: "kilo \"$(cat {prompt_file})\" --auto"
-  aider: "aider --message-file {prompt_file} --yes"
-  claude: "claude -p \"$(cat {prompt_file})\" --dangerously-skip-permissions --model claude-sonnet-4-6"
-  gemini: "gemini --prompt \"$(cat {prompt_file})\" --yolo"
-  codex: "codex --exec \"$(cat {prompt_file})\""
-  opencode: "opencode run \"$(cat {prompt_file})\" --yes"
+  // Command templates for supported CLIs.
+  // Use {prompt_file} as a placeholder for the generated prompt text file.
+  cli_templates: {
+    kilo: 'kilo run "$(cat {prompt_file})" --auto',
+    aider: "aider --message-file {prompt_file} --yes",
+    claude: 'claude -p "$(cat {prompt_file})" --dangerously-skip-permissions --model claude-sonnet-4-6',
+    gemini: 'gemini --prompt "$(cat {prompt_file})" --yolo',
+    codex: 'codex --exec "$(cat {prompt_file})"',
+    opencode: 'opencode run "$(cat {prompt_file})" --yes',
+  },
+};
 ```
 
 If the file does not exist, you MUST dynamically evaluate the overall size and complexity of the user's project to determine sensible default bounds (e.g., a simple script might only need a 5-minute progress timeout and 3 iterations, while a complex React app might need a 20-minute progress timeout and 10 iterations). You can also offer to create this config file for the user so they can explicitly customize their workflow bounds in the future!
@@ -73,20 +75,14 @@ If the file does not exist, you MUST dynamically evaluate the overall size and c
 
 These three steps run unconditionally on every invocation, before any task reasoning begins.
 
-**Step 1 — Skill self-install (idempotent):** Check whether `<ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/node_modules/js-yaml/package.json` exists. If it does NOT, run:
+**Step 1 — No setup required:** The skill has no external dependencies — all scripts use Node.js built-in modules only. No `npm install`, no global packages, no build step. Proceed directly to Step 2.
 
-```bash
-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/setup.js
-```
-
-This is a one-time, ~5-second install on a fresh clone. It installs local packages (`js-yaml`, `proper-lockfile`, `ts-node`, etc.) and globally installs `typescript` and `ts-node` so the orchestration scripts can run from any project directory. Tell the user "Running automated setup (one-time)..." before executing. Do NOT skip — the skill must handle its own setup.
-
-**Step 2 — Read configuration:** Read `orchestrator.config.yml` from the project root (as described in the Configuration section above) to load the user's preferred CLI and default bounds.
+**Step 2 — Read configuration:** Read `orchestrator.config.js` from the project root (as described in the Configuration section above) to load the user's preferred CLI and default bounds.
 
 **Step 3 — Preflight CLI health check (REQUIRED):** Verify the worker CLI and orchestrator CLI are runnable before any decomposition or spawning — an unauthenticated CLI will hang on an interactive prompt for the full liveness timeout otherwise.
 
 ```bash
-npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.ts
+node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.js
 ```
 
 The script checks `default_cli` and `orchestrator_cli` by default. It runs two probes per CLI: a `--version` install check, then an auth probe that exercises the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection. Pass `--skip-auth` for install-only checks (CI / offline). If any check fails, abort and surface the diagnostic — typical fixes are installing the CLI, putting it on `$PATH`, signing in, or selecting a default model.
@@ -114,7 +110,7 @@ When starting a new orchestrated project, create the `coord/` directory at the p
 **Important Path Resolution:** The scripts required for this workflow are located in the `scripts/` directory next to this `SKILL.md` file. Before running the commands below, determine the absolute path to this skill folder (e.g., if you are reading this from `~/Desktop/multi-agent-orchestrator/SKILL.md`, the path is `~/Desktop/multi-agent-orchestrator`).
 
 ```bash
-npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/bootstrap.ts \
+node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/bootstrap.js \
   --project "Your project description" \
   --coord ./coord
 ```
@@ -124,7 +120,7 @@ Because the orchestrator loop runs after your Claude CLI session is done, it has
 
 You should also include the tasks you generated in Phase 1 under the `"tasks"` key.
 
-`bootstrap.ts` only scaffolds an empty skeleton (`chat_context: {}`, `tasks: {}`). After running it, use the `Edit` tool to fill `context.json` with the structured shape below before you spawn any workers.
+`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`, `tasks: {}`). After running it, use the `Edit` tool to fill `context.json` with the structured shape below before you spawn any workers.
 
 ```json
 {
@@ -142,8 +138,7 @@ You should also include the tasks you generated in Phase 1 under the `"tasks"` k
     "agent-name": {
       "description": "description of the boundary",
       "timeout_mins": 10,
-      "progress_timeout_mins": 15,
-      "max_iterations": 5
+      "progress_timeout_mins": 15
     }
   }
 }
@@ -161,10 +156,10 @@ For each agent:
    ```bash
    git worktree add <worktree-path>/<agent-name> -b <agent-name>
    ```
-2. **Launch the agent in the background** using the `spawn-agent.ts` helper:
+2. **Launch the agent in the background** using the `spawn-agent.js` helper:
    ```bash
    echo "YOUR PROMPT HERE" > /tmp/prompt-<agent-name>.txt
-   npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/spawn-agent.ts \
+   node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/spawn-agent.js \
      --agent <agent-name> \
      --mode <mode> \
      --prompt-file /tmp/prompt-<agent-name>.txt \
@@ -172,8 +167,7 @@ For each agent:
      --validate '<validation_command>' \   # JSON argv (e.g. '["npm","test"]') is preferred over a shell string
      --timeout <timeout_mins> \
      --progress-timeout <progress_timeout_mins> \
-     --max-iterations <max_iterations> \
-     --cli <cli-name> # Optional: e.g. aider, claude. Defaults to `default_cli` from orchestrator.config.yml (kilo if unset).
+     --cli <cli-name> # Optional: e.g. aider, claude. Defaults to `default_cli` from orchestrator.config.js (kilo if unset).
    ```
 
 > **💡 Tip for Kilo Code Users:** Because the agents are physically spawned inside the `.kilocode/worktrees/` directory path by default, they will automatically appear in your **Kilo Code Agent Manager UI** inside VS Code! You can monitor the specific files they are editing in real-time natively in your IDE.
@@ -183,7 +177,7 @@ For each agent:
 To ensure the loop runs independently, launch it in the background and exit:
 
 ```bash
-nohup npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/orchestrator-loop.ts --coord ./coord > coord/orchestrator-loop.out 2>&1 &
+nohup node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/orchestrator-loop.js --coord ./coord > coord/orchestrator-loop.out 2>&1 &
 ```
 
 **Once the loop is started, your job as the starter session is done. You should politely inform the user that the orchestration loop is running in the background and exit.**
@@ -216,7 +210,7 @@ The loop then uses this AI-generated instruction as the prompt for the `soft_res
 
 ## Phase 6 — Review and Integration
 
-When all worker agents finish, the `orchestrator-loop.ts` script will automatically:
+When all worker agents finish, the `orchestrator-loop.js` script will automatically:
 1. **Collect Diffs**: Gather git stats and diffs from all completed agent worktrees.
 2. **AI Summary**: Spawn a final **worker agent session** (using the same CLI the workers used) to generate a concise, plain-text review summary.
 3. **Popup Notification**: Open a **new terminal window** (cross-platform) displaying this summary, giving the user an immediate "at-a-glance" look at what was built.
