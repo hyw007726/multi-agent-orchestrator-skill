@@ -45,6 +45,7 @@ If the file is absent, the orchestrator picks sensible defaults based on project
    ```bash
    npm install -g kilo-cli
    ```
+*(Note: `typescript` and `ts-node` are also required globally, but the skill's automated `setup.js` script will install them for you on first use!)*
 
 > **Note:** This is a **Claude Code skill**, not a Claude.ai (web) or Claude Desktop one. The orchestrator shells out to `nohup`, `git worktree`, `kill`, and `osascript`/terminal-spawning commands, none of which run inside the web/desktop sandbox. Install it under Claude Code as described below.
 

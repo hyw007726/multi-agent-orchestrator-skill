@@ -9,8 +9,9 @@ This skill defines a COMPLETE, CLI-agnostic multi-agent orchestration system.
 
 ## Prerequisites & Recommendations
 Before using this skill, ensure you have:
-1. **A Headless Worker CLI**: Installed globally. This skill uses `kilo` (Kilo Code) by default, but it can easily orchestrate **Aider**, **OpenCode**, or any other CLI defined in the `scripts/spawn-agent.ts` file. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
-2. **TypeScript & TS-Node**: Installed to execute the orchestration scripts.
+1. **A Headless Worker CLI**: Installed globally. This skill uses `kilo` (Kilo Code) by default, but it can orchestrate **Aider**, **Claude Code**, **Gemini**, **Codex**, **OpenCode**, or any other CLI added to `cli_templates` in `orchestrator.config.yml`. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
+
+All other dependencies (Node packages, TypeScript, ts-node) are installed automatically by `setup.js` during Step 0.
 
 > **Architectural Recommendation & Intelligence Boundaries:**
 > This skill is highly optimized for cost-efficiency without sacrificing quality. It relies on **three distinct decision-making contexts**, each driven by a configurable CLI in `orchestrator.config.yml`:
@@ -68,27 +69,31 @@ If the file does not exist, you MUST dynamically evaluate the overall size and c
 
 > **Note:** All worker CLIs are automatically launched with their respective "bypass permissions" flags (`--yes`, `--dangerously-skip-permissions`, `--yolo`, `--auto`) so they run fully autonomously in the background. The Orchestrator Loop will remember which CLI tool you spawned the agent with and will automatically use the exact same tool if it needs to respawn the agent after a rollback!
 
-## Phase 1 — Task Evaluation & Decomposition
+## Phase 0 — Setup
 
-**Step 0 — Skill self-install (REQUIRED, idempotent):** Before running any of the helper scripts, verify that the skill's own Node deps are present. The bootstrap / spawn / loop / preflight scripts all import `js-yaml` and `proper-lockfile`; without them every `ts-node` invocation will fail at import time. Check whether `<ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/node_modules/js-yaml/package.json` exists. If it does NOT, run:
+These three steps run unconditionally on every invocation, before any task reasoning begins.
+
+**Step 1 — Skill self-install (idempotent):** Check whether `<ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/node_modules/js-yaml/package.json` exists. If it does NOT, run:
 
 ```bash
-cd <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER> && npm install
+node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/setup.js
 ```
 
-This is a one-time, ~5-second install on a fresh clone and a no-op on subsequent invocations. Tell the user "Installing skill dependencies (one-time setup)..." before running it so they understand the brief delay. Do NOT skip the check — users following the README don't run `npm install` manually; they expect this skill to take care of itself.
+This is a one-time, ~5-second install on a fresh clone. It installs local packages (`js-yaml`, `proper-lockfile`, `ts-node`, etc.) and globally installs `typescript` and `ts-node` so the orchestration scripts can run from any project directory. Tell the user "Running automated setup (one-time)..." before executing. Do NOT skip — the skill must handle its own setup.
 
-**Step 0.5 — Read configuration:** Read `orchestrator.config.yml` (as described above) to load the user's preferred CLI and default bounds.
+**Step 2 — Read configuration:** Read `orchestrator.config.yml` from the project root (as described in the Configuration section above) to load the user's preferred CLI and default bounds.
 
-**Step 0.75 — Preflight CLI health check (REQUIRED):** Before any decomposition or spawning, verify the worker CLI and the orchestrator CLI are actually runnable. Otherwise an unauthenticated CLI will hang on an interactive prompt for the full 10-minute liveness timeout per agent before failing.
+**Step 3 — Preflight CLI health check (REQUIRED):** Verify the worker CLI and orchestrator CLI are runnable before any decomposition or spawning — an unauthenticated CLI will hang on an interactive prompt for the full liveness timeout otherwise.
 
 ```bash
 npx ts-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.ts
 ```
 
-The script checks `default_cli` and `orchestrator_cli` by default. It runs two probes per CLI: a `--version` install check, then an auth probe that executes the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection are all wired up. Pass `--skip-auth` to run install checks only (useful in CI environments where credentials are not provisioned). If any check fails, abort and surface the diagnostic to the user — typical fixes are installing the CLI, putting it on `$PATH`, signing in / setting an API key, or selecting a default model.
+The script checks `default_cli` and `orchestrator_cli` by default. It runs two probes per CLI: a `--version` install check, then an auth probe that exercises the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection. Pass `--skip-auth` for install-only checks (CI / offline). If any check fails, abort and surface the diagnostic — typical fixes are installing the CLI, putting it on `$PATH`, signing in, or selecting a default model.
 
-Next, evaluate whether the user's overall task is suitable for multi-agent orchestration.
+## Phase 1 — Task Evaluation & Decomposition
+
+Evaluate whether the user's overall task is suitable for multi-agent orchestration.
 - **Do not use this skill** if the task is small, trivial, or requires tightly coupled sequential steps. Advise the user to let you handle it normally.
 - **Handle Overlapping Foundations First (CRITICAL):** True non-overlapping boundaries are rare. If agents will need to touch shared files (e.g., `package.json`, generic `types.ts`, test config, database schemas, router setups), **you must handle these sequentially before spawning agents.** If you spawn parallel worktrees that modify the same foundational files, you will create impossible merge conflicts.
   - *Action:* Tell the user: "I need to set up the shared foundation (schemas, package.json, etc.) first to prevent merge conflicts."
