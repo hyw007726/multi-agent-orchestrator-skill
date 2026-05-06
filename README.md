@@ -82,8 +82,8 @@ ln -s ~/src/multi-agent-orchestrator ~/.claude/skills/multi-agent-orchestrator
    ```bash
    node ~/.claude/skills/multi-agent-orchestrator/scripts/preflight.js
    ```
-3. **Start a project**: Ask Claude to build a complex project that genuinely benefits from parallelism. Claude reads `SKILL.md`, decomposes the task, writes `coord/DECISIONS.md`, spawns the workers, and starts the orchestration loop.
-4. **Sit back**: when all agents finish, the loop writes `coord/review-summary.txt` and opens it in a terminal if `launch_review_terminal` is enabled. Hand control back to Claude in a new (or the same) session and say *"The agents are done. Please review and integrate their work."*
+3. **Start a project**: Ask Claude Code to build something complex. The orchestrator session decomposes the task, writes `coord/context.json`, then runs `scripts/launch-all.js --coord ./coord` to create worktrees, render prompts, spawn every agent, and background the self-healing loop — all from a single command.
+4. **Sit back**: when all agents finish, the loop writes `coord/review-summary.txt`. Return to Claude and say *"The agents are done. Please review and integrate their work."*
 
 ## 🔄 Supported CLIs
 You can instruct Claude to use different CLIs by appending the `--cli` flag:

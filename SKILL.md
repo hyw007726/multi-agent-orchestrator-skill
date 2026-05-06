@@ -149,39 +149,22 @@ You should also include the tasks you generated in Phase 1 under the `"tasks"` k
 To ensure critical architectural rules are never lost in JSON compression, write a human-readable `coord/DECISIONS.md` file. This file acts as the ultimate source of truth for shared API contracts, data models, and structural decisions made in Phase 1. The worker agents are instructed to read this file before they begin coding.
 
 ## Phase 3 — Prompt Generation
-Use the `references/worker-prompt-template.md` to generate prompts for each agent.
 
-## Phase 4 — Spawning Agents
-For each agent:
-1. Create a git worktree. If you are using Kilo Code, create it in `.kilocode/worktrees/` so it appears in the VS Code UI. If using Aider or another tool, use `.agents/worktrees/`:
-   ```bash
-   git worktree add <worktree-path>/<agent-name> -b <agent-name>
-   ```
-2. **Launch the agent in the background** using the `spawn-agent.js` helper:
-   ```bash
-   echo "YOUR PROMPT HERE" > /tmp/prompt-<agent-name>.txt
-   node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/spawn-agent.js \
-     --agent <agent-name> \
-     --mode <mode> \
-     --prompt-file /tmp/prompt-<agent-name>.txt \
-     --coord ./coord \
-     --validate '<validation_command>' \   # JSON argv (e.g. '["npm","test"]') is preferred over a shell string
-     --timeout <timeout_mins> \
-     --progress-timeout <progress_timeout_mins> \
-     --cli <cli-name> # Optional: e.g. aider, claude. Defaults to `default_cli` from orchestrator.config.js (kilo if unset).
-   ```
+Prompts are rendered automatically by `scripts/launch-all.js` during Phase 4; the orchestrator session no longer hand-substitutes placeholders. `launch-all.js` reads `references/worker-prompt-template.md` and machine-substitutes the placeholders defined in the grammar table of `references/schemas.md` from each agent's `tasks{}` record. Ensure every agent record is fully populated before you launch.
 
-> **💡 Tip for Kilo Code Users:** Because the agents are physically spawned inside the `.kilocode/worktrees/` directory path by default, they will automatically appear in your **Kilo Code Agent Manager UI** inside VS Code! You can monitor the specific files they are editing in real-time natively in your IDE.
-
-## Phase 5 — The Orchestrator Loop
-
-To ensure the loop runs independently, launch it in the background and exit:
+## Phase 4 — Launch
 
 ```bash
-nohup node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/orchestrator-loop.js --coord ./coord > coord/orchestrator-loop.out 2>&1 &
+node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/launch-all.js --coord ./coord
 ```
 
+`launch-all.js` reads `coord/context.json`, iterates every entry under `tasks{}`, and for each agent: creates a git worktree at `.kilocode/worktrees/<agent>` (Kilo) or `.agents/worktrees/<agent>` (other CLIs), renders the worker prompt by machine-substituting the placeholders defined in `references/schemas.md`, writes the rendered prompt to a tmp file, and shells out to `scripts/spawn-agent.js`. After every `spawn-agent` call succeeds, it backgrounds `scripts/orchestrator-loop.js` with `nohup` and exits non-blocking.
+
+On success it prints a one-line summary per agent (name, PID, log path), the orchestrator loop PID, and a dashboard hint. On failure it stops the loop, leaves already-spawned agents alive for inspection, and exits non-zero with a diagnostic.
+
 **Once the loop is started, your job as the starter session is done. You should politely inform the user that the orchestration loop is running in the background and exit.**
+
+> **Tip for Kilo Code Users:** Because the agents are physically spawned inside the `.kilocode/worktrees/` directory path by default, they will automatically appear in your **Kilo Code Agent Manager UI** inside VS Code! You can monitor the specific files they are editing in real-time natively in your IDE.
 
 By default the dashboard is not auto-launched. To monitor progress manually, run:
 ```bash
@@ -214,7 +197,7 @@ The loop then uses this AI-generated instruction as the prompt for the `soft_res
 
 **Stalled CLI surfacing:** If the orchestrator CLI fails `claude_failure_threshold` cycles in a row (default 5), the loop writes `coord/orchestrator-stalled.flag` with a diagnostic payload. The dashboard renders a red banner so you can see at a glance that arbitration is stuck (e.g., `claude` is unauthenticated, rate-limited, or down). The flag is removed automatically as soon as a cycle succeeds.
 
-## Phase 6 — Review and Integration
+## Phase 5 — Review and Integration
 
 When all worker agents finish, the `orchestrator-loop.js` script will automatically:
 1. **Collect Diffs**: Gather git stats and diffs from all completed agent worktrees.
