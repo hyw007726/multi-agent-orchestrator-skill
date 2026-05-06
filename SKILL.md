@@ -46,6 +46,7 @@ If it exists, read it to determine:
 - **`claude_failure_threshold`**: Consecutive arbitration-CLI failures before the loop writes `coord/orchestrator-stalled.flag` (which the dashboard surfaces). Defaults to 5.
 - **`poll_min_ms` / `poll_max_ms`**: Adaptive polling bounds for the orchestrator loop. The loop polls at `poll_min_ms` (default 1000) right after seeing pending requests, then exponentially backs off (×1.5 per idle cycle) up to `poll_max_ms` (default 15000). Pass `--poll-interval <ms>` to the loop to disable the heuristic and force a fixed cadence.
 - **`cli_health_checks`**: Per-CLI probe commands run by `scripts/preflight.js` to fail fast on install / auth issues. Defaults to `<cli> --version` for every supported CLI.
+- **`launch_dashboard` / `launch_review_terminal`**: Optional GUI terminal auto-launch. Disabled by default for MVP reliability in headless/sandboxed terminals; run the dashboard manually or set these to `true` if your terminal environment supports spawning new windows.
 
 Example `orchestrator.config.js`:
 ```js
@@ -182,6 +183,11 @@ nohup node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/orchestrator-loop.js --c
 
 **Once the loop is started, your job as the starter session is done. You should politely inform the user that the orchestration loop is running in the background and exit.**
 
+By default the dashboard is not auto-launched. To monitor progress manually, run:
+```bash
+node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/dashboard.js --coord ./coord
+```
+
 ### Progress Monitoring
 The orchestrator loop doesn't just watch for crashes; it monitors for **actual code progress**. 
 - **The "Killer" Timeout (Liveness Detection)**: If an agent stops emitting logs for the configured `timeout_mins` duration, it is assumed hanging, killed, and marked as errored.
@@ -212,8 +218,8 @@ The loop then uses this AI-generated instruction as the prompt for the `soft_res
 
 When all worker agents finish, the `orchestrator-loop.js` script will automatically:
 1. **Collect Diffs**: Gather git stats and diffs from all completed agent worktrees.
-2. **AI Summary**: Spawn a final **worker agent session** (using the same CLI the workers used) to generate a concise, plain-text review summary.
-3. **Popup Notification**: Open a **new terminal window** (cross-platform) displaying this summary, giving the user an immediate "at-a-glance" look at what was built.
+2. **AI Summary**: Spawn a final **worker agent session** (using the same CLI the workers used) to generate a concise, plain-text review summary at `coord/review-summary.txt`.
+3. **Optional Popup Notification**: If `launch_review_terminal` is enabled, open a **new terminal window** displaying this summary.
 4. **Exit**: The orchestrator loop will then safely terminate.
 
 At this point, the user will return to Claude. They can either use their original chat window, or open a completely new chat window. They will give you a command like *"The agents are done. Please review and integrate their work."*

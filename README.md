@@ -11,8 +11,8 @@ It safely sandboxes workers into `git worktrees`, manages their lifecycles via a
 - **Self-Healing Loop**: Detects hung agents (no log output) and stuck agents (log output but no code progress). When an agent stalls, a single-shot LLM call diagnoses what's wrong and respawns with a 1-sentence course-correction.
 - **Validation Loop**: Each agent is assigned a `validation_command`. When the agent signals "done" the loop runs validation; on failure it auto-`soft_restart`s with the error log so the agent can fix its own code.
 - **Shared Architectural Source of Truth**: A `coord/DECISIONS.md` file captures shared API contracts, data models, and structural rules. Worker agents are instructed to read it before coding so foundational decisions never drift across worktrees.
-- **Live Dashboard**: A real-time TUI streams every agent's activity, restart count, and recent orchestrator decisions from a single terminal window.
-- **Auto-Review**: When agents finish, the loop generates an AI-powered summary and pops it open in a new terminal window.
+- **Live Dashboard**: A real-time TUI streams every agent's activity, restart count, and recent orchestrator decisions from a single terminal window. Run it manually by default, or opt into terminal auto-launch.
+- **Auto-Review**: When agents finish, the loop generates an AI-powered summary in `coord/review-summary.txt` and can optionally pop it open in a new terminal window.
 
 ## Reliability
 - **Restart cap** — every restart (validation failure, AI-Review course-correction, explicit action) bumps a per-agent `restart_count`. Past `default_max_restarts` (default 3) the loop stops respawning so failures can't thrash forever.
@@ -30,6 +30,7 @@ The skill reads `orchestrator.config.js` at the project root. Key knobs:
 - `default_timeout_mins` / `default_progress_timeout_mins` — liveness and progress thresholds.
 - `default_max_restarts` — restart cap per agent.
 - `claude_failure_threshold` — consecutive arbitration-CLI failures before the dashboard shows the stalled banner.
+- `launch_dashboard` / `launch_review_terminal` — opt-in GUI terminal spawning for environments where it is supported.
 
 If the file is absent, the orchestrator picks sensible defaults based on project size.
 
@@ -81,8 +82,8 @@ ln -s ~/src/multi-agent-orchestrator ~/.claude/skills/multi-agent-orchestrator
    ```bash
    node ~/.claude/skills/multi-agent-orchestrator/scripts/preflight.js
    ```
-3. **Start a project**: Ask Claude to build a complex project that genuinely benefits from parallelism. Claude reads `SKILL.md`, decomposes the task, writes `coord/DECISIONS.md`, spawns the workers, and launches the Live Dashboard.
-4. **Sit back**: when all agents finish, the loop opens a review-summary terminal window. Hand control back to Claude in a new (or the same) session and say *"The agents are done. Please review and integrate their work."*
+3. **Start a project**: Ask Claude to build a complex project that genuinely benefits from parallelism. Claude reads `SKILL.md`, decomposes the task, writes `coord/DECISIONS.md`, spawns the workers, and starts the orchestration loop.
+4. **Sit back**: when all agents finish, the loop writes `coord/review-summary.txt` and opens it in a terminal if `launch_review_terminal` is enabled. Hand control back to Claude in a new (or the same) session and say *"The agents are done. Please review and integrate their work."*
 
 ## 🔄 Supported CLIs
 You can instruct Claude to use different CLIs by appending the `--cli` flag:

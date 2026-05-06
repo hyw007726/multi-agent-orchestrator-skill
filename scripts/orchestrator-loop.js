@@ -45,7 +45,7 @@ async function runLoop() {
   log(`Orchestrator CLI: '${parsedConfig.orchestrator_cli}'  |  max restarts: ${parsedConfig.default_max_restarts}  |  CLI failure threshold: ${parsedConfig.claude_failure_threshold}`);
   log(`Acquired singleton lock on ${instanceLock.markerPath} (PID ${process.pid}).`);
 
-  launchDashboard(config, log);
+  launchDashboard(config, parsedConfig, log);
 
   const agentProgress = {};
   let consecutiveCliFailures = 0;
@@ -210,15 +210,24 @@ async function runLoop() {
 
   // ── Inner helpers ──────────────────────────────────────────────────────
 
-  function launchDashboard(config, log) {
+  function launchDashboard(config, parsedConfig, log) {
     try {
       const dashboardPath = path.join(__dirname, "dashboard.js");
+      const manualCommand = `node ${shellQuote(dashboardPath)} --coord ${shellQuote(config.coordDir)}`;
+      if (!parsedConfig.launch_dashboard) {
+        log(`Dashboard auto-launch disabled. Run manually in another terminal: ${manualCommand}`);
+        return;
+      }
       if (process.platform === "darwin") {
-        const scriptStr = `tell application "Terminal" to do script "cd '${process.cwd()}' && node '${dashboardPath}' --coord '${config.coordDir}'"`;
-        execSync(`osascript -e '${scriptStr}'`);
+        const command = [
+          "cd", shellQuote(process.cwd()),
+          "&&", "node", shellQuote(dashboardPath),
+          "--coord", shellQuote(config.coordDir),
+        ].join(" ");
+        runAppleScriptTerminal(command);
         log("Launched dashboard terminal.");
       } else {
-        log(`Dashboard can be run manually in another terminal: node '${dashboardPath}' --coord '${config.coordDir}'`);
+        log(`Dashboard can be run manually in another terminal: ${manualCommand}`);
       }
     } catch (e) {
       log(`Failed to launch dashboard: ${e.message}`);
@@ -461,6 +470,24 @@ function appendLog(logFile, message) {
   const line = `[${timestamp}] ${message}\n`;
   fs.appendFileSync(logFile, line);
   console.log(line.trim());
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function appleScriptString(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function runAppleScriptTerminal(command) {
+  const script = `tell application "Terminal" to do script "${appleScriptString(command)}"`;
+  const result = spawnSync("osascript", ["-e", script], { encoding: "utf-8" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const details = (result.stderr || result.stdout || "").trim();
+    throw new Error(details || `osascript exited with status ${result.status}`);
+  }
 }
 
 // ─── Process / git helpers ───────────────────────────────────────────────────
@@ -816,9 +843,15 @@ Keep the total output under 50 lines. Be direct.`;
   try { fs.unlinkSync(promptFile); } catch {}
 
   try {
+    if (!parsedConfig.launch_review_terminal) {
+      log(`Review terminal auto-launch disabled. Summary written to ${path.resolve(summaryFile)}.`);
+      console.log("\n" + summaryOutput + "\n");
+      log("Orchestrator loop ending.");
+      return;
+    }
     if (process.platform === "darwin") {
-      const script = `tell application "Terminal" to do script "cat '${summaryFile}'; echo; echo 'Press any key to close...'; read -n 1"`;
-      execSync(`osascript -e '${script}'`);
+      const command = `cat ${shellQuote(path.resolve(summaryFile))}; echo; echo 'Press any key to close...'; read -n 1`;
+      runAppleScriptTerminal(command);
     } else if (process.platform === "win32") {
       execSync(`start cmd /k "type ${summaryFile}"`, { shell: "cmd.exe" });
     } else {

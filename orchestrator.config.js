@@ -93,4 +93,10 @@ module.exports = {
   // fixed cadence.
   // poll_min_ms: 1000,
   // poll_max_ms: 15000,
+
+  // Terminal auto-launch is disabled by default in built-in config so the MVP works
+  // in headless/sandboxed terminals. Set these to true if your local macOS/Linux
+  // terminal environment allows GUI terminal spawning.
+  // launch_dashboard: true,
+  // launch_review_terminal: true,
 };
