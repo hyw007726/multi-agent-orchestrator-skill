@@ -85,6 +85,7 @@ function spawnAgent() {
       timeout_mins: config.timeoutMins,
       progress_timeout_mins: config.progressTimeoutMins,
       restart_count: existing?.restart_count ?? 0,
+      base_ref: config.baseRef,
     };
   });
   console.log(`Registered agent in ${agentsFile}`);
@@ -134,6 +135,7 @@ function parseArgs() {
     validateCmd: undefined,
     timeoutMins: undefined,
     progressTimeoutMins: undefined,
+    baseRef: undefined,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -150,6 +152,7 @@ function parseArgs() {
       case "--validate":         config.validateCmd        = parseValidateArg(args[++i]); break;
       case "--timeout":          config.timeoutMins        = parseInt(args[++i], 10); break;
       case "--progress-timeout": config.progressTimeoutMins = parseInt(args[++i], 10); break;
+      case "--base-ref":         config.baseRef              = args[++i]; break;
     }
   }
 

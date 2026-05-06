@@ -245,6 +245,23 @@ async function runLoop() {
 
         const validation = runValidation(snapshot, log);
         if (validation.passed) {
+          // Auto-commit any uncommitted changes so Phase 6's merge picks them up.
+          const worktree = snapshot.worktree;
+          if (fs.existsSync(worktree)) {
+            try {
+              execSync(`git add -A`, { cwd: worktree, stdio: "ignore" });
+              try {
+                const taskSummary = (snapshot.task || "completed").toString().slice(0, 200);
+                execSync(`git commit -m "agent-${action.agent}: ${taskSummary}"`, { cwd: worktree, stdio: "ignore" });
+                log(`Agent ${action.agent}: auto-committed worktree state.`);
+              } catch {
+                log(`Agent ${action.agent}: no changes to commit (already clean).`);
+              }
+            } catch (err) {
+              log(`Agent ${action.agent}: auto-commit failed: ${err.message}`);
+            }
+          }
+
           safeKill({ pid: snapshot.pid, expectedCli: snapshot.cli || "kilo", log });
           updateJSON(paths.agents, (agents) => {
             if (!agents[action.agent]) return;
@@ -340,9 +357,22 @@ async function runLoop() {
     // Worktree mutations (orthogonal to agents.json).
     if (fs.existsSync(outcome.worktree)) {
       if (mode === "hard") {
-        const tag = captureRecoveryAndReset(outcome.worktree, name, log);
-        if (tag) log(`Hard restart: wiped worktree but preserved state at tag ${tag}.`);
-        else log(`Hard restart: worktree was already clean.`);
+        const recovery = captureRecoveryAndReset(outcome.worktree, name, log);
+        if (recovery.error) {
+          log(`Hard restart: recovery/reset failed — ${recovery.error}. Marking errored.`);
+          updateJSON(paths.agents, (agents) => {
+            if (agents[name]) agents[name].status = "errored";
+          });
+          return false;
+        }
+        if (recovery.tag) {
+          log(`Hard restart: wiped worktree but preserved state at tag ${recovery.tag}.`);
+          updateJSON(paths.agents, (agents) => {
+            if (agents[name]) agents[name].recovery_tag = recovery.tag;
+          });
+        } else {
+          log(`Hard restart: worktree was already clean.`);
+        }
       } else {
         try {
           execSync(`git add .`, { cwd: outcome.worktree });
@@ -503,7 +533,8 @@ function readDiffSnapshot(worktree) {
     const unstaged = execSync("git diff --stat", { cwd: worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
     const staged = execSync("git diff --staged --stat", { cwd: worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
     const commits = execSync("git log -n 5 --oneline", { cwd: worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
-    return `${unstaged}\n${staged}\n${commits}`;
+    const untracked = execSync("git ls-files --others --exclude-standard", { cwd: worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+    return `${unstaged}\n${staged}\n${commits}\n${untracked}`;
   } catch { return ""; }
 }
 
@@ -515,7 +546,8 @@ function readTail(filePath, lines) {
 }
 
 // Captures uncommitted+untracked state in a recovery tag, then resets the worktree.
-// Returns the tag name on success, or null if nothing was preserved.
+// Returns { tag: string | null, error: string | null }.
+// If error is set the worktree was NOT touched — the caller must abort the restart.
 function captureRecoveryAndReset(worktree, agent, log) {
   try {
     const headBefore = execSync("git rev-parse HEAD", { cwd: worktree, encoding: "utf-8" }).trim();
@@ -540,16 +572,18 @@ function captureRecoveryAndReset(worktree, agent, log) {
         execSync(`git tag "${tag}"`, { cwd: worktree, stdio: "ignore" });
       } catch (err) {
         log(`Failed to create recovery tag: ${err.message}`);
-        tag = null;
+        // Recovery commit is on HEAD but the tag is missing — abort before
+        // the destructive reset, otherwise the commit is orphaned (reflog-only).
+        return { tag: null, error: `recovery commit created but tag failed: ${err.message}` };
       }
     }
 
     execSync(`git reset --hard ${headBefore}`, { cwd: worktree, stdio: "ignore" });
     execSync("git clean -fd", { cwd: worktree, stdio: "ignore" });
-    return tag;
+    return { tag, error: null };
   } catch (err) {
     log(`Hard reset failed: ${err.message}`);
-    return null;
+    return { tag: null, error: `hard reset failed: ${err.message}` };
   }
 }
 
@@ -594,12 +628,7 @@ function collectWorktreeStates(pending, agents) {
     if (!fs.existsSync(worktree)) continue;
     try {
       const status = execSync("git status -s", { cwd: worktree, encoding: "utf-8" });
-      let baseBranch = "main";
-      try {
-        const wtList = execSync("git worktree list", { cwd: worktree, encoding: "utf-8" });
-        const match = wtList.match(/\[(.*?)\]/);
-        if (match && match[1]) baseBranch = match[1];
-      } catch { baseBranch = "master"; }
+      const baseBranch = agents[req.agent].base_ref || "main";
 
       const diffStatUnstaged = execSync("git diff --stat", { cwd: worktree, encoding: "utf-8" });
       const diffStatStaged = execSync("git diff --staged --stat", { cwd: worktree, encoding: "utf-8" });
@@ -790,13 +819,7 @@ function finalize(config, paths, parsedConfig, log) {
   for (const name in agents) {
     const a = agents[name];
     if (a.cli) workerCli = a.cli;
-    if (fs.existsSync(a.worktree)) {
-      try {
-        const wtList = execSync("git worktree list", { cwd: a.worktree, encoding: "utf-8" });
-        const match = wtList.match(/\[(.*?)\]/);
-        if (match && match[1]) baseBranch = match[1];
-      } catch {}
-    }
+    if (a.base_ref) baseBranch = a.base_ref;
     summaries.push(`- Agent: ${name}\n  Status: ${a.status}\n  Task: ${a.task}\n  Branch: ${name}`);
   }
 

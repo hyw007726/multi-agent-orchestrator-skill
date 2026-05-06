@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const { spawnSync, spawn } = require('child_process');
 const { loadConfig } = require('./lib/config');
+const { safeKill } = require('./lib/process');
 const { renderWorkerPrompt } = require('./lib/prompt-render');
 
 launchAll();
@@ -44,6 +45,10 @@ function launchAll() {
   const template = fs.readFileSync(templatePath, 'utf-8');
 
   const spawnedAgents = [];
+  const spawnedPids = [];
+  const createdWorktrees = [];
+
+  const baseBranch = captureBaseBranch(projectRoot, config);
 
   for (const [agentName, agentRecord] of Object.entries(tasks)) {
     const cli = agentRecord.cli || config.default_cli;
@@ -63,8 +68,11 @@ function launchAll() {
     if (addResult.status !== 0) {
       console.error(`Error: Failed to create worktree for ${agentName}:`);
       console.error(addResult.stderr || addResult.stdout);
+      rollback(spawnedPids, createdWorktrees, projectRoot);
       process.exit(1);
     }
+
+    createdWorktrees.push({ name: agentName, path: worktreePath });
 
     const vars = {
       ASSIGNED_TASK: agentRecord.description || '',
@@ -108,6 +116,10 @@ function launchAll() {
       spawnArgs.push('--progress-timeout', String(agentRecord.progress_timeout_mins));
     }
 
+    if (baseBranch) {
+      spawnArgs.push('--base-ref', baseBranch);
+    }
+
     const spawnResult = spawnSync('node', spawnArgs, {
       cwd: projectRoot,
       encoding: 'utf-8',
@@ -116,7 +128,7 @@ function launchAll() {
     if (spawnResult.status !== 0) {
       console.error(`Error: Failed to spawn agent ${agentName}:`);
       console.error(spawnResult.stderr || spawnResult.stdout);
-      console.error('Already-spawned agents are still alive; check their logs in coord/logs/.');
+      rollback(spawnedPids, createdWorktrees, projectRoot);
       process.exit(1);
     }
 
@@ -126,6 +138,7 @@ function launchAll() {
     const logPath = logMatch ? logMatch[1] : 'coord/logs/';
 
     spawnedAgents.push({ name: agentName, pid, logPath });
+    if (pid !== '?') spawnedPids.push({ pid: parseInt(pid, 10), cli, name: agentName });
     console.log(`Agent '${agentName}' spawned (PID: ${pid}, log: ${logPath})`);
   }
 
@@ -150,4 +163,35 @@ function parseArgs() {
     if (args[i] === '--coord') config.coordDir = args[++i];
   }
   return config;
+}
+
+// Kills all spawned agents and removes created worktrees + branches.
+// Called on partial spawn failure so the repo is left clean.
+function rollback(spawnedPids, createdWorktrees, projectRoot) {
+  console.error('\nRolling back partial launch...');
+  for (const { pid, cli, name } of spawnedPids) {
+    safeKill({ pid, expectedCli: cli || 'kilo', log: (msg) => console.error(`  [${name}] ${msg}`) });
+  }
+  for (const { name, path: wtPath } of createdWorktrees) {
+    try {
+      spawnSync('git', ['worktree', 'remove', '--force', wtPath], { cwd: projectRoot, encoding: 'utf-8' });
+      console.error(`  Removed worktree: ${wtPath}`);
+    } catch {}
+    try {
+      spawnSync('git', ['branch', '-D', name], { cwd: projectRoot, encoding: 'utf-8' });
+    } catch {}
+  }
+  console.error('Rollback complete.');
+}
+
+function captureBaseBranch(projectRoot, config) {
+  try {
+    const result = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: projectRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (result.status === 0 && result.stdout?.trim()) {
+      return result.stdout.trim();
+    }
+  } catch {}
+  return 'main';
 }

@@ -83,6 +83,10 @@ module.exports = {
   // Restarts are counted across both validation-failure restarts and AI-Review restarts.
   // default_max_restarts: 3,
 
+  // Base branch for computing agent diffs. Detected automatically from the main
+  // worktree at launch time; set this to override it (e.g. "master", "develop").
+  // base_branch: "main",
+
   // Consecutive orchestrator-CLI failures (per cycle) before writing
   // coord/orchestrator-stalled.flag, which the dashboard surfaces as a red banner.
   // claude_failure_threshold: 5,
