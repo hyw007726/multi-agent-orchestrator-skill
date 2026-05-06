@@ -32,6 +32,32 @@ function runBootstrap() {
   };
   fs.writeFileSync(path.join(coordDir, "context.json"), JSON.stringify(context, null, 2) + "\n");
 
+  const example = {
+    project: "Example: Build a CLI task runner",
+    chat_context: {
+      preferences: ["Use explicit typing", "Prefer composition over inheritance"],
+      architecture: ["Worker-agent pattern with central orchestrator loop", "File-system-based IPC via coord/ directory"],
+      naming_conventions: ["camelCase for variables", "kebab-case for agent names"],
+      gotchas: ["Node 18 minimum, no top-level await", "Worktree symlinks resolve coord/ to project root"],
+    },
+    requirements: ["Add a new subcommand that accepts --format and --output flags"],
+    constraints: ["Must use Node.js built-ins only", "No new npm dependencies", "All paths relative to project root"],
+    created_at: new Date().toISOString(),
+    tasks: {
+      "agent-task-runner": {
+        description: "Implement the 'task-runner' subcommand that reads a YAML config, spawns child processes for each job, and writes results to --output",
+        cli: "kilo",
+        mode: "code",
+        allowed_paths: ["src/commands/task-runner/**", "tests/commands/task-runner/**", "src/lib/process-helpers.js"],
+        forbidden_paths: ["package.json", "orchestrator.config.js", "coord/", "README.md"],
+        validation_command: ["node", "--test", "tests/commands/task-runner/"],
+        timeout_mins: 30,
+        progress_timeout_mins: 10,
+      },
+    },
+  };
+  fs.writeFileSync(path.join(coordDir, "context.example.json"), JSON.stringify(example, null, 2) + "\n");
+
   fs.writeFileSync(path.join(coordDir, "decisions.json"), "[]\n");
 
   const decisionsMd = `# Architectural Decisions\n\nThis file acts as the ultimate source of truth for shared API contracts, data models, and structural decisions. Worker agents MUST read this file before they begin coding.\n`;
