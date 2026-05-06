@@ -59,7 +59,14 @@ function updateJSONL(filePath, mutate) {
   const release = acquireLock(filePath, LOCK_OPTS);
   try {
     const raw = fs.readFileSync(filePath, "utf-8");
-    const data = raw.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
+    const data = raw.split("\n").map(l => l.trim()).filter(l => l !== "" && !l.startsWith("\`\`\`")).reduce((acc, l) => {
+      try {
+        acc.push(JSON.parse(l));
+      } catch (e) {
+        console.error(`Warning: updateJSONL skipping malformed line: ${l}`);
+      }
+      return acc;
+    }, []);
     const result = mutate(data);
     const toWrite = result === undefined ? data : result;
     const content = toWrite.map((item) => JSON.stringify(item)).join("\n") + (toWrite.length > 0 ? "\n" : "");

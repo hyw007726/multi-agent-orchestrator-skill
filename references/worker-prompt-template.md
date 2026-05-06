@@ -25,10 +25,11 @@ If you encounter a conflict, need clarification, or want to make a structural ch
 **WARNING:** The orchestrator reviewing your requests cannot see your files. You MUST include relevant code snippets, error logs, and full context inside the `content` field of your request.
 
 ### Request Format
-Append this SINGLE LINE of JSON to `coord/requests.jsonl`. Do NOT format it across multiple lines:
-```json
-{"request_id": "{AGENT_NAME}-req-<timestamp>", "agent": "{AGENT_NAME}", "type": "question|change|conflict|review_request", "priority": "low|medium|high", "content": "Detailed explanation. Include code snippets here so the blind orchestrator can understand.", "status": "pending", "created_at": "<ISO-timestamp>"}
-```
+Append your request as a SINGLE RAW LINE of JSON to `coord/requests.jsonl`. 
+CRITICAL: Do NOT wrap the JSON in Markdown code blocks (no \`\`\`json). Do NOT use newlines inside the JSON object. It MUST be exactly one line of raw text so the orchestrator can parse it.
+
+Example format (write exactly one line like this, with NO markdown backticks):
+{"request_id": "{AGENT_NAME}-req-<timestamp>", "agent": "{AGENT_NAME}", "type": "question|change|conflict|review_request", "priority": "low|medium|high", "content": "Detailed explanation...", "status": "pending", "created_at": "<ISO-timestamp>"}
 
 ### Request Types
 - **question**: You need information or a decision from the orchestrator.
