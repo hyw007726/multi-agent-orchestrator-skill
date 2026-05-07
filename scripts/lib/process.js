@@ -1,4 +1,5 @@
 const { execSync } = require("child_process");
+const { appendEvent } = require("./events");
 
 // Returns the cmdline of `pid` (best-effort), or null if the process is gone.
 // Uses POSIX `ps` — macOS and Linux only. Windows callers fall back to raw process.kill.
@@ -27,7 +28,8 @@ function pidMatchesCli(pid, expectedCli) {
 }
 
 // Safe kill: only signals the PID if it still matches the spawned CLI. Logs the reason on skip.
-function safeKill({ pid, expectedCli, log, signal = "SIGTERM" }) {
+// Optional coordDir and agent params enable structured event emission for debugging.
+function safeKill({ pid, expectedCli, log, signal = "SIGTERM", coordDir, agent } = {}) {
   if (!pid) return false;
   if (!pidMatchesCli(pid, expectedCli)) {
     log(`Skipping ${signal} on PID ${pid}: process is gone or no longer matches '${expectedCli}'.`);
@@ -36,6 +38,9 @@ function safeKill({ pid, expectedCli, log, signal = "SIGTERM" }) {
   try {
     process.kill(pid, signal);
     log(`Sent ${signal} to PID ${pid} (${expectedCli}).`);
+    if (coordDir) {
+      appendEvent(coordDir, "signal_sent", { agent, pid, reason: `${signal} to ${expectedCli}` });
+    }
     return true;
   } catch (err) {
     if (err.code === "ESRCH") log(`PID ${pid} already exited.`);
