@@ -9,6 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const { loadConfig } = require("./lib/config");
 const { updateJSON } = require("./lib/locking");
+const { appendEvent } = require("./lib/events");
 
 spawnAgent();
 
@@ -94,6 +95,12 @@ function spawnAgent() {
     agents[config.agent] = next;
   });
   console.log(`Registered agent in ${agentsFile}`);
+
+  appendEvent(config.coordDir, "agent_spawned", {
+    agent: config.agent,
+    pid: child.pid,
+    data: { cli: config.cli, mode: config.mode, worktree },
+  });
 
   // Single-use helper — creates the coord/ symlink inside the worktree so workers can
   // reach the orchestration state via the documented `coord/...` relative paths.

@@ -8,6 +8,8 @@ const { loadConfig } = require("./lib/config");
 const { safeKill } = require("./lib/process");
 const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL, appendJSONL } = require("./lib/locking");
 const { renderWorkerPrompt, renderWorkerRestartPrompt } = require("./lib/prompt-render");
+const { STATUS, transitionAgentStatus } = require("./lib/status");
+const { appendEvent } = require("./lib/events");
 
 const RECENT_DECISION_LIMIT = 30;
 
@@ -65,16 +67,17 @@ async function runLoop() {
       if (fs.existsSync(path.join(config.coordDir, "abort.flag"))) {
         log("ABORT SIGNAL RECEIVED. Stopping running agents (worktrees preserved)...");
         const toKill = [];
+        appendEvent(config.coordDir, "abort_requested", { reason: "abort.flag detected" });
         updateJSON(paths.agents, (agents) => {
           for (const name in agents) {
             if (agents[name].status === "running") {
-              toKill.push({ pid: agents[name].pid, cli: agents[name].cli || "kilo" });
-              agents[name].status = "terminated";
+              toKill.push({ pid: agents[name].pid, cli: agents[name].cli || "kilo", name });
+              transitionAgentStatus(agents[name], name, STATUS.TERMINATED, "abort signal", log);
             }
           }
         });
         // Kill outside the lock — the lock's job is to protect agents.json, not gate signals.
-        for (const { pid, cli } of toKill) safeKill({ pid, expectedCli: cli, log });
+        for (const { pid, cli, name } of toKill) safeKill({ pid, expectedCli: cli, log, coordDir: config.coordDir, agent: name });
         log("All running agents stopped. Worktree contents preserved (run `git status` in each worktree to inspect/discard).");
         try { fs.unlinkSync(path.join(config.coordDir, "abort.flag")); } catch {}
         aborted = true;
@@ -122,11 +125,11 @@ async function runLoop() {
             }
             updateJSON(paths.agents, (agents) => {
               if (agents[name] && agents[name].status === "running") {
-                agents[name].status = "exited";
                 agents[name].exit_log_tail = readTail(agentLogFile, 50);
+                transitionAgentStatus(agents[name], name, STATUS.EXITED, "process vanished without review request", log);
               }
             });
-            log(`Agent ${name} (PID ${agent.pid}) process exited without review request. Marked exited.`);
+            appendEvent(config.coordDir, "process_exited", { agent: name, pid: agent.pid, reason: "vanished without review request" });
             continue;
           }
           log(`Agent ${name} (PID ${agent.pid}) process exited, but a review request is pending. Waiting for arbitration.`);
@@ -141,9 +144,11 @@ async function runLoop() {
         const timeoutMins = agent.timeout_mins || parsedConfig.default_timeout_mins;
         if (Date.now() - lastActivity > timeoutMins * 60 * 1000) {
           log(`Agent ${name} idle (no log output) for ${timeoutMins} mins. Killing.`);
-          safeKill({ pid: agent.pid, expectedCli: agent.cli || "kilo", log });
+          safeKill({ pid: agent.pid, expectedCli: agent.cli || "kilo", log, coordDir: config.coordDir, agent: name });
           updateJSON(paths.agents, (agents) => {
-            if (agents[name] && agents[name].status === "running") agents[name].status = "errored";
+            if (agents[name] && agents[name].status === "running") {
+              transitionAgentStatus(agents[name], name, STATUS.ERRORED, `liveness timeout - idle ${timeoutMins} mins`, log);
+            }
           });
           continue;
         }
@@ -301,15 +306,15 @@ async function runLoop() {
             }
           }
 
-          safeKill({ pid: snapshot.pid, expectedCli: snapshot.cli || "kilo", log });
+          safeKill({ pid: snapshot.pid, expectedCli: snapshot.cli || "kilo", log, coordDir: config.coordDir, agent: action.agent });
           updateJSON(paths.agents, (agents) => {
             if (!agents[action.agent]) return;
-            agents[action.agent].status = "completed";
-            agents[action.agent].last_heartbeat = new Date().toISOString();
+            transitionAgentStatus(agents[action.agent], action.agent, STATUS.COMPLETED, "validation passed, agent ended", log);
           });
-          log(`Agent ${action.agent} completed successfully.`);
+          appendEvent(config.coordDir, "agent_completed", { agent: action.agent });
         } else {
           log(`Validation failed for ${action.agent} — converting to soft_restart.`);
+          appendEvent(config.coordDir, "validation_failed", { agent: action.agent, reason: validation.log.slice(0, 500) });
           bumpRestartAndRespawn({
             name: action.agent,
             instruction: `Validation failed! Please fix the errors:\n\n${validation.log}`,
@@ -352,17 +357,19 @@ async function runLoop() {
       const cliTool = agent.cli || parsedConfig.default_cli;
 
       if (!instruction) {
-        agents[name].status = "terminated";
+        transitionAgentStatus(agent, name, STATUS.TERMINATED, "no follow-up instruction", log);
         outcomeRef.value = { kind: "terminated", pid: agent.pid, cliTool, worktree: agent.worktree };
+        appendEvent(config.coordDir, "restart_aborted", { agent: name, reason: "no instruction" });
         return;
       }
 
       const nextCount = (agent.restart_count ?? 0) + 1;
       const maxRestarts = parsedConfig.default_max_restarts;
       if (nextCount > maxRestarts) {
-        agents[name].status = "errored";
-        agents[name].task = `Exhausted ${maxRestarts} restart attempts (${reason}). Last instruction: ${instruction.slice(0, 200)}`;
+        agent.task = `Exhausted ${maxRestarts} restart attempts (${reason}). Last instruction: ${instruction.slice(0, 200)}`;
+        transitionAgentStatus(agent, name, STATUS.ERRORED, `max restarts (${maxRestarts}) exhausted`, log);
         outcomeRef.value = { kind: "errored", pid: agent.pid, cliTool, worktree: agent.worktree };
+        appendEvent(config.coordDir, "restart_aborted", { agent: name, reason: `max restarts (${maxRestarts}) reached - ${reason}` });
         return;
       }
 
@@ -386,7 +393,7 @@ async function runLoop() {
     if (outcome.kind === "missing") return false;
 
     // Side effects below the lock — none of these should re-enter updateJSON on the same file.
-    safeKill({ pid: outcome.pid, expectedCli: outcome.cliTool, log });
+    safeKill({ pid: outcome.pid, expectedCli: outcome.cliTool, log, coordDir: config.coordDir, agent: name });
 
     if (outcome.kind === "terminated") {
       log(`Agent ${name} terminated (no follow-up instruction).`);
@@ -404,12 +411,16 @@ async function runLoop() {
         if (recovery.error) {
           log(`Hard restart: recovery/reset failed — ${recovery.error}. Marking errored.`);
           updateJSON(paths.agents, (agents) => {
-            if (agents[name]) agents[name].status = "errored";
+            if (agents[name]) {
+              transitionAgentStatus(agents[name], name, STATUS.ERRORED, `hard restart recovery failed: ${recovery.error}`, log);
+            }
           });
+          appendEvent(config.coordDir, "restart_aborted", { agent: name, reason: `hard reset failed: ${recovery.error}` });
           return false;
         }
         if (recovery.tag) {
           log(`Hard restart: wiped worktree but preserved state at tag ${recovery.tag}.`);
+          appendEvent(config.coordDir, "recovery_tag_created", { agent: name, data: { tag: recovery.tag } });
           updateJSON(paths.agents, (agents) => {
             if (agents[name]) agents[name].recovery_tag = recovery.tag;
           });
@@ -429,6 +440,12 @@ async function runLoop() {
         }
       }
     }
+
+    appendEvent(config.coordDir, "restart_scheduled", {
+      agent: name,
+      reason: `${mode} restart - ${reason}`,
+      data: { attempt: outcome.attempt, maxAttempts: parsedConfig.default_max_restarts },
+    });
 
     return respawnAgent({
       name,
