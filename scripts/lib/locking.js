@@ -76,6 +76,19 @@ function updateJSONL(filePath, mutate) {
   }
 }
 
+// Append-only JSONL write. Used for audit logs where old entries must never be
+// discarded to keep prompt-sized snapshot files small.
+function appendJSONL(filePath, items) {
+  if (!Array.isArray(items) || items.length === 0) return;
+  const release = acquireLock(filePath, LOCK_OPTS);
+  try {
+    const content = items.map((item) => JSON.stringify(item)).join("\n") + "\n";
+    fs.appendFileSync(filePath, content);
+  } finally {
+    release();
+  }
+}
+
 // Unlocked read — fine for snapshots used to drive iteration / decisions when the actual
 // mutation later goes through update*JSON. Never yields partial data because writeAtomic
 // uses tmp+rename.
@@ -142,4 +155,4 @@ function writeAtomic(filePath, content) {
   fs.renameSync(tmpPath, filePath);
 }
 
-module.exports = { acquireInstanceLock, updateJSON, updateJSONL, readJSON, readJSONL };
+module.exports = { acquireInstanceLock, updateJSON, updateJSONL, appendJSONL, readJSON, readJSONL };

@@ -63,6 +63,12 @@ describe('MVP smoke test', () => {
         'decisions.json should contain a decision for agent-one-req-smoke'
       );
 
+      const decisionAudit = readJsonl(path.join(project.root, 'coord', 'decisions.jsonl'));
+      assert.ok(
+        decisionAudit.some((d) => d.request_id === 'agent-one-req-smoke'),
+        'decisions.jsonl should contain an audit entry for agent-one-req-smoke'
+      );
+
       const summary = fs.readFileSync(path.join(project.root, 'coord', 'review-summary.txt'), 'utf8');
       assert.ok(
         summary.includes('Smoke summary: fake review completed.'),

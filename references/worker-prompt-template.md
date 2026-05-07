@@ -15,7 +15,10 @@ Read `coord/context.json` for full requirements and constraints.
 2. **Path Restrictions**: To prevent merge conflicts, you MUST respect these path constraints.
    - **ALLOWED PATHS**: {ALLOWED_PATHS_LIST} (You may freely create/edit files here)
    - **FORBIDDEN PATHS**: {FORBIDDEN_PATHS_LIST} (e.g. package.json, shared types, configurations. Assume the orchestrator has already handled these. Do not touch them.)
-3. **Follow Decisions**: Read `coord/DECISIONS.md` and `coord/decisions.json`. You must follow all architectural rules and operational decisions made by the orchestrator.
+3. **Follow Decisions**:
+   - Read `coord/DECISIONS.md` first. It is the curated human-readable contract for architecture, API, data model, and file-ownership decisions.
+   - Read `coord/decisions.json` for the latest bounded set of approved request resolutions.
+   - Use `coord/decisions.jsonl` only when you need the full append-only audit history or your request has fallen out of the recent window.
 4. Do not assume requirements that aren't in the context or decisions.
 5. Prefer asking (via requests) over guessing.
 6. Commit frequently with descriptive messages: "<agent-name>: <what changed>"
@@ -45,4 +48,4 @@ Example content of your `.json` file (a single JSON object, no markdown, no extr
 
 ## Priority Handling
 - **low / medium**: Log the request and continue working on other parts of your task.
-- **high**: Log the request and STOP working. Wait for `decisions.json` to be updated with your `request_id`. DO NOT proceed.
+- **high**: Log the request and STOP working. Wait for your `request_id` to appear in `decisions.json` or, if it has fallen out of the recent window, in `decisions.jsonl`. DO NOT proceed.

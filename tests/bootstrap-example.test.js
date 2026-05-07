@@ -3,6 +3,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
 
 const {
   createTempProject,
@@ -19,6 +20,9 @@ describe('bootstrap example file', () => {
 
       const examplePath = path.join(project.root, 'coord', 'context.example.json');
       const example = readJson(examplePath);
+      const decisionAuditPath = path.join(project.root, 'coord', 'decisions.jsonl');
+
+      assert.ok(fs.existsSync(decisionAuditPath), 'bootstrap should create decisions.jsonl');
 
       assert.ok(example.tasks, 'should have tasks object');
       const agentNames = Object.keys(example.tasks);

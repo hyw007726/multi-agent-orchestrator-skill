@@ -6,8 +6,10 @@ const os = require("os");
 const { execSync, spawnSync } = require("child_process");
 const { loadConfig } = require("./lib/config");
 const { safeKill } = require("./lib/process");
-const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL } = require("./lib/locking");
+const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL, appendJSONL } = require("./lib/locking");
 const { renderWorkerPrompt, renderWorkerRestartPrompt } = require("./lib/prompt-render");
+
+const RECENT_DECISION_LIMIT = 30;
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
@@ -45,6 +47,7 @@ async function runLoop() {
   }
   log(`Orchestrator CLI: '${parsedConfig.orchestrator_cli}'  |  max restarts: ${parsedConfig.default_max_restarts}  |  CLI failure threshold: ${parsedConfig.claude_failure_threshold}`);
   log(`Acquired singleton lock on ${instanceLock.markerPath} (PID ${process.pid}).`);
+  ensureDecisionAuditLog(paths, log);
 
   launchDashboard(config, parsedConfig, log);
 
@@ -181,11 +184,11 @@ async function runLoop() {
         cycleHadPending = true;
         log(`Found ${pending.length} pending requests.`);
         const context = readJSON(paths.context);
-        const decisions = readJSON(paths.decisions);
+        const recentDecisions = readRecentDecisions(paths.decisions);
         const agentsForPrompt = readJSON(paths.agents);
 
         const worktreeStates = collectWorktreeStates(pending, agentsForPrompt);
-        const prompt = buildOrchestratorPrompt(pending, context, decisions, worktreeStates);
+        const prompt = buildOrchestratorPrompt(pending, context, recentDecisions, worktreeStates);
         const response = callOrchestratorCli(prompt, parsedConfig, config.maxRetries, log);
 
         if (!response) {
@@ -513,29 +516,42 @@ async function runLoop() {
     }
   }
 
-  // Atomically marks resolved/rejected requests in requests.jsonl and appends decisions.
+  // Marks resolved/rejected requests in requests.jsonl, appends the full audit log,
+  // and keeps decisions.json as a bounded recent window for prompts/dashboard.
   // Workers never write this file directly; new staged requests are consolidated before
   // arbitration, and status updates are serialized through updateJSONL.
   function processApprovals(response, paths, log) {
     const decisionsToAdd = [];
+    const resolvedAt = new Date().toISOString();
+    const currentRequests = readJSONL(paths.requests);
+    const byId = new Map(currentRequests.map((request) => [request.request_id, request]));
+
+    for (const approved of response.approved || []) {
+      const req = byId.get(approved.request_id);
+      if (!req || req.status !== "pending") continue;
+      decisionsToAdd.push({
+        request_id: approved.request_id,
+        decision: approved.decision,
+        reason: approved.reason,
+        resolved_at: resolvedAt,
+      });
+    }
+
+    if (decisionsToAdd.length > 0) {
+      appendJSONL(paths.decisionsAudit, decisionsToAdd);
+    }
 
     updateJSONL(paths.requests, (current) => {
       for (const approved of response.approved || []) {
         const req = current.find((p) => p.request_id === approved.request_id);
-        if (req) {
+        if (req && req.status === "pending") {
           req.status = "resolved";
-          decisionsToAdd.push({
-            request_id: approved.request_id,
-            decision: approved.decision,
-            reason: approved.reason,
-            resolved_at: new Date().toISOString(),
-          });
           log(`Approved Request ${approved.request_id}: ${approved.decision}`);
         }
       }
       for (const rejected of response.rejected || []) {
         const req = current.find((p) => p.request_id === rejected.request_id);
-        if (req) {
+        if (req && req.status === "pending") {
           req.status = "rejected";
           log(`Rejected Request ${rejected.request_id}: ${rejected.reason}`);
         }
@@ -546,9 +562,9 @@ async function runLoop() {
 
     updateJSON(paths.decisions, (decisions) => {
       decisions.push(...decisionsToAdd);
-      if (decisions.length > 30) {
-        const archive = decisions.length - 30;
-        log(`Archiving ${archive} old decisions to save tokens.`);
+      if (decisions.length > RECENT_DECISION_LIMIT) {
+        const archive = decisions.length - RECENT_DECISION_LIMIT;
+        log(`Trimming ${archive} old decisions from decisions.json; full audit remains in decisions.jsonl.`);
         decisions.splice(0, archive);
       }
     });
@@ -576,9 +592,33 @@ function getPaths(coordDir) {
     requests: path.join(coordDir, "requests.jsonl"),
     requestsDir: path.join(coordDir, "requests"),
     decisions: path.join(coordDir, "decisions.json"),
+    decisionsAudit: path.join(coordDir, "decisions.jsonl"),
     context: path.join(coordDir, "context.json"),
     agents: path.join(coordDir, "agents.json"),
   };
+}
+
+function ensureDecisionAuditLog(paths, log) {
+  if (fs.existsSync(paths.decisionsAudit)) return;
+
+  let recentDecisions = [];
+  try {
+    recentDecisions = readJSON(paths.decisions);
+  } catch {}
+
+  if (recentDecisions.length > 0) {
+    appendJSONL(paths.decisionsAudit, recentDecisions);
+    log(`Initialized decisions.jsonl from ${recentDecisions.length} existing recent decisions.`);
+  } else {
+    fs.writeFileSync(paths.decisionsAudit, "");
+    log("Initialized empty decisions.jsonl audit log.");
+  }
+}
+
+function readRecentDecisions(decisionsPath) {
+  const decisions = readJSON(decisionsPath);
+  if (!Array.isArray(decisions)) return [];
+  return decisions.slice(-RECENT_DECISION_LIMIT);
 }
 
 // Shared — called at the very beginning of each runLoop cycle and from the

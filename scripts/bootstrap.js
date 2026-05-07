@@ -59,8 +59,9 @@ function runBootstrap() {
   fs.writeFileSync(path.join(coordDir, "context.example.json"), JSON.stringify(example, null, 2) + "\n");
 
   fs.writeFileSync(path.join(coordDir, "decisions.json"), "[]\n");
+  fs.writeFileSync(path.join(coordDir, "decisions.jsonl"), "");
 
-  const decisionsMd = `# Architectural Decisions\n\nThis file acts as the ultimate source of truth for shared API contracts, data models, and structural decisions. Worker agents MUST read this file before they begin coding.\n`;
+  const decisionsMd = `# Architectural Decisions\n\nThis file is the curated human-readable contract for shared API contracts, data models, file ownership, and structural decisions. The orchestrator session curates this file; the background loop does not automatically rewrite it. Worker agents MUST read this file before they begin coding.\n`;
   fs.writeFileSync(path.join(coordDir, "DECISIONS.md"), decisionsMd);
   fs.writeFileSync(path.join(coordDir, "requests.jsonl"), "");
   fs.mkdirSync(path.join(coordDir, "requests"), { recursive: true });

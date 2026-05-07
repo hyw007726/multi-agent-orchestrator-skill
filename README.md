@@ -10,7 +10,7 @@ It safely sandboxes workers into `git worktrees`, manages their lifecycles via a
 - **Two-Tier Cost Control**: A configurable `orchestrator_cli` arbitrates cross-cutting decisions (point it at a strong reasoning model), while the worker CLI handles bulk coding and the cheap monitor calls — strong architecture at a fraction of the cost.
 - **Self-Healing Loop**: Detects hung agents (no log output) and stuck agents (log output but no code progress). When an agent stalls, a single-shot LLM call diagnoses what's wrong and respawns with a 1-sentence course-correction.
 - **Validation Loop**: Each agent is assigned a `validation_command`. When the agent signals "done" the loop runs validation; on failure it auto-`soft_restart`s with the error log so the agent can fix its own code.
-- **Shared Architectural Source of Truth**: A `coord/DECISIONS.md` file captures shared API contracts, data models, and structural rules. Worker agents are instructed to read it before coding so foundational decisions never drift across worktrees.
+- **Shared Architectural Source of Truth**: `coord/DECISIONS.md` is the curated contract for shared API, data model, file-ownership, and structural rules. Runtime approvals are preserved in `coord/decisions.jsonl`, while `coord/decisions.json` stays capped to recent decisions for prompts and the dashboard.
 - **Live Dashboard**: A real-time TUI streams every agent's activity, restart count, and recent orchestrator decisions from a single terminal window. Run it manually by default, or opt into terminal auto-launch.
 - **Auto-Review**: When agents finish, the loop generates an AI-powered summary in `coord/review-summary.txt` and can optionally pop it open in a new terminal window.
 

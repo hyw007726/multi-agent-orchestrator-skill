@@ -66,7 +66,20 @@ Any placeholder whose source field is missing is replaced with the literal
 string `"(unspecified)"` so the worker still receives a syntactically intact
 prompt and can ask via `coord/requests/` for clarification.
 
+## DECISIONS.md
+
+Human-curated contract for durable architecture, API, data-model, and
+file-ownership decisions. The starter/orchestrator session updates this file
+when an approved runtime decision should become shared project policy. The
+background loop does not automatically rewrite it.
+
 ## decisions.json
+
+Bounded recent window of approved request resolutions. The orchestrator loop
+uses this file in arbitration prompts and the dashboard reads it for recent
+decision display. It is intentionally capped to the latest 30 entries; use
+`decisions.jsonl` for full audit history.
+
 ```json
 [
   {
@@ -76,6 +89,16 @@ prompt and can ask via `coord/requests/` for clarification.
     "resolved_at": "ISO 8601 timestamp"
   }
 ]
+```
+
+## decisions.jsonl
+
+Append-only audit log of every approved request resolution, one JSON object per
+line. This file is not pruned and is the place to look for older approved
+decisions that have fallen out of `decisions.json`.
+
+```json
+{"request_id":"string","decision":"string — what was decided","reason":"string — why","resolved_at":"ISO 8601 timestamp"}
 ```
 
 ## requests/

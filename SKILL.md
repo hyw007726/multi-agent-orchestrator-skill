@@ -146,7 +146,7 @@ You should also include the tasks you generated in Phase 1 under the `"tasks"` k
 ```
 
 ### `coord/DECISIONS.md`
-To ensure critical architectural rules are never lost in JSON compression, write a human-readable `coord/DECISIONS.md` file. This file acts as the ultimate source of truth for shared API contracts, data models, and structural decisions made in Phase 1. The worker agents are instructed to read this file before they begin coding.
+To ensure critical architectural rules are never lost in JSON compression, write a human-readable `coord/DECISIONS.md` file. This file is the curated source of truth for shared API contracts, data models, file ownership, and structural decisions made in Phase 1. The background loop preserves approved request resolutions in `coord/decisions.jsonl` and keeps only the latest 30 in `coord/decisions.json`; it does not automatically rewrite `DECISIONS.md`. If a runtime approval should become durable project policy, update `DECISIONS.md` from the orchestrator session.
 
 ## Phase 3 — Prompt Generation
 
