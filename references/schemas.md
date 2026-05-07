@@ -125,6 +125,7 @@ shape — every field the loop actually depends on — is:
     "status": "running | completed | terminated | errored | exited",
     "worktree": "string — absolute path to the agent's git worktree (`.kilocode/worktrees/<name>` for kilo, `.agents/worktrees/<name>` otherwise)",
     "cli": "string — which worker CLI was used (kilo | aider | claude | codex | gemini | opencode); the loop reads this to pick the respawn template and to validate the PID's cmdline before signalling",
+    "template_mode": "string — argv | shell | builtin; records how the CLI template was executed for debugging shell/quoting behavior",
     "kilo_mode": "string — kilo-specific mode (code | architect | debug | ask); ignored by non-kilo CLIs but persisted for round-tripping through respawn",
     "pid": "integer — the process ID of the spawned worker CLI; on POSIX this is also the detached process group id the loop signals during stops/restarts",
     "started_at": "ISO 8601 timestamp",

@@ -21,12 +21,13 @@ It safely sandboxes workers into `git worktrees`, manages their lifecycles via a
 - **Soft abort** — closing the dashboard window leaves agents running. Ctrl+C asks for confirmation; the resulting abort kills processes but preserves worktree contents (no `git reset --hard`).
 - **Stalled-CLI surfacing** — if the arbitration CLI fails repeatedly the dashboard renders a banner with diagnostics, so you know whether the loop is making progress or stuck.
 - **Argv-form validation** — `validation_command` accepts a JSON argv array (`["npm","run","test"]`) so it runs with `shell:false` — no shell expansion, no injection surface. Shell-string form still works for pipes / `&&`.
+- **Argv-form CLI templates** — `cli_templates` can be structured `{ cmd, args }` objects that run with `shell:false`; string templates remain available and are logged as shell mode when you need pipes, command substitution, or other shell behavior.
 
 ## ⚙️ Configuration (`orchestrator.config.js`)
 The skill reads `orchestrator.config.js` at the project root. Key knobs:
 - `default_cli` — worker CLI for spawning agents and the cheap monitor calls.
 - `orchestrator_cli` — CLI used by the loop for request arbitration (defaults to `claude`).
-- `cli_templates` — exact bash invocations for each supported CLI; insulates the system from third-party flag changes.
+- `cli_templates` — structured argv templates or explicit shell-string templates for supported CLIs; insulates the system from third-party flag changes.
 - `default_timeout_mins` / `default_progress_timeout_mins` — liveness and progress thresholds.
 - `default_max_restarts` — restart cap per agent.
 - `claude_failure_threshold` — consecutive arbitration-CLI failures before the dashboard shows the stalled banner.

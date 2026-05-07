@@ -15,11 +15,11 @@ const DEFAULT_HEALTH_CHECKS = {
 
 const DEFAULT_CLI_TEMPLATES = {
   kilo: 'kilo run "$(cat {prompt_file})" --auto',
-  aider: "aider --message-file {prompt_file} --yes",
-  claude: 'claude -p "$(cat {prompt_file})" --dangerously-skip-permissions --model claude-sonnet-4-6',
-  gemini: 'gemini --prompt "$(cat {prompt_file})" --yolo',
-  codex: 'codex --exec "$(cat {prompt_file})"',
-  opencode: 'opencode run "$(cat {prompt_file})" --yes',
+  aider: { cmd: "aider", args: ["--message-file", { prompt_file: true }, "--yes"] },
+  claude: { cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
+  gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo"] },
+  codex: { cmd: "codex", args: ["--exec", { prompt_text: true }] },
+  opencode: { cmd: "opencode", args: ["run", { prompt_text: true }, "--yes"] },
 };
 
 const DEFAULTS = {

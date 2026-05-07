@@ -24,12 +24,21 @@ module.exports = {
   // the same template is reused for the worker spawn, the orchestrator-CLI call,
   // and the AI-Review course-correction call.
   //
+  // Prefer structured argv templates when the CLI accepts a prompt file or prompt
+  // argument. They run with shell:false, so prompt paths and extra args are not
+  // shell-expanded:
+  //   aider: { cmd: "aider", args: ["--message-file", { prompt_file: true }, "--yes"] }
+  //   codex: { cmd: "codex", args: ["--exec", { prompt_text: true }] }
+  //
+  // Keep string templates only when you intentionally need shell behavior. String
+  // templates still work as the shell escape hatch and are logged as shell mode.
+  //
   // Model selection — two patterns depending on the CLI:
-  //   (a) Inline flag CLIs (claude, aider, gemini): the template is executed
-  //       verbatim, so add the CLI's --model flag inline. Examples:
-  //         claude:  'claude -p "$(cat {prompt_file})" --dangerously-skip-permissions --model claude-haiku-4-5-20251001'
-  //         aider:   'aider --message-file {prompt_file} --yes --model gpt-4o-mini'
-  //         gemini:  'gemini --prompt "$(cat {prompt_file})" --yolo --model gemini-2.0-flash'
+  //   (a) Inline flag CLIs (claude, aider, gemini): add the CLI's --model flag
+  //       inside the template args/string. Examples:
+  //         claude: { cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-haiku-4-5-20251001"] }
+  //         aider:  { cmd: "aider", args: ["--message-file", { prompt_file: true }, "--yes", "--model", "gpt-4o-mini"] }
+  //         gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo", "--model", "gemini-2.0-flash"] }
   //   (b) External-config CLIs (kilo, opencode, codex): model selection lives in
   //       the CLI's own settings (BYOK provider + model picker), not in the
   //       template. Leave the template simple — e.g. for the recommended kilo +
@@ -46,7 +55,7 @@ module.exports = {
     // but if you encounter "Argument list too long", split the task into smaller boundaries
     // rather than trying to fit a single mega-prompt through the shell.
     kilo: 'kilo run "$(cat {prompt_file})" --auto',
-    aider: "aider --message-file {prompt_file} --yes",
+    aider: { cmd: "aider", args: ["--message-file", { prompt_file: true }, "--yes"] },
     // claude is the one CLI that NEEDS --model pinned in this template. The other CLIs
     // (kilo / aider / gemini / codex / opencode) read their model from their own
     // independent config — env vars, BYOK providers, model files — so spawning them
@@ -58,10 +67,10 @@ module.exports = {
     // of what your interactive orchestrator session is using. Swap the id for a
     // different one (claude-haiku-4-5-20251001 to go even cheaper, or claude-opus-4-7
     // if you want this template to double as `orchestrator_cli`).
-    claude: 'claude -p "$(cat {prompt_file})" --dangerously-skip-permissions --model claude-sonnet-4-6',
-    gemini: 'gemini --prompt "$(cat {prompt_file})" --yolo',
-    codex: 'codex --exec "$(cat {prompt_file})"',
-    opencode: 'opencode run "$(cat {prompt_file})" --yes',
+    claude: { cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
+    gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo"] },
+    codex: { cmd: "codex", args: ["--exec", { prompt_text: true }] },
+    opencode: { cmd: "opencode", args: ["run", { prompt_text: true }, "--yes"] },
   },
 
   // Health-check probes used by scripts/preflight.js to fail fast when a CLI

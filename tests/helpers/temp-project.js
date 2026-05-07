@@ -82,7 +82,7 @@ function writeProjectConfig(projectRoot, fakeCliPath) {
       '  default_cli: "fake",',
       '  orchestrator_cli: "fake",',
       "  cli_templates: {",
-      `    fake: 'node "${fakeCliPath}" {prompt_file}',`,
+      `    fake: { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(fakeCliPath)}, { prompt_file: true }] },`,
       "  },",
       "  cli_health_checks: {",
       '    fake: "node -e \\"process.exit(0)\\"",',

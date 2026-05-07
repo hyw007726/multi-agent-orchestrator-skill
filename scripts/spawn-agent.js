@@ -10,6 +10,7 @@ const path = require("path");
 const { loadConfig } = require("./lib/config");
 const { updateJSON } = require("./lib/locking");
 const { appendEvent } = require("./lib/events");
+const { spawnCliTemplate } = require("./lib/cli-template");
 
 spawnAgent();
 
@@ -45,15 +46,22 @@ function spawnAgent() {
   const cliTemplate = parsedConfig.cli_templates[config.cli];
 
   let child;
+  let templateMode = "builtin";
   if (cliTemplate) {
-    const cmdStr = cliTemplate.replace(/\{prompt_file\}/g, config.promptFile)
-      + (config.extraArgs.length > 0 ? " " + config.extraArgs.join(" ") : "");
-    child = spawn(cmdStr, {
-      detached: true,
-      stdio: ["ignore", out, err],
-      cwd: worktree,
-      shell: true,
-    });
+    try {
+      child = spawnCliTemplate(config.cli, cliTemplate, {
+        promptFile: config.promptFile,
+        promptText: prompt,
+        extraArgs: config.extraArgs,
+        detached: true,
+        stdio: ["ignore", out, err],
+        cwd: worktree,
+      });
+      templateMode = child.templateMode;
+    } catch (err) {
+      console.error(`Error: invalid cli_templates.${config.cli}: ${err.message}`);
+      process.exit(1);
+    }
   } else {
     const { cmd, cmdArgs } = builtinCli(config.cli, prompt, config.promptFile, config.mode, config.extraArgs);
     child = spawn(cmd, cmdArgs, {
@@ -69,6 +77,7 @@ function spawnAgent() {
   child.unref();
 
   console.log(`Spawned agent '${config.agent}' in background (PID: ${child.pid})`);
+  console.log(`Template mode: ${templateMode}`);
   console.log(`Logging output to ${logFile}`);
 
   const agentsFile = path.resolve(config.coordDir, "agents.json");
@@ -84,6 +93,7 @@ function spawnAgent() {
       status: "running",
       worktree,
       cli: config.cli,
+      template_mode: templateMode,
       kilo_mode: config.mode,
       pid: child.pid,
       started_at: existing.started_at ?? new Date().toISOString(),
@@ -102,7 +112,7 @@ function spawnAgent() {
   appendEvent(config.coordDir, "agent_spawned", {
     agent: config.agent,
     pid: child.pid,
-    data: { cli: config.cli, mode: config.mode, worktree },
+    data: { cli: config.cli, mode: config.mode, template_mode: templateMode, worktree },
   });
 
   // Single-use helper — creates the coord/ symlink inside the worktree so workers can

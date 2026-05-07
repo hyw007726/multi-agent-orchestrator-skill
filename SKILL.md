@@ -24,7 +24,7 @@ Before using this skill, ensure you have:
 > **Model Selection Strategy:** Use a powerful reasoning model for your interactive Orchestrator sessions (Contexts 1 & 3) and for the `orchestrator_cli` so request arbitration stays sound. Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for the bulk coding and the cheap monitor calls. If you want monitoring to be even cheaper, point `orchestrator_cli` at a fast worker too — the system will respect whichever CLI you configure.
 >
 > **How to pin a model:** Two patterns depending on the CLI.
-> - **Inline-flag CLIs** (claude, aider, gemini): model selection is part of `cli_templates`. The template string is what gets executed verbatim, so add the CLI's model flag inline — e.g. `claude -p ... --dangerously-skip-permissions --model claude-sonnet-4-6` for Sonnet, or `aider ... --model gpt-4o-mini`.
+> - **Inline-flag CLIs** (claude, aider, gemini): model selection is part of `cli_templates`. Prefer structured argv templates and add the CLI's model flag in `args` — e.g. `{ cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] }` for Sonnet, or add `--model gpt-4o-mini` to the Aider args.
 > - **External-config CLIs** (kilo, opencode, codex): model selection lives in the CLI's own settings (BYOK provider + model picker), not the template. The template stays simple; the model is whatever the user has configured in that CLI.
 >
 > **`claude` is the one CLI where pinning is effectively required, not optional.** The other inline-flag CLIs (aider, gemini) read their model from independent config (env vars, model files), so a worker spawn picks up the user's existing setup. `claude` is different — without `--model`, the spawned worker silently inherits the model of the parent Claude Code session running this skill (typically Opus 4.7 if you launched from an Opus orchestrator session), routing bulk worker coding to the orchestrator's expensive reasoning model. The shipped `cli_templates.claude` already pins Sonnet 4.6 for this reason.
@@ -39,7 +39,7 @@ Before beginning Phase 1, you MUST check if an `orchestrator.config.js` file exi
 If it exists, read it to determine:
 - **`default_cli`**: The Worker CLI to use for spawning agents and for the cheap AI-Review / final-summary calls.
 - **`orchestrator_cli`**: The CLI used by the background loop for request arbitration (defaults to `claude`). Set this independently from `default_cli` if you want arbitration to use a stronger reasoning model than your workers.
-- **`cli_templates`**: The exact bash commands used to spawn the worker CLIs. The same templates are reused for `orchestrator_cli` calls and the AI-Review calls, so the system is immune to third-party tool interface changes. **This is also where you pin a model** — append the CLI's model flag (`--model <id>`, `--llm <id>`, etc.) to the template string and that model is used for every spawn driven by it.
+- **`cli_templates`**: The template definitions used to spawn worker CLIs. Prefer structured `{ cmd, args }` entries so they run with `shell:false`; keep string templates when you intentionally need shell behavior. The same templates are reused for `orchestrator_cli` calls and the AI-Review calls, so the system is immune to third-party tool interface changes. **This is also where you pin a model** — add the CLI's model flag (`--model <id>`, `--llm <id>`, etc.) to the template args/string and that model is used for every spawn driven by it.
 - **`default_timeout_mins`**: The default time before an agent is considered hanging (Liveness).
 - **`default_progress_timeout_mins`**: The default time before an active agent with zero code changes is considered stuck (Progress).
 - **`default_max_restarts`**: The maximum number of times the loop will respawn the same agent before marking it `errored` (defaults to 3). Counted across both validation-failure restarts and AI-Review restarts.
@@ -56,14 +56,17 @@ module.exports = {
   default_cli: "kilo",
 
   // Command templates for supported CLIs.
-  // Use {prompt_file} as a placeholder for the generated prompt text file.
+  // Prefer structured argv templates. Use { prompt_file: true } to pass the
+  // generated prompt file path as one argv item, or { prompt_text: true } to pass
+  // the prompt contents as one argv item. String templates remain supported for
+  // CLIs that genuinely need shell behavior.
   cli_templates: {
     kilo: 'kilo run "$(cat {prompt_file})" --auto',
-    aider: "aider --message-file {prompt_file} --yes",
-    claude: 'claude -p "$(cat {prompt_file})" --dangerously-skip-permissions --model claude-sonnet-4-6',
-    gemini: 'gemini --prompt "$(cat {prompt_file})" --yolo',
-    codex: 'codex --exec "$(cat {prompt_file})"',
-    opencode: 'opencode run "$(cat {prompt_file})" --yes',
+    aider: { cmd: "aider", args: ["--message-file", { prompt_file: true }, "--yes"] },
+    claude: { cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
+    gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo"] },
+    codex: { cmd: "codex", args: ["--exec", { prompt_text: true }] },
+    opencode: { cmd: "opencode", args: ["run", { prompt_text: true }, "--yes"] },
   },
 };
 ```

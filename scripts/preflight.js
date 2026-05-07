@@ -19,6 +19,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { loadConfig } = require("./lib/config");
+const { spawnCliTemplateSync, validateCliTemplate } = require("./lib/cli-template");
 
 runPreflight();
 
@@ -37,7 +38,15 @@ function runPreflight() {
   for (const cli of clis) {
     const versionResult = runVersionCheck(cli, config, args.timeoutMs);
     printResult(cli, "install", versionResult);
-    if (!versionResult.ok) { allOk = false; continue; }
+    if (!versionResult.ok) allOk = false;
+
+    const templateResult = runTemplateValidation(cli, config);
+    if (templateResult) {
+      printResult(cli, "template", templateResult);
+      if (!templateResult.ok) allOk = false;
+    }
+
+    if (!versionResult.ok || (templateResult && !templateResult.ok)) continue;
 
     if (args.withAuth) {
       const authResult = runAuthCheck(cli, config, args.timeoutMs * 2);
@@ -75,7 +84,7 @@ function runPreflight() {
 
   function warnIfClaudeModelUnpinned(config) {
     const claudeTemplate = config.cli_templates["claude"];
-    if (claudeTemplate && !claudeTemplate.includes("--model")) {
+    if (claudeTemplate && !templateIncludesArg(claudeTemplate, "--model")) {
       console.warn("  Warning: cli_templates.claude does not include --model. Workers will inherit the");
       console.warn("     parent session's model (likely Opus 4.7). Add --model <id> to pin a cheaper model.");
       console.warn("");
@@ -91,6 +100,14 @@ function runPreflight() {
     return runShell(cmd, timeoutMs);
   }
 
+  function runTemplateValidation(cli, config) {
+    const template = config.cli_templates[cli];
+    if (template === undefined) return null;
+    const result = validateCliTemplate(cli, template);
+    if (!result.ok) return { ok: false, message: result.message };
+    return { ok: true, message: `${result.mode} mode` };
+  }
+
   // Runs the spawn template with a tiny prompt to confirm the CLI is actually
   // authenticated (not just installed). Costs a few tokens per CLI.
   function runAuthCheck(cli, config, timeoutMs) {
@@ -99,10 +116,17 @@ function runPreflight() {
       return { ok: false, message: `No spawn template for '${cli}' to drive an auth check. Add cli_templates.${cli} in orchestrator.config.js.` };
     }
     const promptFile = path.join(os.tmpdir(), `preflight-${cli}-${Date.now()}.txt`);
-    fs.writeFileSync(promptFile, "Reply with the single word: OK", "utf-8");
+    const promptText = "Reply with the single word: OK";
+    fs.writeFileSync(promptFile, promptText, "utf-8");
     try {
-      const cmdStr = template.replace(/\{prompt_file\}/g, promptFile);
-      return runShell(cmdStr, timeoutMs);
+      const { mode, result } = spawnCliTemplateSync(cli, template, {
+        promptFile,
+        promptText,
+        encoding: "utf-8",
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024,
+      });
+      return formatSpawnResult(result, timeoutMs, mode);
       // Don't require "OK" in output — some CLIs print extra chatter. Non-zero exit / timeout are the real signals.
     } finally {
       try { fs.unlinkSync(promptFile); } catch {}
@@ -111,6 +135,17 @@ function runPreflight() {
 
   function runShell(cmd, timeoutMs) {
     const result = spawnSync(cmd, { shell: true, encoding: "utf-8", timeout: timeoutMs, maxBuffer: 1024 * 1024 });
+    return formatResult(result, timeoutMs);
+  }
+
+  function formatSpawnResult(result, timeoutMs, mode) {
+    const formatted = formatResult(result, timeoutMs);
+    return formatted.ok
+      ? { ok: true, message: `${formatted.message} (${mode})` }
+      : formatted;
+  }
+
+  function formatResult(result, timeoutMs) {
     if (result.error) {
       const code = result.error.code;
       if (code === "ETIMEDOUT") {
@@ -134,5 +169,10 @@ function runPreflight() {
   function printResult(cli, phase, result) {
     const mark = result.ok ? "✓" : "✗";
     console.log(`  ${mark} ${cli} (${phase}): ${result.message}`);
+  }
+
+  function templateIncludesArg(template, arg) {
+    if (typeof template === "string") return template.includes(arg);
+    return Array.isArray(template.args) && template.args.includes(arg);
   }
 }

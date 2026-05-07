@@ -142,10 +142,12 @@ function launchAll() {
     const pid = pidMatch ? pidMatch[1] : '?';
     const logMatch = spawnResult.stdout.match(/Logging output to\s+(.+)/);
     const logPath = logMatch ? logMatch[1] : 'coord/logs/';
+    const modeMatch = spawnResult.stdout.match(/Template mode:\s*(\w+)/);
+    const templateMode = modeMatch ? modeMatch[1] : 'unknown';
 
-    spawnedAgents.push({ name: agentName, pid, logPath });
+    spawnedAgents.push({ name: agentName, pid, logPath, templateMode });
     if (pid !== '?') spawnedPids.push({ pid: parseInt(pid, 10), cli, name: agentName });
-    console.log(`Agent '${agentName}' spawned (PID: ${pid}, log: ${logPath})`);
+    console.log(`Agent '${agentName}' spawned (PID: ${pid}, template: ${templateMode}, log: ${logPath})`);
   }
 
   const loopOutPath = path.join(args.coordDir, 'orchestrator-loop.out');

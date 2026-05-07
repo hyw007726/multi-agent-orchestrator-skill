@@ -37,6 +37,9 @@ describe('config merging', () => {
     assert.ok(config.cli_templates.codex, 'codex template should exist');
     assert.ok(config.cli_templates.opencode, 'opencode template should exist');
     assert.ok(config.cli_templates.kilo.includes('kilo'), 'kilo template should contain "kilo"');
+    assert.strictEqual(config.cli_templates.aider.cmd, 'aider', 'aider should use argv template mode');
+    assert.strictEqual(config.cli_templates.claude.cmd, 'claude', 'claude should use argv template mode');
+    assert.strictEqual(config.cli_templates.codex.cmd, 'codex', 'codex should use argv template mode');
 
     // Verify cli_health_checks defaults are present.
     assert.ok(config.cli_health_checks, 'cli_health_checks should exist');
@@ -107,7 +110,7 @@ describe('config merging', () => {
 
     // Unspecified CLIs should keep the built-in defaults.
     assert.ok(config.cli_templates.claude, 'claude template should still exist from defaults');
-    assert.ok(config.cli_templates.claude.includes('claude'), 'claude template should contain "claude"');
+    assert.ok(templateContains(config.cli_templates.claude, 'claude'), 'claude template should contain "claude"');
     assert.ok(config.cli_templates.gemini, 'gemini template should still exist from defaults');
     assert.ok(config.cli_templates.codex, 'codex template should still exist from defaults');
     assert.ok(config.cli_templates.opencode, 'opencode template should still exist from defaults');
@@ -203,3 +206,8 @@ describe('config merging', () => {
     assert.strictEqual(config.another_random, undefined);
   });
 });
+
+function templateContains(template, text) {
+  if (typeof template === 'string') return template.includes(text);
+  return template && (template.cmd === text || (Array.isArray(template.args) && template.args.includes(text)));
+}

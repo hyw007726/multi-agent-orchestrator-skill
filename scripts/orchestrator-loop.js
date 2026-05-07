@@ -10,6 +10,7 @@ const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL, appen
 const { renderWorkerPrompt, renderWorkerRestartPrompt } = require("./lib/prompt-render");
 const { STATUS, transitionAgentStatus } = require("./lib/status");
 const { appendEvent } = require("./lib/events");
+const { cliTemplateMode, spawnCliTemplateSync } = require("./lib/cli-template");
 
 const RECENT_DECISION_LIMIT = 30;
 
@@ -929,7 +930,8 @@ function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
   const template = parsedConfig.cli_templates[cli];
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    log(`Calling orchestrator CLI '${cli}' (attempt ${attempt}/${maxRetries})...`);
+    const mode = template ? cliTemplateMode(template) : "builtin";
+    log(`Calling orchestrator CLI '${cli}' via ${mode} mode (attempt ${attempt}/${maxRetries})...`);
     const { stdout, error } = invokeOrchestratorCli(cli, template, prompt);
     if (error) {
       log(`Orchestrator CLI failed: ${error}`);
@@ -959,11 +961,17 @@ function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
       const promptFile = path.join(os.tmpdir(), `orch-prompt-${Date.now()}.txt`);
       fs.writeFileSync(promptFile, prompt, "utf-8");
       try {
-        const cmdStr = template.replace(/\{prompt_file\}/g, promptFile);
-        const result = spawnSync(cmdStr, { shell: true, encoding: "utf-8", maxBuffer: 1024 * 1024 * 10 });
+        const { result } = spawnCliTemplateSync(cli, template, {
+          promptFile,
+          promptText: prompt,
+          encoding: "utf-8",
+          maxBuffer: 1024 * 1024 * 10,
+        });
         if (result.error) return { stdout: "", error: result.error.message };
         if (result.status !== 0) return { stdout: result.stdout || "", error: `Exit ${result.status}: ${result.stderr}` };
         return { stdout: result.stdout || "" };
+      } catch (err) {
+        return { stdout: "", error: err.message };
       } finally {
         try { fs.unlinkSync(promptFile); } catch {}
       }
@@ -984,10 +992,16 @@ function generateAiReviewInstruction(tailLogs, parsedConfig, log) {
   fs.writeFileSync(promptFile, reviewPrompt, "utf-8");
   try {
     if (template) {
-      const cmdStr = template.replace(/\{prompt_file\}/g, promptFile);
-      const result = spawnSync(cmdStr, { shell: true, encoding: "utf-8", timeout: 60000 });
+      log(`Triggered AI Review invoking '${cli}' via ${cliTemplateMode(template)} mode...`);
+      const { result } = spawnCliTemplateSync(cli, template, {
+        promptFile,
+        promptText: reviewPrompt,
+        encoding: "utf-8",
+        timeout: 60000,
+      });
       if (result.stdout?.trim()) return result.stdout.trim();
     } else {
+      log("Triggered AI Review invoking 'claude' via builtin mode...");
       const result = spawnSync("claude", ["-p", reviewPrompt, "--dangerously-skip-permissions"], { encoding: "utf-8", timeout: 60000 });
       if (result.stdout?.trim()) return result.stdout.trim();
     }
@@ -1079,13 +1093,19 @@ Keep the total output under 50 lines. Be direct.`;
 
   let summaryOutput = "";
   try {
-    log(`Calling ${workerCli} for review summary...`);
     const template = parsedConfig.cli_templates[workerCli];
     let result;
     if (template) {
-      const cmdStr = template.replace(/\{prompt_file\}/g, promptFile);
-      result = spawnSync(cmdStr, { shell: true, encoding: "utf-8", maxBuffer: 1024 * 1024 * 10, timeout: 120000 });
+      log(`Calling ${workerCli} for review summary via ${cliTemplateMode(template)} mode...`);
+      result = spawnCliTemplateSync(workerCli, template, {
+        promptFile,
+        promptText: shortPrompt,
+        encoding: "utf-8",
+        maxBuffer: 1024 * 1024 * 10,
+        timeout: 120000,
+      }).result;
     } else {
+      log(`Calling ${workerCli} for review summary via builtin mode...`);
       const { cmd, cmdArgs } = defaultCliCommand(workerCli, shortPrompt, promptFile);
       result = spawnSync(cmd, cmdArgs, { encoding: "utf-8", maxBuffer: 1024 * 1024 * 10, timeout: 120000 });
     }
