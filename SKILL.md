@@ -191,7 +191,7 @@ The loop then uses this AI-generated instruction as the prompt for the `soft_res
 
 **Restart cap:** Every restart (soft or hard, whether triggered by validation failure, the AI-Review course-correction, or an orchestrator action) increments the agent's `restart_count`. Once it exceeds `default_max_restarts` (default 3), the loop stops respawning the agent and marks it `errored` so failures can't thrash forever.
 
-**PID safety:** Before sending any signal the loop validates that the stored PID still matches the spawned worker CLI's command line (POSIX `ps`). If the PID has been recycled to an unrelated process, the signal is skipped — so the orchestrator cannot accidentally SIGTERM an editor or shell that happens to inherit the worker's old PID.
+**PID/process-group safety:** Before sending any signal the loop validates that the stored PID still matches the spawned worker CLI's command line (POSIX `ps`). If the PID has been recycled to an unrelated process, the signal is skipped. On POSIX the worker is launched as a detached process group, so stops/restarts signal the whole group rather than only the wrapper PID.
 
 **Aborting:** Closing the dashboard window (SIGHUP/SIGTERM) leaves the agents running. Pressing Ctrl+C asks for confirmation, then writes `coord/abort.flag`. The loop's abort path performs a soft stop only — it kills the running agent processes and marks them `terminated`, but **does not** `git reset --hard` the worktrees. Any in-flight work is preserved and can be inspected with `git status` in each worktree.
 

@@ -63,6 +63,9 @@ function spawnAgent() {
     });
   }
 
+  // detached:true gives the worker its own POSIX process group with child.pid
+  // as the group id. The loop's safeKill helper signals that group so wrapper
+  // shells and child CLIs are stopped together.
   child.unref();
 
   console.log(`Spawned agent '${config.agent}' in background (PID: ${child.pid})`);

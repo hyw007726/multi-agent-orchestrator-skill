@@ -16,7 +16,7 @@ It safely sandboxes workers into `git worktrees`, manages their lifecycles via a
 
 ## Reliability
 - **Restart cap** — every restart (validation failure, AI-Review course-correction, explicit action) bumps a per-agent `restart_count`. Past `default_max_restarts` (default 3) the loop stops respawning so failures can't thrash forever.
-- **PID safety** — before sending any signal the loop verifies the stored PID's cmdline via `ps`, so a recycled PID can't be SIGTERM'd by accident.
+- **PID/process-group safety** — before sending any signal the loop verifies the stored PID's cmdline via `ps`, then signals the detached worker process group on POSIX so wrapper shells and child CLIs stop together.
 - **Recovery tags** — `hard_restart` captures uncommitted+untracked work as a `recovery/<agent>/<timestamp>` git tag *before* resetting, so wiped state is always recoverable with `git show <tag>`.
 - **Soft abort** — closing the dashboard window leaves agents running. Ctrl+C asks for confirmation; the resulting abort kills processes but preserves worktree contents (no `git reset --hard`).
 - **Stalled-CLI surfacing** — if the arbitration CLI fails repeatedly the dashboard renders a banner with diagnostics, so you know whether the loop is making progress or stuck.
