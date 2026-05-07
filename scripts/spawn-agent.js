@@ -71,22 +71,27 @@ function spawnAgent() {
   if (!fs.existsSync(agentsFile)) fs.writeFileSync(agentsFile, "{}\n");
 
   updateJSON(agentsFile, (agents) => {
-    const existing = agents[config.agent];
-    agents[config.agent] = {
-      task: existing?.task ?? "Initial prompt",
+    const existing = agents[config.agent] && typeof agents[config.agent] === "object"
+      ? agents[config.agent]
+      : {};
+    const next = {
+      ...existing,
+      task: existing.task ?? "Initial prompt",
       status: "running",
       worktree,
       cli: config.cli,
       kilo_mode: config.mode,
       pid: child.pid,
-      started_at: existing?.started_at ?? new Date().toISOString(),
+      started_at: existing.started_at ?? new Date().toISOString(),
       last_heartbeat: new Date().toISOString(),
-      validate_cmd: config.validateCmd,
-      timeout_mins: config.timeoutMins,
-      progress_timeout_mins: config.progressTimeoutMins,
-      restart_count: existing?.restart_count ?? 0,
-      base_ref: config.baseRef,
+      validate_cmd: firstDefined(config.validateCmd, existing.validate_cmd),
+      timeout_mins: firstDefined(config.timeoutMins, existing.timeout_mins),
+      progress_timeout_mins: firstDefined(config.progressTimeoutMins, existing.progress_timeout_mins),
+      restart_count: existing.restart_count ?? 0,
+      base_ref: firstDefined(config.baseRef, existing.base_ref),
     };
+    delete next.exit_log_tail;
+    agents[config.agent] = next;
   });
   console.log(`Registered agent in ${agentsFile}`);
 
@@ -121,6 +126,10 @@ function spawnAgent() {
     if (extra.length > 0) cmdArgs.push(...extra);
     return { cmd, cmdArgs };
   }
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined);
 }
 
 function parseArgs() {

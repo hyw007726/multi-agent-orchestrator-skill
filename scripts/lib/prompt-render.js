@@ -28,8 +28,12 @@ function renderWorkerPrompt(template, vars) {
   return result;
 }
 
-function renderWorkerRestartPrompt(instruction) {
-  return `## Response Style\n${WORKER_CONCISION_PROMPT}\n\n## Restart Instruction\n${instruction}`;
+function renderWorkerRestartPrompt(instruction, contractPrompt = '') {
+  const restartBlock = `## Restart Instruction\n${instruction}`;
+  if (contractPrompt && contractPrompt.trim()) {
+    return `${contractPrompt.trim()}\n\n${restartBlock}`;
+  }
+  return `## Response Style\n${WORKER_CONCISION_PROMPT}\n\n${restartBlock}`;
 }
 
 module.exports = { WORKER_CONCISION_PROMPT, renderWorkerPrompt, renderWorkerRestartPrompt };

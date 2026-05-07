@@ -37,4 +37,21 @@ describe('worker prompt rendering', () => {
     assert.ok(prompt.includes(WORKER_CONCISION_PROMPT));
     assert.ok(prompt.includes('Fix the failing validation.'));
   });
+
+  it('appends restart instructions to a full worker contract when provided', () => {
+    const contractPrompt = [
+      '# Worker Agent Prompt Template',
+      '## Response Style',
+      WORKER_CONCISION_PROMPT,
+      '## Your Constraints',
+      'ALLOWED PATHS: src/**',
+      '### Request Format',
+    ].join('\n');
+
+    const prompt = renderWorkerRestartPrompt('Fix the failing validation.', contractPrompt);
+
+    assert.ok(prompt.startsWith(contractPrompt));
+    assert.ok(prompt.includes('### Request Format'));
+    assert.ok(prompt.endsWith('## Restart Instruction\nFix the failing validation.'));
+  });
 });

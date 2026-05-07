@@ -7,7 +7,7 @@ const { execSync, spawnSync } = require("child_process");
 const { loadConfig } = require("./lib/config");
 const { safeKill } = require("./lib/process");
 const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL } = require("./lib/locking");
-const { renderWorkerRestartPrompt } = require("./lib/prompt-render");
+const { renderWorkerPrompt, renderWorkerRestartPrompt } = require("./lib/prompt-render");
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
@@ -371,6 +371,10 @@ async function runLoop() {
         cliTool,
         worktree: agent.worktree,
         kiloMode: agent.kilo_mode,
+        validateCmd: agent.validate_cmd,
+        timeoutMins: agent.timeout_mins,
+        progressTimeoutMins: agent.progress_timeout_mins,
+        baseRef: agent.base_ref,
         attempt: nextCount,
       };
     });
@@ -430,31 +434,82 @@ async function runLoop() {
       attempt: outcome.attempt,
       maxAttempts: parsedConfig.default_max_restarts,
       instruction,
+      worktree: outcome.worktree,
+      validateCmd: outcome.validateCmd,
+      timeoutMins: outcome.timeoutMins,
+      progressTimeoutMins: outcome.progressTimeoutMins,
+      baseRef: outcome.baseRef,
       paths,
       log,
     });
 
     // Single-use helper — only called from bumpRestartAndRespawn above.
-    function respawnAgent({ name, kiloMode, cliTool, attempt, maxAttempts, instruction, paths, log }) {
-      const promptFile = path.join(os.tmpdir(), `prompt-${name}-${Date.now()}.txt`);
-      fs.writeFileSync(promptFile, renderWorkerRestartPrompt(instruction), "utf-8");
+    function respawnAgent({ name, kiloMode, cliTool, attempt, maxAttempts, instruction, worktree, validateCmd, timeoutMins, progressTimeoutMins, baseRef, paths, log }) {
+      const promptsDir = path.join(path.dirname(paths.agents), "prompts");
+      fs.mkdirSync(promptsDir, { recursive: true });
+      const promptFile = path.join(promptsDir, `restart-${name}-${Date.now()}.txt`);
+      fs.writeFileSync(promptFile, renderRestartPrompt({ name, instruction, worktree, paths, log }), "utf-8");
       log(`Respawning agent ${name} using ${cliTool} (attempt ${attempt}/${maxAttempts})...`);
+      const spawnArgs = [
+        path.join(__dirname, "spawn-agent.js"),
+        "--agent", name,
+        "--mode", kiloMode || "auto",
+        "--prompt-file", promptFile,
+        "--coord", path.dirname(paths.agents),
+        "--cli", cliTool,
+      ];
+      appendSpawnArg(spawnArgs, "--validate", validateCmd, serializeValidateCmd);
+      appendSpawnArg(spawnArgs, "--timeout", timeoutMins, String);
+      appendSpawnArg(spawnArgs, "--progress-timeout", progressTimeoutMins, String);
+      appendSpawnArg(spawnArgs, "--base-ref", baseRef, String);
       try {
-        spawnSync("node", [
-          path.join(__dirname, "spawn-agent.js"),
-          "--agent", name,
-          "--mode", kiloMode,
-          "--prompt-file", promptFile,
-          "--coord", path.dirname(paths.agents),
-          "--cli", cliTool,
-        ], { stdio: "inherit" });
+        const result = spawnSync("node", spawnArgs, { stdio: "inherit" });
+        if (result.error) throw result.error;
+        if (result.status !== 0) {
+          log(`Failed to respawn agent ${name}: spawn-agent.js exited with status ${result.status}.`);
+          return false;
+        }
         return true;
       } catch (err) {
         log(`Failed to respawn agent ${name}: ${err.message}`);
         return false;
-      } finally {
-        try { fs.unlinkSync(promptFile); } catch {}
       }
+
+      function appendSpawnArg(args, flag, value, serialize) {
+        if (value === undefined || value === null || value === "") return;
+        args.push(flag, serialize(value));
+      }
+
+      function serializeValidateCmd(value) {
+        return Array.isArray(value) ? JSON.stringify(value) : String(value);
+      }
+    }
+  }
+
+  function renderRestartPrompt({ name, instruction, worktree, paths, log }) {
+    const contractPrompt = renderRestartContractPrompt({ name, worktree, paths, log });
+    return renderWorkerRestartPrompt(instruction, contractPrompt);
+  }
+
+  function renderRestartContractPrompt({ name, worktree, paths, log }) {
+    try {
+      const context = readJSON(paths.context);
+      const task = context.tasks?.[name];
+      if (!task) return "";
+
+      const templatePath = path.resolve(__dirname, "..", "references", "worker-prompt-template.md");
+      const template = fs.readFileSync(templatePath, "utf-8");
+      return renderWorkerPrompt(template, {
+        ASSIGNED_TASK: task.description || "",
+        PROJECT_DESCRIPTION: context.project || "",
+        AGENT_NAME: name,
+        WORKTREE_PATH: worktree || "",
+        ALLOWED_PATHS_LIST: task.allowed_paths || [],
+        FORBIDDEN_PATHS_LIST: task.forbidden_paths || [],
+      });
+    } catch (err) {
+      log(`Restart prompt contract render failed for ${name}: ${err.message}`);
+      return "";
     }
   }
 
