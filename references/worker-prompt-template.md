@@ -16,19 +16,22 @@ Read `coord/context.json` for full requirements and constraints.
 4. Do not assume requirements that aren't in the context or decisions.
 5. Prefer asking (via requests) over guessing.
 6. Commit frequently with descriptive messages: "<agent-name>: <what changed>"
-7. **Actively ask for review**: If you are missing information or aren't sure about the right approach, do not assume. Write a request to `coord/requests.jsonl`.
-8. **Signal Completion**: When you have finished your entire task, you MUST append a `review_request` to `coord/requests.jsonl` stating that you are done. The orchestrator will automatically run your `validation_command` (if one was assigned) before marking you complete. If your tests/build fail, you will be restarted with the error logs to fix your code!
+7. **Actively ask for review**: If you are missing information or aren't sure about the right approach, do not assume. Write a request to `coord/requests/`.
+8. **Signal Completion**: When you have finished your entire task, you MUST submit a `review_request` to `coord/requests/` stating that you are done. The orchestrator will automatically run your `validation_command` (if one was assigned) before marking you complete. If your tests/build fail, you will be restarted with the error logs to fix your code!
 
 ## When You're Blocked or Uncertain
-If you encounter a conflict, need clarification, or want to make a structural change that affects others, you must stop and log a request in `coord/requests.jsonl`.
+If you encounter a conflict, need clarification, or want to make a structural change that affects others, you must stop and submit a request in `coord/requests/`.
 
 **WARNING:** The orchestrator reviewing your requests cannot see your files. You MUST include relevant code snippets, error logs, and full context inside the `content` field of your request.
 
 ### Request Format
-Append your request as a SINGLE RAW LINE of JSON to `coord/requests.jsonl`. 
-CRITICAL: Do NOT wrap the JSON in Markdown code blocks (no \`\`\`json). Do NOT use newlines inside the JSON object. It MUST be exactly one line of raw text so the orchestrator can parse it.
+To submit a request, you MUST write it as a single JSON object into a NEW file in the `coord/requests/` directory. Use a unique filename like `coord/requests/<agent-name>-<timestamp>.json`. Do NOT append to `coord/requests.jsonl` directly.
 
-Example format (write exactly one line like this, with NO markdown backticks):
+To ensure the orchestrator never reads a half-written file, you MUST write to a `.tmp` file first and then `mv` (rename) it to `.json`:
+  1. Write your JSON object to `coord/requests/<agent-name>-<timestamp>.tmp`
+  2. Rename it: `mv coord/requests/<agent-name>-<timestamp>.tmp coord/requests/<agent-name>-<timestamp>.json`
+
+Example content of your `.json` file (a single JSON object, no markdown, no extra whitespace outside the JSON):
 {"request_id": "{AGENT_NAME}-req-<timestamp>", "agent": "{AGENT_NAME}", "type": "question|change|conflict|review_request", "priority": "low|medium|high", "content": "Detailed explanation...", "status": "pending", "created_at": "<ISO-timestamp>"}
 
 ### Request Types

@@ -54,6 +54,7 @@ async function runLoop() {
   const POLL_BACKOFF = 1.5;
 
   while (true) {
+    consolidateStagedRequests(paths);
     let cycleHadPending = false;
     try {
       // ── Abort flag (soft stop — preserves worktrees) ─────────────────────
@@ -79,17 +80,52 @@ async function runLoop() {
       // ── Per-agent liveness + progress checks ─────────────────────────────
       // Snapshot read for diagnostics; each actual mutation takes its own lock.
       const snapshot = readJSON(paths.agents);
+      const allRequests = readJSONL(paths.requests);
 
       for (const name in snapshot) {
         if (snapshot[name].status !== "running") continue;
         const agent = snapshot[name];
 
-        // Process gone? Mark completed and move on.
+        // Process gone? Check whether the agent requested completion first.
         if (!isProcessAlive(agent.pid)) {
-          updateJSON(paths.agents, (agents) => {
-            if (agents[name] && agents[name].status === "running") agents[name].status = "completed";
-          });
-          log(`Agent ${name} (PID ${agent.pid}) process exited.`);
+          const agentLogFile = path.join(config.coordDir, "logs", `${name}.log`);
+          const stagedRequests = readStagedRequests(paths);
+          const inLog = allRequests.some(
+            (r) => r.agent === name && r.type === "review_request" && r.status === "pending"
+          );
+          const inStaging = stagedRequests.some(
+            (r) => r.agent === name && r.type === "review_request" && r.status === "pending"
+          );
+          const hasPendingReview = inLog || inStaging;
+
+          // If the review request exists only in staging (not yet consolidated
+          // into requests.jsonl), consolidate now so the arbitration pipeline sees it.
+          if (!inLog && inStaging) {
+            consolidateStagedRequests(paths);
+          }
+
+          if (!hasPendingReview) {
+            // Re-consolidate in case a request landed between readStagedRequests
+            // and the check above. Then re-read jsonl for a final verdict.
+            consolidateStagedRequests(paths);
+            const freshRequests = readJSONL(paths.requests);
+            const freshPending = freshRequests.some(
+              (r) => r.agent === name && r.type === "review_request" && r.status === "pending"
+            );
+            if (freshPending) {
+              log(`Agent ${name} (PID ${agent.pid}) process exited, but a review request arrived post-snapshot. Waiting for arbitration.`);
+              continue;
+            }
+            updateJSON(paths.agents, (agents) => {
+              if (agents[name] && agents[name].status === "running") {
+                agents[name].status = "exited";
+                agents[name].exit_log_tail = readTail(agentLogFile, 50);
+              }
+            });
+            log(`Agent ${name} (PID ${agent.pid}) process exited without review request. Marked exited.`);
+            continue;
+          }
+          log(`Agent ${name} (PID ${agent.pid}) process exited, but a review request is pending. Waiting for arbitration.`);
           continue;
         }
 
@@ -138,8 +174,7 @@ async function runLoop() {
       }
 
       // ── Pending requests / arbitration ───────────────────────────────────
-      const requests = readJSONL(paths.requests);
-      const pending = requests.filter((p) => p.status === "pending");
+      const pending = allRequests.filter((p) => p.status === "pending");
 
       if (pending.length > 0) {
         cycleHadPending = true;
@@ -171,7 +206,7 @@ async function runLoop() {
         const agents = readJSON(paths.agents);
         const entries = Object.values(agents);
         const allDone = entries.length > 0 &&
-          entries.every((a) => a.status === "completed" || a.status === "terminated" || a.status === "errored");
+          entries.every((a) => a.status === "completed" || a.status === "terminated" || a.status === "errored" || a.status === "exited");
         if (allDone) {
           finalize(config, paths, parsedConfig, log);
           break;
@@ -423,8 +458,8 @@ async function runLoop() {
   }
 
   // Atomically marks resolved/rejected requests in requests.jsonl and appends decisions.
-  // The merge happens inside the lock, so worker appends that arrived during the
-  // arbitration call (slow CLI) are preserved.
+  // Workers never write this file directly; new staged requests are consolidated before
+  // arbitration, and status updates are serialized through updateJSONL.
   function processApprovals(response, paths, log) {
     const decisionsToAdd = [];
 
@@ -483,10 +518,84 @@ function parseArgs() {
 function getPaths(coordDir) {
   return {
     requests: path.join(coordDir, "requests.jsonl"),
+    requestsDir: path.join(coordDir, "requests"),
     decisions: path.join(coordDir, "decisions.json"),
     context: path.join(coordDir, "context.json"),
     agents: path.join(coordDir, "agents.json"),
   };
+}
+
+// Shared — called at the very beginning of each runLoop cycle and from the
+// vanished-worker check when a worker may have staged a request after the
+// initial consolidation.
+function consolidateStagedRequests(paths) {
+  const requestsDir = paths.requestsDir;
+  if (!fs.existsSync(requestsDir)) return;
+
+  const entries = fs.readdirSync(requestsDir);
+  const jsonFiles = entries.filter(f => f.endsWith(".json"));
+  if (jsonFiles.length === 0) return;
+
+  const collected = [];
+  const consumedFiles = [];
+  const malformedFiles = [];
+
+  for (const file of jsonFiles) {
+    const filePath = path.join(requestsDir, file);
+    try {
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const obj = JSON.parse(raw);
+      collected.push(obj);
+      consumedFiles.push(filePath);
+    } catch {
+      malformedFiles.push(filePath);
+    }
+  }
+
+  if (collected.length > 0) {
+    updateJSONL(paths.requests, (current) => {
+      current.push(...collected);
+    });
+    for (const filePath of consumedFiles) {
+      try { fs.unlinkSync(filePath); } catch {}
+    }
+  }
+
+  if (malformedFiles.length > 0) {
+    const malformedDir = path.join(requestsDir, "malformed");
+    fs.mkdirSync(malformedDir, { recursive: true });
+    for (const filePath of malformedFiles) {
+      const dest = path.join(malformedDir, path.basename(filePath));
+      try {
+        fs.renameSync(filePath, dest);
+      } catch {
+        try { fs.unlinkSync(filePath); } catch {}
+      }
+    }
+  }
+}
+
+// Shared — used by the vanished-worker check in runLoop.
+// Reads all .json files from the staging directory and returns parsed objects
+// WITHOUT moving/deleting them (that's consolidateStagedRequests's job).
+function readStagedRequests(paths) {
+  const requestsDir = paths.requestsDir;
+  if (!fs.existsSync(requestsDir)) return [];
+
+  const entries = fs.readdirSync(requestsDir);
+  const jsonFiles = entries.filter(f => f.endsWith(".json"));
+  if (jsonFiles.length === 0) return [];
+
+  const out = [];
+  for (const file of jsonFiles) {
+    try {
+      const raw = fs.readFileSync(path.join(requestsDir, file), "utf-8");
+      out.push(JSON.parse(raw));
+    } catch {
+      // Malformed or partially-written files — skip in read-only scan.
+    }
+  }
+  return out;
 }
 
 // ─── IO helpers ──────────────────────────────────────────────────────────────
@@ -660,7 +769,8 @@ function buildOrchestratorPrompt(requests, context, decisions, worktreeStates) {
   return `You are the system orchestrator for a multi-agent project.
 
 Worker agents are running as headless CLI sessions, each in an isolated git worktree.
-They communicate by appending requests to coord/requests.jsonl.
+They submit requests by atomically writing JSON files into coord/requests/.
+The loop consolidates those files into coord/requests.jsonl for arbitration.
 
 ## Project Context
 ${JSON.stringify(context, null, 2)}
@@ -810,21 +920,34 @@ function clearStalledFlag(coordDir, log) {
 // ─── Final summary phase ─────────────────────────────────────────────────────
 
 function finalize(config, paths, parsedConfig, log) {
-  log("All worker agents completed. Spawning worker session for review summary...");
   const agents = readJSON(paths.agents);
   const summaries = [];
   let workerCli = "kilo";
   let baseBranch = "main";
 
+  const failedAgents = [];
   for (const name in agents) {
     const a = agents[name];
     if (a.cli) workerCli = a.cli;
     if (a.base_ref) baseBranch = a.base_ref;
+    if (a.status === "exited" || a.status === "errored") {
+      failedAgents.push(`${name} (${a.status}): ${(a.task || "").toString().slice(0, 80)}`);
+    }
     summaries.push(`- Agent: ${name}\n  Status: ${a.status}\n  Task: ${a.task}\n  Branch: ${name}`);
   }
 
   const agentsList = summaries.join("\n\n");
   const summaryFile = path.join(config.coordDir, "review-summary.txt");
+
+  if (failedAgents.length > 0) {
+    const fallback = `RUN INCOMPLETE\n\nSome agents failed or vanished before completing their work:\n${failedAgents.join("\n")}\n\nFull agent list:\n\n${agentsList}\n\nNext: inspect the worktrees and logs before merging.`;
+    fs.writeFileSync(summaryFile, fallback, "utf-8");
+    log(`Run ended incomplete (${failedAgents.length} agents failed/vanished). Skipping AI review summary.`);
+    console.log("\n" + fallback + "\n");
+    log("Orchestrator loop ending.");
+    return;
+  }
+  log("All worker agents completed. Spawning worker session for review summary...");
   const shortPrompt = `You are reviewing the completed output of a multi-agent coding project. Each agent worked in an isolated git branch.
 
 Please run git commands yourself (e.g., 'git diff ${baseBranch}...<branch-name>') to inspect the work done by the following agents:

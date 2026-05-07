@@ -87,6 +87,10 @@ function renderAgents() {
             const lastLine = logs[logs.length - 1] || "";
             if (a.status === "errored") {
               info = `ERROR: ${lastLine.slice(0, 40)}`;
+            } else if (a.status === "exited") {
+              const exitTail = a.exit_log_tail || "";
+              const exitLastLine = exitTail ? exitTail.trim().split("\n").pop() || "" : "";
+              info = `VANISHED: ${exitLastLine.slice(0, 40)}`;
             } else if (a.status === "running") {
               const parsedState = parseAgentState(logs.slice(-50));
               info = parsedState ? `> ${parsedState}` : `[Log] ${lastLine.slice(0, 40)}`;

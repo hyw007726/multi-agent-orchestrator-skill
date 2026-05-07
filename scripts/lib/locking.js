@@ -50,8 +50,8 @@ function updateJSON(filePath, mutate) {
   }
 }
 
-// Atomic read-modify-write of a JSONL file. Same shape as updateJSON. Useful for marking
-// request statuses without losing concurrent appends from workers (shell O_APPEND).
+// Atomic read-modify-write of a JSONL file. Same shape as updateJSON. The
+// orchestrator owns requests.jsonl; workers write request files into coord/requests/.
 function updateJSONL(filePath, mutate) {
   if (!fs.existsSync(filePath)) {
     throw new Error(`updateJSONL: file does not exist: ${filePath}. Run bootstrap first.`);

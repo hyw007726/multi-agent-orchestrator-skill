@@ -34,6 +34,12 @@ function launchAll() {
     process.exit(1);
   }
 
+  const requestsDir = path.join(args.coordDir, 'requests');
+  if (!fs.existsSync(requestsDir)) {
+    fs.mkdirSync(requestsDir, { recursive: true });
+    console.log(`Created staging directory: ${requestsDir}`);
+  }
+
   const config = loadConfig();
   const projectDescription = context.project || '';
 

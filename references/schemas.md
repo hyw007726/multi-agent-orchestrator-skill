@@ -63,7 +63,7 @@ verbatim (`{NAME}`) and replaced once.
 
 Any placeholder whose source field is missing is replaced with the literal
 string `"(unspecified)"` so the worker still receives a syntactically intact
-prompt and can ask via `coord/requests.jsonl` for clarification.
+prompt and can ask via `coord/requests/` for clarification.
 
 ## decisions.json
 ```json
@@ -77,8 +77,15 @@ prompt and can ask via `coord/requests.jsonl` for clarification.
 ]
 ```
 
+## requests/
+Worker-owned staging directory for new requests. A worker MUST write a single
+JSON object to a unique `.tmp` file in this directory, then atomically rename it
+to `.json`. Workers must not append directly to `requests.jsonl`; the loop is
+the only writer that consolidates staged files into that log and updates request
+statuses.
+
 ## requests.jsonl
-(JSON Lines format - one JSON object per line)
+Orchestrator-owned JSON Lines log, one JSON object per line:
 ```json
 {"request_id": "string — unique ID", "agent": "string — name of agent", "type": "question | change | conflict | review_request", "priority": "low | medium | high", "content": "string — detailed request", "status": "pending | resolved | rejected", "created_at": "ISO 8601 timestamp"}
 ```
@@ -91,7 +98,7 @@ shape — every field the loop actually depends on — is:
 {
   "agent-frontend": {
     "task": "string — current task description (rewritten on every restart with the new instruction)",
-    "status": "running | completed | terminated | errored",
+    "status": "running | completed | terminated | errored | exited",
     "worktree": "string — absolute path to the agent's git worktree (`.kilocode/worktrees/<name>` for kilo, `.agents/worktrees/<name>` otherwise)",
     "cli": "string — which worker CLI was used (kilo | aider | claude | codex | gemini | opencode); the loop reads this to pick the respawn template and to validate the PID's cmdline before signalling",
     "kilo_mode": "string — kilo-specific mode (code | architect | debug | ask); ignored by non-kilo CLIs but persisted for round-tripping through respawn",
@@ -103,7 +110,8 @@ shape — every field the loop actually depends on — is:
     "progress_timeout_mins": "integer | null — progress threshold (no code change while logs flow); falls back to default_progress_timeout_mins",
     "restart_count": "integer — bumped on every respawn (validation failure, AI-Review course-correction, explicit soft/hard restart); once it exceeds default_max_restarts the loop marks the agent `errored` instead of respawning",
     "base_ref": "string — the Git ref (branch or tag) this agent's worktree was branched from; used for diff computation (defaults to 'main' if not recorded)",
-    "recovery_tag": "string | omitted — Git tag name (e.g. `recovery/agent-frontend/2025-01-01T00-00-00-000Z`) holding pre-hard-restart state; set by the loop when a hard restart successfully creates a recovery tag"
+    "recovery_tag": "string | omitted — Git tag name (e.g. `recovery/agent-frontend/2025-01-01T00-00-00-000Z`) holding pre-hard-restart state; set by the loop when a hard restart successfully creates a recovery tag",
+    "exit_log_tail": "string | null — last 50 lines of worker logs captured when the process vanished without a review_request"
   }
 }
 ```

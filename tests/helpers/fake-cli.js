@@ -26,10 +26,12 @@ try {
 }
 
 if (prompt.includes('system orchestrator for a multi-agent project')) {
-  const requestIdMatch = prompt.match(/"request_id":\s*"([^"]+)"/);
+  const requestsStart = prompt.indexOf('## New Requests from Agents');
+  const requestsSection = requestsStart !== -1 ? prompt.slice(requestsStart) : prompt;
+  const requestIdMatch = requestsSection.match(/"request_id":\s*"([^"]+)"/);
   const requestId = requestIdMatch ? requestIdMatch[1] : 'unknown-req';
-  const agentSearchStart = requestIdMatch ? requestIdMatch.index : 0;
-  const remaining = prompt.slice(agentSearchStart);
+  const agentSearchStart = requestIdMatch ? requestsSection.indexOf(requestIdMatch[0]) : 0;
+  const remaining = requestsSection.slice(agentSearchStart);
   const agentMatch = remaining.match(/"agent":\s*"([^"]+)"/);
   const agentName = agentMatch ? agentMatch[1] : 'unknown-agent';
   const response = {
@@ -59,14 +61,25 @@ if (!fs.existsSync('coord')) {
   fs.mkdirSync('coord');
 }
 
+var agentName = 'agent-one';
+var agentMatch = prompt.match(/"agent":\s*"([^"]+)"/);
+if (agentMatch && agentMatch[1] && agentMatch[1] !== 'string — name of agent') {
+  agentName = agentMatch[1];
+}
+
 var request = {
-  request_id: 'agent-one-req-smoke',
-  agent: 'agent-one',
+  request_id: agentName + '-req-smoke',
+  agent: agentName,
   type: 'review_request',
   priority: 'medium',
   status: 'pending',
-  content: 'Fake worker agent-one has completed its smoke test task: created tests/helpers/fake-cli.js',
+  content: 'Fake worker ' + agentName + ' has completed its smoke test task: created tests/helpers/fake-cli.js',
   created_at: new Date().toISOString()
 };
 
-fs.appendFileSync(path.join('coord', 'requests.jsonl'), JSON.stringify(request) + '\n', 'utf-8');
+const requestsDir = path.join('coord', 'requests');
+fs.mkdirSync(requestsDir, { recursive: true });
+const tmpFile = path.join(requestsDir, agentName + '-smoke.tmp');
+const finalFile = path.join(requestsDir, agentName + '-smoke.json');
+fs.writeFileSync(tmpFile, JSON.stringify(request) + '\n', 'utf-8');
+fs.renameSync(tmpFile, finalFile);

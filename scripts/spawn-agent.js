@@ -28,7 +28,7 @@ function spawnAgent() {
 
   // Workers run with cwd=worktree, but coord/ lives at the project root and is gitignored,
   // so it isn't materialized inside any worktree. Without this symlink, every hardcoded
-  // `coord/...` path in the worker prompt and the requests.jsonl protocol would resolve
+  // `coord/...` path in the worker prompt and request-staging protocol would resolve
   // to a missing path and the worker would fail its first read. Use a relative target so
   // the link survives project-directory renames.
   ensureCoordSymlink(worktree, config.coordDir);
