@@ -7,6 +7,7 @@ const { execSync, spawnSync } = require("child_process");
 const { loadConfig } = require("./lib/config");
 const { safeKill } = require("./lib/process");
 const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL } = require("./lib/locking");
+const { renderWorkerRestartPrompt } = require("./lib/prompt-render");
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
@@ -436,7 +437,7 @@ async function runLoop() {
     // Single-use helper — only called from bumpRestartAndRespawn above.
     function respawnAgent({ name, kiloMode, cliTool, attempt, maxAttempts, instruction, paths, log }) {
       const promptFile = path.join(os.tmpdir(), `prompt-${name}-${Date.now()}.txt`);
-      fs.writeFileSync(promptFile, instruction, "utf-8");
+      fs.writeFileSync(promptFile, renderWorkerRestartPrompt(instruction), "utf-8");
       log(`Respawning agent ${name} using ${cliTool} (attempt ${attempt}/${maxAttempts})...`);
       try {
         spawnSync("node", [

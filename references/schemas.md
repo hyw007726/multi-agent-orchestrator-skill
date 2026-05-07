@@ -60,6 +60,7 @@ verbatim (`{NAME}`) and replaced once.
 | `{WORKTREE_PATH}`        | derived: `.kilocode/worktrees/<agent>` for kilo, else `.agents/worktrees/<agent>` |
 | `{ALLOWED_PATHS_LIST}`   | comma-joined `tasks[<agent>].allowed_paths`                     |
 | `{FORBIDDEN_PATHS_LIST}` | comma-joined `tasks[<agent>].forbidden_paths`                   |
+| `{WORKER_CONCISION_PROMPT}` | built-in concise response-style instructions                 |
 
 Any placeholder whose source field is missing is replaced with the literal
 string `"(unspecified)"` so the worker still receives a syntactically intact
