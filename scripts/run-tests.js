@@ -6,6 +6,11 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
 let failed = false;
+const COVERAGE_THRESHOLDS = {
+  lines: 85,
+  branches: 64,
+  functions: 90,
+};
 
 console.log("Syntax checks...");
 const scriptFiles = collectJsFiles("scripts");
@@ -32,7 +37,16 @@ const testFiles = (() => {
 if (testFiles.length === 0) {
   console.log("  No .test.js files found in tests/ yet.");
 } else {
-  const result = spawnSync("node", ["--test", ...testFiles.map(f => path.join("tests", f))], {
+  const result = spawnSync("node", [
+    "--test",
+    "--experimental-test-coverage",
+    "--test-coverage-include=scripts/**/*.js",
+    "--test-coverage-exclude=scripts/run-tests.js",
+    `--test-coverage-lines=${COVERAGE_THRESHOLDS.lines}`,
+    `--test-coverage-branches=${COVERAGE_THRESHOLDS.branches}`,
+    `--test-coverage-functions=${COVERAGE_THRESHOLDS.functions}`,
+    ...testFiles.map(f => path.join("tests", f)),
+  ], {
     cwd: ROOT,
     encoding: "utf-8",
     stdio: "inherit",
