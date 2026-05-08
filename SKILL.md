@@ -89,7 +89,7 @@ These three steps run unconditionally on every invocation, before any task reaso
 node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.js
 ```
 
-The script checks `default_cli` and `orchestrator_cli` by default. It runs two probes per CLI: a `--version` install check, then an auth probe that exercises the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection. Pass `--skip-auth` for install-only checks (CI / offline). If any check fails, abort and surface the diagnostic — typical fixes are installing the CLI, putting it on `$PATH`, signing in, or selecting a default model.
+The script checks `default_cli` and `orchestrator_cli` by default. Before probing, it prints a model heads-up: pinned template models are shown by name, while external-config CLIs are called out as using their own selected provider/model. It then runs two probes per CLI: a `--version` install check, then an auth probe that exercises the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection. Pass `--skip-auth` for install-only checks (CI / offline). If any check fails, abort and surface the diagnostic — typical fixes are installing the CLI, putting it on `$PATH`, signing in, or selecting a default model.
 
 ## Phase 1 — Task Evaluation & Decomposition
 

@@ -7,6 +7,7 @@ const { spawnSync, spawn } = require('child_process');
 const { loadConfig } = require('./lib/config');
 const { safeKill } = require('./lib/process');
 const { renderWorkerPrompt } = require('./lib/prompt-render');
+const { formatModelHeadsUp } = require('./lib/model-headsup');
 
 launchAll();
 
@@ -55,6 +56,9 @@ function launchAll() {
   const createdWorktrees = [];
 
   const baseBranch = captureBaseBranch(projectRoot, config);
+  const workerClis = Array.from(new Set(Object.values(tasks).map((agentRecord) => agentRecord.cli || config.default_cli)));
+  console.log(formatModelHeadsUp(config, { workerClis }));
+  console.log('');
 
   for (const [agentName, agentRecord] of Object.entries(tasks)) {
     const cli = agentRecord.cli || config.default_cli;

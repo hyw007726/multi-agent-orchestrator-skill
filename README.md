@@ -83,6 +83,7 @@ ln -s ~/src/multi-agent-orchestrator ~/.claude/skills/multi-agent-orchestrator
    ```bash
    node ~/.claude/skills/multi-agent-orchestrator/scripts/preflight.js
    ```
+   Preflight prints a model heads-up before probing: pinned template models are shown by name, while external-config CLIs are called out as using their own selected provider/model.
 3. **Start a project**: Ask Claude Code to build something complex. The orchestrator session decomposes the task, writes `coord/context.json`, then runs `scripts/launch-all.js --coord ./coord` to create worktrees, render prompts, spawn every agent, and background the self-healing loop — all from a single command.
 4. **Sit back**: when all agents finish, the loop writes `coord/review-summary.txt`. Return to Claude and say *"The agents are done. Please review and integrate their work."*
 

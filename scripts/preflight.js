@@ -20,6 +20,7 @@ const os = require("os");
 const path = require("path");
 const { loadConfig } = require("./lib/config");
 const { spawnCliTemplateSync, validateCliTemplate } = require("./lib/cli-template");
+const { formatModelHeadsUp } = require("./lib/model-headsup");
 
 runPreflight();
 
@@ -31,7 +32,8 @@ function runPreflight() {
     ? args.clis
     : Array.from(new Set([config.default_cli, config.orchestrator_cli]));
 
-  warnIfClaudeModelUnpinned(config);
+  console.log(formatModelHeadsUp(config, { checkedClis: clis }));
+  console.log("");
   console.log(`Preflight: checking ${clis.length} CLI(s) — ${clis.join(", ")} (${args.withAuth ? "install + auth" : "install only"})\n`);
 
   let allOk = true;
@@ -80,15 +82,6 @@ function runPreflight() {
       }
     }
     return out;
-  }
-
-  function warnIfClaudeModelUnpinned(config) {
-    const claudeTemplate = config.cli_templates["claude"];
-    if (claudeTemplate && !templateIncludesArg(claudeTemplate, "--model")) {
-      console.warn("  Warning: cli_templates.claude does not include --model. Workers will inherit the");
-      console.warn("     parent session's model (likely Opus 4.7). Add --model <id> to pin a cheaper model.");
-      console.warn("");
-    }
   }
 
   // Runs the configured (or default) `--version`-style probe.
@@ -169,10 +162,5 @@ function runPreflight() {
   function printResult(cli, phase, result) {
     const mark = result.ok ? "✓" : "✗";
     console.log(`  ${mark} ${cli} (${phase}): ${result.message}`);
-  }
-
-  function templateIncludesArg(template, arg) {
-    if (typeof template === "string") return template.includes(arg);
-    return Array.isArray(template.args) && template.args.includes(arg);
   }
 }

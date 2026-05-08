@@ -155,4 +155,4 @@ function writeAtomic(filePath, content) {
   fs.renameSync(tmpPath, filePath);
 }
 
-module.exports = { acquireInstanceLock, updateJSON, updateJSONL, appendJSONL, readJSON, readJSONL };
+module.exports = { acquireInstanceLock, updateJSON, updateJSONL, appendJSONL, readJSON, readJSONL, acquireLock, writeAtomic };
