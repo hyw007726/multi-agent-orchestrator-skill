@@ -9,9 +9,7 @@ const agentsFile = path.join(coordDir, "agents.json");
 const requestsFile = path.join(coordDir, "requests.jsonl");
 const stalledFlagFile = path.join(coordDir, "orchestrator-stalled.flag");
 const abortFlagFile = path.join(coordDir, "abort.flag");
-
-const renderTimer = setInterval(render, 2000);
-render();
+let renderTimer;
 
 // Closing the terminal window (SIGHUP / SIGTERM) just exits the dashboard.
 // Worktrees are left intact — only an explicit confirmation triggers abort.
@@ -20,7 +18,7 @@ process.on("SIGTERM", () => exitDashboard("Dashboard closed (SIGTERM). Agents co
 
 // Ctrl+C: ask before signalling the loop.
 process.on("SIGINT", () => {
-  clearInterval(renderTimer);
+  if (renderTimer) clearInterval(renderTimer);
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   rl.question(
     "\nAbort all running agents? Worktrees will be preserved (uncommitted work stays put). [y/N] ",
@@ -38,10 +36,13 @@ process.on("SIGINT", () => {
 });
 
 function exitDashboard(message) {
-  clearInterval(renderTimer);
+  if (renderTimer) clearInterval(renderTimer);
   console.log("\n" + message);
   process.exit(0);
 }
+
+renderTimer = setInterval(render, 2000);
+render();
 
 function render() {
   process.stdout.write("\x1Bc");

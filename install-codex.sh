@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO_URL="${REPO_URL:-https://github.com/hyw007726/claud-multi-agent-orchestrator-skill.git}"
+REPO_URL="${REPO_URL:-https://github.com/hyw007726/multi-agent-orchestrator-skill.git}"
 REF="${REF:-main}"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 DEST="${DEST:-$CODEX_HOME/skills/multi-agent-orchestrator}"

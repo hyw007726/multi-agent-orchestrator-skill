@@ -1,55 +1,41 @@
 # Multi-Agent Orchestrator
 
-A caller-neutral orchestrator runtime that turns an interactive coding-agent session into a high-level coordinator managing multiple headless worker agents in parallel.
+Run several coding agents on one repository without letting them collide.
 
-It safely sandboxes workers into `git worktrees`, manages their lifecycles via a self-healing background daemon, and natively supports Kilo Code, Aider, Claude Code, Codex, Gemini CLI, and OpenCode.
+Multi-Agent Orchestrator is an Agent Skill and dependency-free Node.js runtime for splitting large coding tasks into parallel headless workers. It creates isolated git worktrees, gives every worker a scoped prompt and file boundary, supervises progress, restarts stuck agents, runs validation commands, and writes a final review summary so your interactive session can merge the results.
 
-## Features
+Use it from Codex, Gemini CLI, Claude Code, or any local coding agent that can read `SKILL.md` and run shell commands.
 
-- **Turn One Agent Into Many**: Break a complex task into parallel workstreams. The caller agent decomposes the work, spawns independent agents, and later integrates the results.
-- **Caller Neutral**: Use it from Codex, Gemini CLI, Claude Code, or any other local coding agent that can read `SKILL.md` and run shell commands.
-- **Worker CLI Agnostic**: Use any configured headless coding agent as a worker. Mix Kilo Code, Aider, Claude Code, Gemini CLI, OpenCode, Codex, or custom CLIs via `cli_templates`.
-- **Neutral Arbitration Defaults**: If `orchestrator_cli` is omitted, the background loop uses `default_cli`; no Claude installation is required unless you explicitly choose Claude.
-- **Self-Healing Loop**: Detects hung agents and stuck agents, then restarts or course-corrects them within a per-agent restart cap.
-- **Validation Loop**: Each agent can have a `validation_command`; failed validation triggers a soft restart with the failure log.
-- **Shared Architectural Source of Truth**: `coord/DECISIONS.md` stores durable contracts for APIs, data models, and file ownership. Runtime approvals are preserved in `coord/decisions.jsonl`.
-- **Live Dashboard**: A real-time TUI streams worker status, restart counts, and recent orchestrator decisions.
-- **Auto-Review**: When agents finish, the loop writes an AI-generated summary to `coord/review-summary.txt`.
+## What It Does
 
-## Configuration
+- Splits large implementation work across multiple coding agents.
+- Runs each worker in its own git worktree.
+- Keeps shared architecture in `coord/DECISIONS.md`.
+- Stores compressed run context in `coord/context.json` so the background loop does not need the original chat.
+- Supervises liveness, progress, validation, restarts, and worker questions.
+- Provides a live terminal dashboard.
+- Produces `coord/review-summary.txt` for final human/agent integration.
+- Supports Kilo Code, Aider, Claude Code, Codex, Gemini CLI, OpenCode, and custom CLIs.
 
-The runtime reads `orchestrator.config.js` from the target project root.
+## When To Use It
 
-Key settings:
+Use this when a task is large enough to split into independent workstreams, such as:
 
-- `default_cli` - worker CLI for coding tasks and cheap monitor calls.
-- `orchestrator_cli` - optional CLI for request arbitration. If omitted, it follows `default_cli`.
-- `cli_templates` - structured argv templates or explicit shell-string templates for every CLI the runtime may invoke.
-- `default_timeout_mins` / `default_progress_timeout_mins` - liveness and progress thresholds.
-- `default_max_restarts` - restart cap per agent.
-- `orchestrator_failure_threshold` - consecutive arbitration-CLI failures before the dashboard shows a stalled banner.
-- `launch_dashboard` / `launch_review_terminal` - GUI terminal spawning controls. Dashboard defaults to `auto`: open on local macOS, stay manual elsewhere.
+- building several independent app surfaces;
+- implementing separate backend, frontend, test, and migration tracks;
+- running many cleanup or migration tasks across different modules;
+- assigning parallel investigation or repair tasks to isolated workers.
 
-Recommended default: keep `default_cli: "kilo"` and configure Kilo itself to use a fast, cheap model. Set `orchestrator_cli` only when you want arbitration to use a different CLI/model.
+Do not use it for small changes, tightly coupled edits, or work that depends on one shared file being changed repeatedly. Handle shared foundations first in the main worktree, commit them, then fan out parallel worker tasks.
 
-## Prerequisites
-
-- Node.js.
-- Git with worktree support.
-- At least one headless worker CLI installed, authenticated, and configured with a default model.
-
-The runtime has no package dependencies. Every script uses Node.js built-ins, so there is no `npm install`, no `node_modules`, and no build step.
-
-Workers run non-interactively. Any selected CLI must already be signed in and able to answer a tiny prompt without setup prompts.
-
-## Install For Callers
+## Install
 
 ### Codex
 
 Run one command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hyw007726/claud-multi-agent-orchestrator-skill/main/install-codex.sh | sh
+curl -fsSL https://raw.githubusercontent.com/hyw007726/multi-agent-orchestrator-skill/main/install-codex.sh | sh
 ```
 
 Then restart Codex. Running the same command later updates the skill.
@@ -60,62 +46,153 @@ The installer clones this repo into:
 ${CODEX_HOME:-$HOME/.codex}/skills/multi-agent-orchestrator
 ```
 
-This repository also includes `agents/openai.yaml` for Codex UI metadata and `AGENTS.md` as a lightweight repository-level caller guide.
-
-### Manual Use
-
-Clone the repository anywhere if you only want manual use:
-
-```bash
-git clone https://github.com/hyw007726/claud-multi-agent-orchestrator-skill.git \
-  ~/src/multi-agent-orchestrator
-```
-
-Then ask your coding agent to read `~/src/multi-agent-orchestrator/SKILL.md` and use that workflow from the target project.
-
 ### Gemini CLI
 
-This repository is installable as a Gemini CLI extension:
+Clone the repo, then install it as a Gemini extension:
 
 ```bash
-gemini extensions install /path/to/multi-agent-orchestrator
+git clone https://github.com/hyw007726/multi-agent-orchestrator-skill.git \
+  ~/src/multi-agent-orchestrator
+
+gemini extensions install ~/src/multi-agent-orchestrator
 ```
 
-The extension manifest loads `GEMINI.md`, which imports `SKILL.md`, exposes a native skill wrapper under `skills/multi-agent-orchestrator/`, and provides a `/multi-agent-orchestrator` command from `commands/multi-agent-orchestrator.toml`.
+The extension exposes `/multi-agent-orchestrator`.
 
 ### Claude Code
 
-Claude Code can still use the same `SKILL.md` package:
+Clone the repo, then symlink it into Claude skills:
 
 ```bash
+git clone https://github.com/hyw007726/multi-agent-orchestrator-skill.git \
+  ~/src/multi-agent-orchestrator
+
 mkdir -p ~/.claude/skills
-ln -s /path/to/multi-agent-orchestrator \
+ln -s ~/src/multi-agent-orchestrator \
   ~/.claude/skills/multi-agent-orchestrator
 ```
 
-## Use
+### Manual Use
 
-1. Configure `orchestrator.config.js` in the target project if the defaults are not right.
-2. Run preflight from the target project:
+Any local coding agent can use the runtime directly:
 
-   ```bash
-   node /path/to/multi-agent-orchestrator/scripts/preflight.js
-   ```
+```text
+Read ~/src/multi-agent-orchestrator/SKILL.md and use that workflow from this project.
+```
 
-3. Ask the interactive caller session to decompose a large task using the multi-agent orchestrator workflow.
-4. The caller bootstraps `coord/`, fills `coord/context.json`, writes `coord/DECISIONS.md`, and launches:
+## Prerequisites
 
-   ```bash
-   node /path/to/multi-agent-orchestrator/scripts/launch-all.js --coord ./coord
-   ```
+- Node.js.
+- Git with worktree support.
+- A target project that is already a git repository.
+- At least one supported worker CLI installed, authenticated, and configured with a default model.
 
-5. Monitor with the auto-opened dashboard on local macOS, or run it manually with:
+The runtime has no package dependencies. There is no `npm install`, no `node_modules`, and no build step.
 
-   ```bash
-   node /path/to/multi-agent-orchestrator/scripts/dashboard.js --coord ./coord
-   ```
+Workers run non-interactively. Any selected CLI must already be signed in and able to answer a tiny prompt without setup prompts.
 
-6. When the loop finishes, ask the caller session to review `coord/review-summary.txt`, inspect each worktree diff, and merge approved branches.
+## Quick Start
+
+From the target project you want agents to work on, run preflight:
+
+```bash
+node ~/.codex/skills/multi-agent-orchestrator/scripts/preflight.js
+```
+
+If you installed somewhere else, replace `~/.codex/skills/multi-agent-orchestrator` with that path.
+
+Then ask your caller agent to use the orchestrator:
+
+```text
+Use $multi-agent-orchestrator to split this implementation into parallel worker agents:
+
+<describe the large feature or migration>
+```
+
+For Gemini CLI, use `/multi-agent-orchestrator`. For other callers, ask them to read this repo's `SKILL.md`.
+
+The caller session will:
+
+1. decide whether the task is actually worth parallelizing;
+2. handle shared foundation files first;
+3. create or update `coord/context.json` and `coord/DECISIONS.md`;
+4. split the remaining work into non-overlapping agent tasks;
+5. launch the workers and the background supervision loop.
+
+## Common Commands
+
+Run from the target project root.
+
+```bash
+# Verify configured CLIs are installed and authenticated.
+node /path/to/multi-agent-orchestrator/scripts/preflight.js
+
+# Bootstrap coord/ state for a new orchestrated run.
+node /path/to/multi-agent-orchestrator/scripts/bootstrap.js \
+  --project "Build the requested feature" \
+  --coord ./coord
+
+# Launch worker worktrees and the background loop.
+node /path/to/multi-agent-orchestrator/scripts/launch-all.js --coord ./coord
+
+# Open the live dashboard.
+node /path/to/multi-agent-orchestrator/scripts/dashboard.js --coord ./coord
+```
+
+Most users should let the caller agent run these commands after it has read `SKILL.md`.
+
+## How It Works
+
+1. The interactive caller session acts as architect. It decomposes the task, resolves shared foundations, assigns file ownership, and records durable decisions.
+2. `scripts/bootstrap.js` initializes `coord/`, the state directory shared by the caller, workers, and background loop.
+3. `scripts/launch-all.js` creates one git worktree per agent, renders prompts from `references/worker-prompt-template.md`, spawns workers, and starts the background loop.
+4. `scripts/orchestrator-loop.js` supervises workers. It arbitrates questions, detects hung or stuck workers, restarts within limits, and runs validation commands.
+5. When all workers finish, the loop writes `coord/review-summary.txt`.
+6. The interactive caller session reviews diffs, runs final checks, merges approved work, and removes completed worktrees.
+
+## Runtime Files
+
+| Path | Purpose |
+| --- | --- |
+| `coord/context.json` | Structured context the background loop and workers can read. |
+| `coord/DECISIONS.md` | Human-readable source of truth for architecture, APIs, ownership, and constraints. |
+| `coord/agents.json` | Current worker state. |
+| `coord/decisions.jsonl` | Arbitration and restart decisions. |
+| `coord/review-summary.txt` | Final handoff summary after workers complete. |
+| `.agents/worktrees/<agent>` | Worker git worktrees for most CLIs. |
+| `.kilocode/worktrees/<agent>` | Worker git worktrees for Kilo Code. |
+
+## Configuration
+
+The runtime reads `orchestrator.config.js` from the target project root. If no file exists, it uses built-in defaults.
+
+The most important settings are:
+
+- `default_cli`: worker CLI for coding tasks and cheap monitor calls.
+- `orchestrator_cli`: optional CLI for request arbitration. If omitted, it follows `default_cli`.
+- `cli_templates`: command templates for supported or custom CLIs.
+- `cli_health_checks`: lightweight install checks used by preflight.
+- `default_timeout_mins`: liveness timeout when logs stop.
+- `default_progress_timeout_mins`: progress timeout when logs continue but code does not change.
+- `default_max_restarts`: restart cap per agent.
+- `launch_dashboard`: dashboard auto-launch behavior.
+
+Minimal override example:
+
+```js
+module.exports = {
+  default_cli: "kilo",
+
+  // Optional: use a different CLI/model for arbitration.
+  // orchestrator_cli: "claude",
+
+  default_timeout_mins: 10,
+  default_progress_timeout_mins: 15,
+  default_max_restarts: 3,
+};
+```
+
+The repository root includes a fuller `orchestrator.config.js` with all built-in CLI templates and comments.
 
 ## Supported Worker CLIs
 
@@ -128,12 +205,47 @@ Built-in templates are provided for:
 - `gemini`
 - `opencode`
 
-Custom CLIs are supported by adding both `cli_templates.<name>` and `cli_health_checks.<name>` in `orchestrator.config.js`. The runtime no longer guesses a fallback command shape for custom CLIs.
+Custom CLIs are supported by adding both `cli_templates.<name>` and `cli_health_checks.<name>` in `orchestrator.config.js`. The runtime does not guess a fallback command shape for custom CLIs.
 
-## Testing
+## Safety Notes
+
+The runtime isolates workers with git worktrees, but the selected worker CLI still edits files and may run commands according to its own permissions. Review `cli_templates` before using this on sensitive repositories.
+
+The shipped templates use each CLI's autonomous or permission-bypass mode so background workers do not block on prompts. Use this only in repositories where you are comfortable reviewing and reverting generated changes.
+
+Always review worker diffs before merging. The orchestrator is a coordination tool, not a replacement for code review.
+
+## Why Not Just Open More Terminals?
+
+Manual parallel agent runs break down when workers need shared context, durable decisions, restart handling, and a clean integration handoff. This runtime adds the missing coordination layer:
+
+- one compressed context object for every worker;
+- explicit file ownership per agent;
+- durable decision logs;
+- liveness and progress supervision;
+- validation-driven restarts;
+- a final review summary for the integrating agent.
+
+## Development
+
+Run the test suite:
 
 ```bash
 node scripts/run-tests.js
 ```
 
-Tests are dependency-free and use fake CLIs against temporary git repositories, so they do not require real Kilo, Aider, Claude, Codex, Gemini, or OpenCode credentials.
+The tests use fake CLIs against temporary git repositories, so they do not require real worker credentials.
+
+## Listing This Project
+
+If you add this repo to a catalog or awesome list, use:
+
+```markdown
+- **[hyw007726/multi-agent-orchestrator](https://github.com/hyw007726/multi-agent-orchestrator-skill)** - Parallel coding agents in isolated git worktrees.
+```
+
+Suggested GitHub topics:
+
+```text
+agent-skills, codex-skills, codex-cli, ai-agents, coding-agents, multi-agent-systems, agent-orchestration, claude-code, gemini-cli, git-worktrees
+```

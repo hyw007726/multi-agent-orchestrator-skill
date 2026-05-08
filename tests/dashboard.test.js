@@ -76,7 +76,10 @@ describe('dashboard CLI', () => {
       ], null, 2), 'utf-8');
 
       child = startDashboard(coord);
-      const output = await waitForOutput(child, (text) => text.includes('req-pending'));
+      const output = await waitForOutput(
+        child,
+        (text) => text.includes('req-pending') && text.includes('dec-6'),
+      );
 
       assert.match(output, /ORCHESTRATOR CLI STALLED/);
       assert.match(output, /Arbitrator unavailable/);
