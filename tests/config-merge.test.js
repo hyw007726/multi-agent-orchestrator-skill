@@ -26,7 +26,7 @@ describe('config merging', () => {
     assert.strictEqual(config.claude_failure_threshold, 5);
     assert.strictEqual(config.poll_min_ms, 1000);
     assert.strictEqual(config.poll_max_ms, 15000);
-    assert.strictEqual(config.launch_dashboard, false);
+    assert.strictEqual(config.launch_dashboard, 'auto');
     assert.strictEqual(config.launch_review_terminal, false);
 
     // Verify cli_templates defaults are present for all known CLIs.
@@ -179,7 +179,7 @@ describe('config merging', () => {
     assert.strictEqual(config.orchestrator_failure_threshold, 5);
     assert.strictEqual(config.claude_failure_threshold, 5);
     assert.strictEqual(config.poll_max_ms, 15000);
-    assert.strictEqual(config.launch_dashboard, false);
+    assert.strictEqual(config.launch_dashboard, 'auto');
     assert.strictEqual(config.launch_review_terminal, false);
 
     // Templates and health checks should still have full defaults.
@@ -229,6 +229,25 @@ describe('config merging', () => {
 
     assert.strictEqual(config.orchestrator_failure_threshold, 9);
     assert.strictEqual(config.claude_failure_threshold, 9);
+  });
+
+  it('accepts launch_dashboard auto mode explicitly', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+    let config;
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  launch_dashboard: "auto",',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
+      config = loadConfig(tmpDir);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    assert.strictEqual(config.launch_dashboard, 'auto');
   });
 });
 

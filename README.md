@@ -28,7 +28,7 @@ Key settings:
 - `default_timeout_mins` / `default_progress_timeout_mins` - liveness and progress thresholds.
 - `default_max_restarts` - restart cap per agent.
 - `orchestrator_failure_threshold` - consecutive arbitration-CLI failures before the dashboard shows a stalled banner.
-- `launch_dashboard` / `launch_review_terminal` - opt-in GUI terminal spawning.
+- `launch_dashboard` / `launch_review_terminal` - GUI terminal spawning controls. Dashboard defaults to `auto`: open on local macOS, stay manual elsewhere.
 
 Recommended default: keep `default_cli: "kilo"` and configure Kilo itself to use a fast, cheap model. Set `orchestrator_cli` only when you want arbitration to use a different CLI/model.
 
@@ -101,7 +101,7 @@ ln -s /path/to/multi-agent-orchestrator \
    node /path/to/multi-agent-orchestrator/scripts/launch-all.js --coord ./coord
    ```
 
-5. Monitor with:
+5. Monitor with the auto-opened dashboard on local macOS, or run it manually with:
 
    ```bash
    node /path/to/multi-agent-orchestrator/scripts/dashboard.js --coord ./coord

@@ -57,7 +57,7 @@ If it exists, read it to determine:
 - **`orchestrator_failure_threshold`**: Consecutive arbitration-CLI failures before the loop writes `coord/orchestrator-stalled.flag` (which the dashboard surfaces). Defaults to 5. `claude_failure_threshold` remains accepted as a deprecated alias for existing configs.
 - **`poll_min_ms` / `poll_max_ms`**: Adaptive polling bounds for the orchestrator loop. The loop polls at `poll_min_ms` (default 1000) right after seeing pending requests, then exponentially backs off (×1.5 per idle cycle) up to `poll_max_ms` (default 15000). Pass `--poll-interval <ms>` to the loop to disable the heuristic and force a fixed cadence.
 - **`cli_health_checks`**: Per-CLI probe commands run by `scripts/preflight.js` to fail fast on install / auth issues. Defaults to `<cli> --version` for every supported CLI.
-- **`launch_dashboard` / `launch_review_terminal`**: Optional GUI terminal auto-launch. Disabled by default for MVP reliability in headless/sandboxed terminals; run the dashboard manually or set these to `true` if your terminal environment supports spawning new windows.
+- **`launch_dashboard` / `launch_review_terminal`**: Optional GUI terminal auto-launch. `launch_dashboard` defaults to `"auto"`: it opens a dashboard terminal on local macOS, skips auto-launch in CI/SSH/non-macOS, and can be forced with `true` or disabled with `false`.
 
 Example `orchestrator.config.js`:
 ```js
@@ -184,7 +184,7 @@ On success it prints a one-line summary per agent (name, PID, log path), the orc
 
 > **Tip for Kilo Code Users:** Because the agents are physically spawned inside the `.kilocode/worktrees/` directory path by default, they will automatically appear in your **Kilo Code Agent Manager UI** inside VS Code! You can monitor the specific files they are editing in real-time natively in your IDE.
 
-By default the dashboard is not auto-launched. To monitor progress manually, run:
+By default the dashboard auto-launches on local macOS and stays manual in CI/SSH/non-macOS environments. To monitor progress manually, run:
 ```bash
 node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/dashboard.js --coord ./coord
 ```

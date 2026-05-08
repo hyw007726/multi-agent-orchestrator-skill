@@ -109,9 +109,10 @@ module.exports = {
   // poll_min_ms: 1000,
   // poll_max_ms: 15000,
 
-  // Terminal auto-launch is disabled by default in built-in config so the MVP works
-  // in headless/sandboxed terminals. Set these to true if your local macOS/Linux
-  // terminal environment allows GUI terminal spawning.
-  // launch_dashboard: true,
+  // Dashboard auto-launch defaults to "auto": open a new Terminal window on local
+  // macOS, skip auto-launch in CI/SSH/non-macOS, and always print the manual command.
+  // Set false to disable or true to force an attempt.
+  // launch_dashboard: "auto",
+  // Review summary terminal remains opt-in.
   // launch_review_terminal: true,
 };

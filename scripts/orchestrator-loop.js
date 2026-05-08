@@ -259,8 +259,9 @@ async function runLoop() {
     try {
       const dashboardPath = path.join(__dirname, "dashboard.js");
       const manualCommand = `node ${shellQuote(dashboardPath)} --coord ${shellQuote(config.coordDir)}`;
-      if (!parsedConfig.launch_dashboard) {
-        log(`Dashboard auto-launch disabled. Run manually in another terminal: ${manualCommand}`);
+      const launchDecision = shouldAutoLaunchDashboard(parsedConfig.launch_dashboard);
+      if (!launchDecision.launch) {
+        log(`${launchDecision.reason}. Run manually in another terminal: ${manualCommand}`);
         return;
       }
       if (process.platform === "darwin") {
@@ -741,6 +742,28 @@ function runAppleScriptTerminal(command) {
     const details = (result.stderr || result.stdout || "").trim();
     throw new Error(details || `osascript exited with status ${result.status}`);
   }
+}
+
+function shouldAutoLaunchDashboard(setting) {
+  if (setting === false) {
+    return { launch: false, reason: "Dashboard auto-launch disabled" };
+  }
+  if (setting === true) {
+    return { launch: true, reason: "Dashboard auto-launch enabled" };
+  }
+  if (setting !== "auto") {
+    return { launch: false, reason: "Dashboard auto-launch disabled" };
+  }
+  if (process.platform !== "darwin") {
+    return { launch: false, reason: "Dashboard auto-launch auto mode skipped on non-macOS" };
+  }
+  if (process.env.CI) {
+    return { launch: false, reason: "Dashboard auto-launch auto mode skipped in CI" };
+  }
+  if (process.env.SSH_CONNECTION || process.env.SSH_TTY) {
+    return { launch: false, reason: "Dashboard auto-launch auto mode skipped over SSH" };
+  }
+  return { launch: true, reason: "Dashboard auto-launch auto mode enabled on macOS" };
 }
 
 // ─── Process / git helpers ───────────────────────────────────────────────────

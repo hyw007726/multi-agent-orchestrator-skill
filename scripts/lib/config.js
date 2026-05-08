@@ -36,7 +36,7 @@ const DEFAULTS = {
   claude_failure_threshold: 5, // Deprecated alias kept for existing project configs.
   poll_min_ms: 1000,
   poll_max_ms: 15000,
-  launch_dashboard: false,
+  launch_dashboard: "auto",
   launch_review_terminal: false,
 };
 
@@ -81,7 +81,9 @@ function loadConfig(cwd = process.cwd()) {
   merged.claude_failure_threshold = merged.orchestrator_failure_threshold;
   if (typeof parsed.poll_min_ms === "number") merged.poll_min_ms = parsed.poll_min_ms;
   if (typeof parsed.poll_max_ms === "number") merged.poll_max_ms = parsed.poll_max_ms;
-  if (typeof parsed.launch_dashboard === "boolean") merged.launch_dashboard = parsed.launch_dashboard;
+  if (typeof parsed.launch_dashboard === "boolean" || parsed.launch_dashboard === "auto") {
+    merged.launch_dashboard = parsed.launch_dashboard;
+  }
   if (typeof parsed.launch_review_terminal === "boolean") merged.launch_review_terminal = parsed.launch_review_terminal;
 
   return merged;
