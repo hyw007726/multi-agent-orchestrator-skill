@@ -1,0 +1,6 @@
+{
+  "name": "multi-agent-orchestrator",
+  "version": "0.1.0",
+  "description": "Coordinate parallel headless coding agents in isolated git worktrees.",
+  "contextFileName": "GEMINI.md"
+}

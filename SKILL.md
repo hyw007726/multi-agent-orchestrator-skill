@@ -3,25 +3,36 @@ name: multi-agent-orchestrator
 description: Decompose a large coding task into parallel worker agents (Kilo, Aider, Claude, Codex, Gemini, OpenCode) running in isolated git worktrees with self-healing supervision. Use when the user asks to "build something complex with multiple agents", "split this work in parallel", "spawn a swarm", or to coordinate background headless CLI workers.
 ---
 
-# FULL Multi-Agent Orchestrator Skill
+# Multi-Agent Orchestrator Skill
 
-This skill defines a COMPLETE, CLI-agnostic multi-agent orchestration system.
+This skill defines a caller-neutral, CLI-agnostic multi-agent orchestration system.
 
 ## Prerequisites & Recommendations
 Before using this skill, ensure you have:
 1. **A Headless Worker CLI**: Installed globally. This skill uses `kilo` (Kilo Code) by default, but it can orchestrate **Aider**, **Claude Code**, **Gemini**, **Codex**, **OpenCode**, or any other CLI added to `cli_templates` in `orchestrator.config.js`. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
+
+## Caller Support
+
+Use this workflow from any local coding-agent caller that can read `SKILL.md` and run shell commands:
+
+- **Codex**: Install this folder as a Codex skill. `agents/openai.yaml` provides Codex UI metadata, and `AGENTS.md` provides a short repository-level caller guide.
+- **Gemini CLI**: Install this folder as a Gemini extension. `gemini-extension.json` loads `GEMINI.md`, which imports this `SKILL.md`; `skills/multi-agent-orchestrator/` exposes a native skill wrapper; and `commands/multi-agent-orchestrator.toml` exposes a `/multi-agent-orchestrator` command.
+- **Claude Code**: Install this folder as a Claude Code skill.
+- **Other local callers**: Explicitly instruct the caller to read this `SKILL.md` and use the absolute path to this repository when running scripts.
+
+The runtime itself is independent of the caller. The caller only performs decomposition, file edits, script launches, and final integration.
 
 
 > **Architectural Recommendation & Intelligence Boundaries:**
 > This skill is highly optimized for cost-efficiency without sacrificing quality. It relies on **three distinct decision-making contexts**, each driven by a configurable CLI in `orchestrator.config.js`:
 >
 > 1. **Initial Decomposition (Interactive Session):** Your active orchestrator session acts as the primary architect. It analyzes the task, breaks it into non-overlapping boundaries, writes the `coord/context.json`, and spawns the background agents.
-> 2. **The Background Orchestrator Loop (Headless Script):** Once launched, the background loop has **no access to your chat history**. It splits its LLM work across two CLIs:
->     - **Request arbitration** (cross-cutting decisions over pending requests, plus `end_agent` / `soft_restart` / `hard_restart` actions) is invoked through the **`orchestrator_cli`** (defaults to `claude`). Arbitration benefits from a stronger reasoning model since it weighs conflicts and architectural trade-offs.
->     - **Triggered AI-Review** (the 1-sentence course-correction sent when an agent stalls) and the **final review summary** in Phase 6 are invoked through the **Worker CLI** (`default_cli`). These are narrow, single-turn calls that stay cheap.
+> 2. **The Background Orchestrator Loop (Headless Script):** Once launched, the background loop has **no access to your chat history**. It splits its LLM work across two CLI roles:
+>     - **Request arbitration** (cross-cutting decisions over pending requests, plus `end_agent` / `soft_restart` / `hard_restart` actions) is invoked through the **`orchestrator_cli`**. If omitted, it follows `default_cli`, so no caller is forced to have Claude installed. Arbitration benefits from a stronger reasoning model when conflicts and architectural trade-offs are complex.
+>     - **Triggered AI-Review** (the 1-sentence course-correction sent when an agent stalls) and the **final review summary** in Phase 5 are invoked through the **Worker CLI** (`default_cli`). These are narrow, single-turn calls that stay cheap.
 > 3. **Final Integration (Interactive Session):** After the background loop completes, you return to a high-tier Orchestrator session to act as the integrator, reviewing the completed worktrees and safely merging them.
 >
-> **Model Selection Strategy:** Use a powerful reasoning model for your interactive Orchestrator sessions (Contexts 1 & 3) and for the `orchestrator_cli` so request arbitration stays sound. Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for the bulk coding and the cheap monitor calls. If you want monitoring to be even cheaper, point `orchestrator_cli` at a fast worker too — the system will respect whichever CLI you configure.
+> **Model Selection Strategy:** Use a powerful reasoning model for your interactive orchestrator sessions (Contexts 1 & 3). Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for the bulk coding and the cheap monitor calls. Set `orchestrator_cli` only when request arbitration should use a different CLI/model from the workers.
 >
 > **How to pin a model:** Two patterns depending on the CLI.
 > - **Inline-flag CLIs** (claude, aider, gemini): model selection is part of `cli_templates`. Prefer structured argv templates and add the CLI's model flag in `args` — e.g. `{ cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] }` for Sonnet, or add `--model gpt-4o-mini` to the Aider args.
@@ -38,7 +49,7 @@ Before beginning Phase 1, you MUST check if an `orchestrator.config.js` file exi
 
 If it exists, read it to determine:
 - **`default_cli`**: The Worker CLI to use for spawning agents and for the cheap AI-Review / final-summary calls.
-- **`orchestrator_cli`**: The CLI used by the background loop for request arbitration (defaults to `claude`). Set this independently from `default_cli` if you want arbitration to use a stronger reasoning model than your workers.
+- **`orchestrator_cli`**: Optional CLI used by the background loop for request arbitration. If omitted, it follows `default_cli`. Set this independently from `default_cli` only when you want arbitration to use a different CLI/model than your workers.
 - **`cli_templates`**: The template definitions used to spawn worker CLIs. Prefer structured `{ cmd, args }` entries so they run with `shell:false`; keep string templates when you intentionally need shell behavior. The same templates are reused for `orchestrator_cli` calls and the AI-Review calls, so the system is immune to third-party tool interface changes. **This is also where you pin a model** — add the CLI's model flag (`--model <id>`, `--llm <id>`, etc.) to the template args/string and that model is used for every spawn driven by it.
 - **`default_timeout_mins`**: The default time before an agent is considered hanging (Liveness).
 - **`default_progress_timeout_mins`**: The default time before an active agent with zero code changes is considered stuck (Progress).
@@ -52,8 +63,12 @@ Example `orchestrator.config.js`:
 ```js
 // Toggle options by commenting/uncommenting lines.
 module.exports = {
-  // The background CLI worker to execute tasks
+  // The background CLI worker to execute tasks.
   default_cli: "kilo",
+
+  // Optional: uncomment only if request arbitration should use a different CLI
+  // from the workers. If omitted, orchestrator_cli follows default_cli.
+  // orchestrator_cli: "claude",
 
   // Command templates for supported CLIs.
   // Prefer structured argv templates. Use { prompt_file: true } to pass the
@@ -124,7 +139,7 @@ Because the orchestrator loop runs after your interactive caller session is done
 
 You should also include the tasks you generated in Phase 1 under the `"tasks"` key.
 
-`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`, `tasks: {}`). After running it, use the `Edit` tool to fill `context.json` with the structured shape below before you spawn any workers.
+`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`, `tasks: {}`). After running it, edit `context.json` with the structured shape below before you spawn any workers.
 
 ```json
 {

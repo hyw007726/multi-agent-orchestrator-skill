@@ -4,7 +4,6 @@
  * Spawns a worker CLI agent in the background and registers it in coord/agents.json.
  */
 
-const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { loadConfig } = require("./lib/config");
@@ -46,7 +45,7 @@ function spawnAgent() {
   const cliTemplate = parsedConfig.cli_templates[config.cli];
 
   let child;
-  let templateMode = "builtin";
+  let templateMode = "unknown";
   if (cliTemplate) {
     try {
       child = spawnCliTemplate(config.cli, cliTemplate, {
@@ -63,12 +62,8 @@ function spawnAgent() {
       process.exit(1);
     }
   } else {
-    const { cmd, cmdArgs } = builtinCli(config.cli, prompt, config.promptFile, config.mode, config.extraArgs);
-    child = spawn(cmd, cmdArgs, {
-      detached: true,
-      stdio: ["ignore", out, err],
-      cwd: worktree,
-    });
+    console.error(`Error: No cli_templates.${config.cli} configured. Add a shell string or { cmd, args } template in orchestrator.config.js.`);
+    process.exit(1);
   }
 
   // detached:true gives the worker its own POSIX process group with child.pid
@@ -132,19 +127,6 @@ function spawnAgent() {
       console.warn(`The worker may not find coord/. Create it manually with:`);
       console.warn(`  ln -s ${coordAbs} ${coordSymlink}`);
     }
-  }
-
-  // Single-use helper — only used by spawnAgent when no CLI template is configured.
-  function builtinCli(cli, prompt, promptFile, mode, extra) {
-    let cmd = "kilo";
-    let cmdArgs = [prompt, "--mode", mode, "--auto"];
-    if (cli === "aider")     { cmd = "aider";     cmdArgs = ["--message-file", promptFile, "--yes"]; }
-    else if (cli === "claude")   { cmd = "claude";    cmdArgs = ["-p", prompt, "--dangerously-skip-permissions"]; }
-    else if (cli === "codex")    { cmd = "codex";     cmdArgs = ["exec", "--dangerously-bypass-approvals-and-sandbox", prompt]; }
-    else if (cli === "gemini")   { cmd = "gemini";    cmdArgs = ["--prompt", prompt, "--yolo"]; }
-    else if (cli === "opencode") { cmd = "opencode";  cmdArgs = ["run", prompt, "--yes"]; }
-    if (extra.length > 0) cmdArgs.push(...extra);
-    return { cmd, cmdArgs };
   }
 }
 

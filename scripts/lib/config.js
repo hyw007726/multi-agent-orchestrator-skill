@@ -24,7 +24,9 @@ const DEFAULT_CLI_TEMPLATES = {
 
 const DEFAULTS = {
   default_cli: "kilo",
-  orchestrator_cli: "claude",
+  // If omitted, request arbitration uses the same CLI as workers. Projects that
+  // want a stronger/different arbitrator should set orchestrator_cli explicitly.
+  orchestrator_cli: null,
   cli_templates: { ...DEFAULT_CLI_TEMPLATES },
   cli_health_checks: { ...DEFAULT_HEALTH_CHECKS },
   default_timeout_mins: 10,
@@ -39,11 +41,13 @@ const DEFAULTS = {
 };
 
 function defaultConfig() {
-  return {
+  const config = {
     ...DEFAULTS,
     cli_templates: { ...DEFAULT_CLI_TEMPLATES },
     cli_health_checks: { ...DEFAULT_HEALTH_CHECKS },
   };
+  config.orchestrator_cli = config.default_cli;
+  return config;
 }
 
 function loadConfig(cwd = process.cwd()) {
@@ -55,7 +59,9 @@ function loadConfig(cwd = process.cwd()) {
   const merged = defaultConfig();
 
   if (typeof parsed.default_cli === "string") merged.default_cli = parsed.default_cli;
-  if (typeof parsed.orchestrator_cli === "string") merged.orchestrator_cli = parsed.orchestrator_cli;
+  const hasExplicitOrchestratorCli = typeof parsed.orchestrator_cli === "string" && parsed.orchestrator_cli.trim() !== "";
+  if (hasExplicitOrchestratorCli) merged.orchestrator_cli = parsed.orchestrator_cli;
+  else merged.orchestrator_cli = merged.default_cli;
   if (parsed.cli_templates && typeof parsed.cli_templates === "object") {
     // Project-level entries override built-ins; omitted CLIs keep usable defaults.
     merged.cli_templates = { ...DEFAULT_CLI_TEMPLATES, ...parsed.cli_templates };

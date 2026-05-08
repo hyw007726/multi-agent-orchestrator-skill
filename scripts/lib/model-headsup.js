@@ -20,8 +20,8 @@ function summarizeCliModel(cli, template) {
       cli,
       known: false,
       model: null,
-      source: "builtin/default CLI behavior",
-      message: "model chosen by builtin/default CLI behavior; exact model not visible to orchestrator",
+      source: "missing cli template",
+      message: `no cli_templates.${cli} configured; runtime cannot invoke this CLI until a template is added`,
     };
   }
 
@@ -67,7 +67,9 @@ function formatModelHeadsUp(config, options = {}) {
     lines.push(...formatCliLines(cli, config));
   }
 
-  if (orchestratorCli) {
+  if (orchestratorCli && workerClis.includes(orchestratorCli)) {
+    lines.push(`  Orchestrator CLI: same as worker CLI (${orchestratorCli})`);
+  } else if (orchestratorCli) {
     lines.push("  Orchestrator CLI:");
     lines.push(...formatCliLines(orchestratorCli, config));
   }

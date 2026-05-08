@@ -29,8 +29,8 @@ function runPreflight() {
   const config = loadConfig();
 
   const clis = args.clis.length > 0
-    ? args.clis
-    : Array.from(new Set([config.default_cli, config.orchestrator_cli]));
+    ? uniqueClis(args.clis)
+    : uniqueClis([config.default_cli, config.orchestrator_cli]);
 
   console.log(formatModelHeadsUp(config, { checkedClis: clis }));
   console.log("");
@@ -162,5 +162,9 @@ function runPreflight() {
   function printResult(cli, phase, result) {
     const mark = result.ok ? "✓" : "✗";
     console.log(`  ${mark} ${cli} (${phase}): ${result.message}`);
+  }
+
+  function uniqueClis(values) {
+    return Array.from(new Set(values.filter((value) => typeof value === "string" && value.trim() !== "")));
   }
 }

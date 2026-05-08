@@ -1,104 +1,126 @@
-# Multi-Agent Orchestrator (Claude Code Skill)
+# Multi-Agent Orchestrator
 
-A production-ready, CLI-agnostic orchestrator runtime that turns an interactive coding-agent session into a high-level coordinator managing multiple headless worker agents in parallel. This repository currently ships that runtime as a Claude Code skill.
+A caller-neutral orchestrator runtime that turns an interactive coding-agent session into a high-level coordinator managing multiple headless worker agents in parallel.
 
 It safely sandboxes workers into `git worktrees`, manages their lifecycles via a self-healing background daemon, and natively supports Kilo Code, Aider, Claude Code, Codex, Gemini CLI, and OpenCode.
 
-## 🚀 Features
-- **Turn One Agent Into Many**: Break a complex task into parallel workstreams — the caller agent decomposes the work, spawns independent agents, and merges the results.
-- **CLI Agnostic**: Use any headless coding agent as a worker — Kilo Code, Aider, Claude Code, Gemini CLI, OpenCode, or Codex. Mix and match freely.
-- **Two-Tier Cost Control**: A configurable `orchestrator_cli` arbitrates cross-cutting decisions (point it at a strong reasoning model), while the worker CLI handles bulk coding and the cheap monitor calls — strong architecture at a fraction of the cost.
-- **Self-Healing Loop**: Detects hung agents (no log output) and stuck agents (log output but no code progress). When an agent stalls, a single-shot LLM call diagnoses what's wrong and respawns with a 1-sentence course-correction.
-- **Validation Loop**: Each agent is assigned a `validation_command`. When the agent signals "done" the loop runs validation; on failure it auto-`soft_restart`s with the error log so the agent can fix its own code.
-- **Shared Architectural Source of Truth**: `coord/DECISIONS.md` is the curated contract for shared API, data model, file-ownership, and structural rules. Runtime approvals are preserved in `coord/decisions.jsonl`, while `coord/decisions.json` stays capped to recent decisions for prompts and the dashboard.
-- **Live Dashboard**: A real-time TUI streams every agent's activity, restart count, and recent orchestrator decisions from a single terminal window. Run it manually by default, or opt into terminal auto-launch.
-- **Auto-Review**: When agents finish, the loop generates an AI-powered summary in `coord/review-summary.txt` and can optionally pop it open in a new terminal window.
+## Features
 
-## Reliability
-- **Restart cap** — every restart (validation failure, AI-Review course-correction, explicit action) bumps a per-agent `restart_count`. Past `default_max_restarts` (default 3) the loop stops respawning so failures can't thrash forever.
-- **PID/process-group safety** — before sending any signal the loop verifies the stored PID's cmdline via `ps`, then signals the detached worker process group on POSIX so wrapper shells and child CLIs stop together.
-- **Recovery tags** — `hard_restart` captures uncommitted+untracked work as a `recovery/<agent>/<timestamp>` git tag *before* resetting, so wiped state is always recoverable with `git show <tag>`.
-- **Soft abort** — closing the dashboard window leaves agents running. Ctrl+C asks for confirmation; the resulting abort kills processes but preserves worktree contents (no `git reset --hard`).
-- **Stalled-CLI surfacing** — if the arbitration CLI fails repeatedly the dashboard renders a banner with diagnostics, so you know whether the loop is making progress or stuck.
-- **Argv-form validation** — `validation_command` accepts a JSON argv array (`["npm","run","test"]`) so it runs with `shell:false` — no shell expansion, no injection surface. Shell-string form still works for pipes / `&&`.
-- **Argv-form CLI templates** — `cli_templates` can be structured `{ cmd, args }` objects that run with `shell:false`; string templates remain available and are logged as shell mode when you need pipes, command substitution, or other shell behavior.
+- **Turn One Agent Into Many**: Break a complex task into parallel workstreams. The caller agent decomposes the work, spawns independent agents, and later integrates the results.
+- **Caller Neutral**: Use it from Codex, Gemini CLI, Claude Code, or any other local coding agent that can read `SKILL.md` and run shell commands.
+- **Worker CLI Agnostic**: Use any configured headless coding agent as a worker. Mix Kilo Code, Aider, Claude Code, Gemini CLI, OpenCode, Codex, or custom CLIs via `cli_templates`.
+- **Neutral Arbitration Defaults**: If `orchestrator_cli` is omitted, the background loop uses `default_cli`; no Claude installation is required unless you explicitly choose Claude.
+- **Self-Healing Loop**: Detects hung agents and stuck agents, then restarts or course-corrects them within a per-agent restart cap.
+- **Validation Loop**: Each agent can have a `validation_command`; failed validation triggers a soft restart with the failure log.
+- **Shared Architectural Source of Truth**: `coord/DECISIONS.md` stores durable contracts for APIs, data models, and file ownership. Runtime approvals are preserved in `coord/decisions.jsonl`.
+- **Live Dashboard**: A real-time TUI streams worker status, restart counts, and recent orchestrator decisions.
+- **Auto-Review**: When agents finish, the loop writes an AI-generated summary to `coord/review-summary.txt`.
 
-## ⚙️ Configuration (`orchestrator.config.js`)
-The skill reads `orchestrator.config.js` at the project root. Key knobs:
-- `default_cli` — worker CLI for spawning agents and the cheap monitor calls.
-- `orchestrator_cli` — CLI used by the loop for request arbitration (defaults to `claude`).
-- `cli_templates` — structured argv templates or explicit shell-string templates for supported CLIs; insulates the system from third-party flag changes.
-- `default_timeout_mins` / `default_progress_timeout_mins` — liveness and progress thresholds.
-- `default_max_restarts` — restart cap per agent.
-- `orchestrator_failure_threshold` — consecutive arbitration-CLI failures before the dashboard shows the stalled banner. `claude_failure_threshold` remains accepted as a deprecated alias.
-- `launch_dashboard` / `launch_review_terminal` — opt-in GUI terminal spawning for environments where it is supported.
+## Configuration
 
-If the file is absent, the orchestrator picks sensible defaults based on project size.
+The runtime reads `orchestrator.config.js` from the target project root.
 
-**Recommended default combination:** `default_cli: kilo` + DeepSeek V4 Pro (`deepseek-v4-pro`, 1M context, cheap and fast) for workers, with `orchestrator_cli: claude` (a stronger reasoning model) for arbitration. Kilo's model selection lives in its own BYOK provider settings, so no template change is needed — just pick `deepseek-v4-pro` in Kilo's model picker after you authenticate, and run `node scripts/preflight.js` to confirm the chain is exercising the API end-to-end (a bare `--version` check only proves the binary is installed).
+Key settings:
 
-## 📦 Prerequisites
+- `default_cli` - worker CLI for coding tasks and cheap monitor calls.
+- `orchestrator_cli` - optional CLI for request arbitration. If omitted, it follows `default_cli`.
+- `cli_templates` - structured argv templates or explicit shell-string templates for every CLI the runtime may invoke.
+- `default_timeout_mins` / `default_progress_timeout_mins` - liveness and progress thresholds.
+- `default_max_restarts` - restart cap per agent.
+- `orchestrator_failure_threshold` - consecutive arbitration-CLI failures before the dashboard shows a stalled banner.
+- `launch_dashboard` / `launch_review_terminal` - opt-in GUI terminal spawning.
 
-1. **Claude Code CLI** (hosts the current skill packaging and can act as the interactive orchestrator session):
-   ```bash
-   npm install -g @anthropic-ai/claude-code
-   ```
-2. **A Worker CLI**: at least one headless worker CLI installed and authenticated (e.g. Kilo Code, Aider, Codex, Gemini, OpenCode, or a second `claude` invocation).
-   ```bash
-   npm install -g kilo-cli
-   ```
+Recommended default: keep `default_cli: "kilo"` and configure Kilo itself to use a fast, cheap model. Set `orchestrator_cli` only when you want arbitration to use a different CLI/model.
 
-That's it for prerequisites — the skill itself ships zero external dependencies. Every script runs on Node.js built-ins, so there's no `npm install`, no `node_modules/`, no build step at any point.
+## Prerequisites
 
-> **Note:** This repository currently ships as a **Claude Code skill**, not a Claude.ai (web) or Claude Desktop one. The runtime shells out to `nohup`, `git worktree`, `kill`, and `osascript`/terminal-spawning commands, none of which run inside the web/desktop sandbox. Install it under Claude Code as described below.
+- Node.js.
+- Git with worktree support.
+- At least one headless worker CLI installed, authenticated, and configured with a default model.
 
-## 🛠️ Installation
+The runtime has no package dependencies. Every script uses Node.js built-ins, so there is no `npm install`, no `node_modules`, and no build step.
 
-One command — Claude Code auto-discovers any folder under `~/.claude/skills/` that contains a `SKILL.md`.
+Workers run non-interactively. Any selected CLI must already be signed in and able to answer a tiny prompt without setup prompts.
+
+## Install For Callers
+
+Clone the repository anywhere if you only want manual use:
 
 ```bash
 git clone https://github.com/hyw007726/claud-multi-agent-orchestrator-skill.git \
+  ~/src/multi-agent-orchestrator
+```
+
+Then ask your coding agent to read `~/src/multi-agent-orchestrator/SKILL.md` and use that workflow from the target project.
+
+### Codex
+
+Install or symlink this folder into your Codex skills directory:
+
+```bash
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
+ln -s /path/to/multi-agent-orchestrator \
+  "${CODEX_HOME:-$HOME/.codex}/skills/multi-agent-orchestrator"
+```
+
+This repository also includes `agents/openai.yaml` for Codex UI metadata and `AGENTS.md` as a lightweight repository-level caller guide.
+
+### Gemini CLI
+
+This repository is installable as a Gemini CLI extension:
+
+```bash
+gemini extensions install /path/to/multi-agent-orchestrator
+```
+
+The extension manifest loads `GEMINI.md`, which imports `SKILL.md`, exposes a native skill wrapper under `skills/multi-agent-orchestrator/`, and provides a `/multi-agent-orchestrator` command from `commands/multi-agent-orchestrator.toml`.
+
+### Claude Code
+
+Claude Code can still use the same `SKILL.md` package:
+
+```bash
+mkdir -p ~/.claude/skills
+ln -s /path/to/multi-agent-orchestrator \
   ~/.claude/skills/multi-agent-orchestrator
 ```
 
-That's it. Open Claude Code in any project and ask it to "split this large feature into parallel agents", or invoke the skill explicitly with `/multi-agent-orchestrator`. Nothing to install or build inside the skill folder.
+## Use
 
-**Updating:** `git pull` inside `~/.claude/skills/multi-agent-orchestrator`. Claude Code live-reloads skills with no restart.
+1. Configure `orchestrator.config.js` in the target project if the defaults are not right.
+2. Run preflight from the target project:
 
-**Uninstalling:** `rm -rf ~/.claude/skills/multi-agent-orchestrator`.
-
-**Project-only install** (e.g. shared via a team repo so only that project sees the skill): clone into `<your-project>/.claude/skills/multi-agent-orchestrator` instead of the user-level path. Self-install behavior is the same.
-
-**Developer install** (you want to hack on the skill itself and have changes show up live): clone wherever you keep your code, then symlink it into the skills directory.
-```bash
-git clone https://github.com/hyw007726/claud-multi-agent-orchestrator-skill.git ~/src/multi-agent-orchestrator
-mkdir -p ~/.claude/skills
-ln -s ~/src/multi-agent-orchestrator ~/.claude/skills/multi-agent-orchestrator
-```
-
-## 🚀 Using the Skill
-
-1. **(Optional) Configure**: Edit `orchestrator.config.js` to set your preferred CLIs, timeouts, and restart caps. The shipped defaults work out of the box.
-2. **Verify the worker chain end-to-end** (catches missing API keys / unselected models in 5–10s instead of a 10-minute liveness timeout):
    ```bash
-   node ~/.claude/skills/multi-agent-orchestrator/scripts/preflight.js
+   node /path/to/multi-agent-orchestrator/scripts/preflight.js
    ```
-   Preflight prints a model heads-up before probing: pinned template models are shown by name, while external-config CLIs are called out as using their own selected provider/model.
-3. **Start a project**: Ask the interactive orchestrator session to build something complex. It decomposes the task, writes `coord/context.json`, then runs `scripts/launch-all.js --coord ./coord` to create worktrees, render prompts, spawn every agent, and background the self-healing loop — all from a single command.
-4. **Sit back**: when all agents finish, the loop writes `coord/review-summary.txt`. Return to the interactive orchestrator session and say *"The agents are done. Please review and integrate their work."*
 
-## 🔄 Supported CLIs
-You can instruct the skill to use different worker CLIs by appending the `--cli` flag:
-- `--cli kilo` (Default)
-- `--cli aider`
-- `--cli claude`
-- `--cli codex`
-- `--cli gemini`
-- `--cli opencode`
+3. Ask the interactive caller session to decompose a large task using the multi-agent orchestrator workflow.
+4. The caller bootstraps `coord/`, fills `coord/context.json`, writes `coord/DECISIONS.md`, and launches:
 
-*(You can also pass custom arguments to your chosen CLI by appending them after `--`, e.g., `--cli aider -- --model gpt-4o`)*
+   ```bash
+   node /path/to/multi-agent-orchestrator/scripts/launch-all.js --coord ./coord
+   ```
 
-The same set is supported for the orchestrator CLI itself via `orchestrator_cli` in `orchestrator.config.js` — point it at a high-tier model for arbitration, or at a fast worker if you want monitoring to stay cheap.
+5. Monitor with:
+
+   ```bash
+   node /path/to/multi-agent-orchestrator/scripts/dashboard.js --coord ./coord
+   ```
+
+6. When the loop finishes, ask the caller session to review `coord/review-summary.txt`, inspect each worktree diff, and merge approved branches.
+
+## Supported Worker CLIs
+
+Built-in templates are provided for:
+
+- `kilo`
+- `aider`
+- `claude`
+- `codex`
+- `gemini`
+- `opencode`
+
+Custom CLIs are supported by adding both `cli_templates.<name>` and `cli_health_checks.<name>` in `orchestrator.config.js`. The runtime no longer guesses a fallback command shape for custom CLIs.
 
 ## Testing
 
@@ -106,9 +128,4 @@ The same set is supported for the orchestrator CLI itself via `orchestrator_cli`
 node scripts/run-tests.js
 ```
 
-Tests are dependency-free and use only Node.js built-ins. They run fake CLIs against temporary git repositories, so they do not require real Kilo, Aider, Claude, Codex, Gemini, or OpenCode credentials.
-
-## ⚠️ Important Note
-Make sure your chosen worker CLI is fully authenticated and has a default model selected. Because the workers run as non-interactive background processes, they will hang indefinitely if they encounter an interactive login prompt!
-
-All workers are automatically launched with their respective "bypass permissions" flags so they execute autonomously without prompting for human approval.
+Tests are dependency-free and use fake CLIs against temporary git repositories, so they do not require real Kilo, Aider, Claude, Codex, Gemini, or OpenCode credentials.

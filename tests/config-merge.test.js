@@ -18,7 +18,7 @@ describe('config merging', () => {
     }
 
     assert.strictEqual(config.default_cli, 'kilo');
-    assert.strictEqual(config.orchestrator_cli, 'claude');
+    assert.strictEqual(config.orchestrator_cli, 'kilo');
     assert.strictEqual(config.default_timeout_mins, 10);
     assert.strictEqual(config.default_progress_timeout_mins, 15);
     assert.strictEqual(config.default_max_restarts, 3);
@@ -151,7 +151,7 @@ describe('config merging', () => {
     assert.ok(config.cli_health_checks.opencode, 'opencode health check should still exist from defaults');
   });
 
-  it('handles partial overrides - unspecified scalar fields keep defaults', () => {
+  it('uses default_cli as the orchestrator_cli when no explicit orchestrator_cli is set', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
     let config;
     try {
@@ -172,8 +172,8 @@ describe('config merging', () => {
     assert.strictEqual(config.default_cli, 'codex');
     assert.strictEqual(config.poll_min_ms, 2000);
 
-    // Unspecified - should keep defaults.
-    assert.strictEqual(config.orchestrator_cli, 'claude');
+    // Unspecified orchestrator_cli follows the worker CLI.
+    assert.strictEqual(config.orchestrator_cli, 'codex');
     assert.strictEqual(config.default_timeout_mins, 10);
     assert.strictEqual(config.default_max_restarts, 3);
     assert.strictEqual(config.orchestrator_failure_threshold, 5);

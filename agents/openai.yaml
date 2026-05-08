@@ -1,0 +1,4 @@
+interface:
+  display_name: "Multi-Agent Orchestrator"
+  short_description: "Coordinate parallel coding agents"
+  default_prompt: "Use $multi-agent-orchestrator to split this large implementation into parallel worker agents."

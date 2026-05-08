@@ -290,7 +290,7 @@ async function runLoop() {
 
         const validation = runValidation(snapshot, log);
         if (validation.passed) {
-          // Auto-commit any uncommitted changes so Phase 6's merge picks them up.
+          // Auto-commit any uncommitted changes so the final merge phase picks them up.
           const worktree = snapshot.worktree;
           if (fs.existsSync(worktree)) {
             try {
@@ -930,7 +930,7 @@ function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
   const template = parsedConfig.cli_templates[cli];
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const mode = template ? cliTemplateMode(template) : "builtin";
+    const mode = template ? cliTemplateMode(template) : "missing-template";
     log(`Calling orchestrator CLI '${cli}' via ${mode} mode (attempt ${attempt}/${maxRetries})...`);
     const { stdout, error } = invokeOrchestratorCli(cli, template, prompt);
     if (error) {
@@ -976,11 +976,7 @@ function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
         try { fs.unlinkSync(promptFile); } catch {}
       }
     }
-    // Fallback for an `orchestrator_cli` with no template — assume it accepts `-p <prompt>`.
-    const result = spawnSync(cli, ["-p", prompt], { encoding: "utf-8", maxBuffer: 1024 * 1024 * 10 });
-    if (result.error) return { stdout: "", error: result.error.message };
-    if (result.status !== 0) return { stdout: result.stdout || "", error: `Exit ${result.status}: ${result.stderr}` };
-    return { stdout: result.stdout || "" };
+    return { stdout: "", error: `No cli_templates.${cli} configured for orchestrator_cli.` };
   }
 }
 
@@ -1001,10 +997,7 @@ function generateAiReviewInstruction(tailLogs, parsedConfig, log) {
       });
       if (result.stdout?.trim()) return result.stdout.trim();
     } else {
-      log(`Triggered AI Review invoking '${cli}' via builtin mode...`);
-      const { cmd, cmdArgs } = defaultCliCommand(cli, reviewPrompt, promptFile);
-      const result = spawnSync(cmd, cmdArgs, { encoding: "utf-8", timeout: 60000 });
-      if (result.stdout?.trim()) return result.stdout.trim();
+      log(`Triggered AI Review skipped: no cli_templates.${cli} configured.`);
     }
   } catch (e) {
     log(`Triggered AI Review failed: ${e.message}`);
@@ -1012,18 +1005,6 @@ function generateAiReviewInstruction(tailLogs, parsedConfig, log) {
     try { fs.unlinkSync(promptFile); } catch {}
   }
   return "You seem stuck. Please review the logs and continue.";
-
-  // Single-use helper — only used when no template is configured for the worker CLI.
-  function defaultCliCommand(cli, prompt, promptFile) {
-    switch (cli) {
-      case "aider":    return { cmd: "aider",    cmdArgs: ["--message-file", promptFile, "--yes"] };
-      case "claude":   return { cmd: "claude",   cmdArgs: ["-p", prompt, "--dangerously-skip-permissions"] };
-      case "codex":    return { cmd: "codex",    cmdArgs: ["exec", "--dangerously-bypass-approvals-and-sandbox", prompt] };
-      case "gemini":   return { cmd: "gemini",   cmdArgs: ["--prompt", prompt, "--yolo"] };
-      case "opencode": return { cmd: "opencode", cmdArgs: ["run", prompt, "--yes"] };
-      default:         return { cmd: "kilo",     cmdArgs: ["run", prompt, "--auto"] };
-    }
-  }
 }
 
 // ─── Stalled-flag handling ───────────────────────────────────────────────────
@@ -1118,9 +1099,7 @@ Keep the total output under 50 lines. Be direct.`;
         timeout: 120000,
       }).result;
     } else {
-      log(`Calling ${workerCli} for review summary via builtin mode...`);
-      const { cmd, cmdArgs } = defaultCliCommand(workerCli, shortPrompt, promptFile);
-      result = spawnSync(cmd, cmdArgs, { encoding: "utf-8", maxBuffer: 1024 * 1024 * 10, timeout: 120000 });
+      throw new Error(`No cli_templates.${workerCli} configured for review summary.`);
     }
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`${workerCli} exited with status ${result.status}: ${result.stderr}`);
@@ -1155,16 +1134,4 @@ Keep the total output under 50 lines. Be direct.`;
     console.log("\n" + summaryOutput + "\n");
   }
   log("Orchestrator loop ending.");
-
-  // Single-use helper — only used by finalize above, when no template is configured for the CLI.
-  function defaultCliCommand(cli, prompt, promptFile) {
-    switch (cli) {
-      case "aider":    return { cmd: "aider",    cmdArgs: ["--message-file", promptFile, "--yes"] };
-      case "claude":   return { cmd: "claude",   cmdArgs: ["-p", prompt, "--dangerously-skip-permissions"] };
-      case "codex":    return { cmd: "codex",    cmdArgs: ["exec", "--dangerously-bypass-approvals-and-sandbox", prompt] };
-      case "gemini":   return { cmd: "gemini",   cmdArgs: ["--prompt", prompt, "--yolo"] };
-      case "opencode": return { cmd: "opencode", cmdArgs: ["run", prompt, "--yes"] };
-      default:         return { cmd: "kilo",     cmdArgs: ["run", prompt, "--auto"] };
-    }
-  }
 }

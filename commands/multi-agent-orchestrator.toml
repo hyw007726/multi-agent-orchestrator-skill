@@ -1,0 +1,8 @@
+description = "Use the multi-agent orchestrator workflow."
+prompt = """
+Use the multi-agent-orchestrator workflow from this extension's context.
+
+Treat the following as the user's orchestration request:
+
+{{args}}
+"""

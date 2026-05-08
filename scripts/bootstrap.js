@@ -18,7 +18,7 @@ function runBootstrap() {
   // Schema (see references/schemas.md):
   //   chat_context: structured object — { preferences, architecture, naming_conventions, gotchas, ... }
   //   tasks:        Record<agent-name, { description, timeout_mins?, progress_timeout_mins? }>
-  // The orchestrator session is expected to populate both via the Edit tool between Phase 2 and Phase 4.
+  // The caller session is expected to populate both between Phase 2 and Phase 4.
   // A legacy `--chat-context "<string>"` is wrapped under a `summary` key so flat-string callers remain valid.
   const chat_context = chatContext.trim() === "" ? {} : { summary: chatContext };
 

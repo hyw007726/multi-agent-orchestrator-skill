@@ -13,9 +13,9 @@ module.exports = {
   // only proves the binary is installed; it does not exercise the API).
   default_cli: "kilo",
 
-  // The CLI used by the background loop itself for request arbitration (Phase 5).
-  // This is separate from the worker CLI: arbitration benefits from a stronger
-  // reasoning model, while the worker CLI can stay cheap and fast. Defaults to "claude".
+  // Optional: the CLI used by the background loop itself for request arbitration.
+  // If omitted, arbitration uses default_cli. Set this only when arbitration should
+  // use a different CLI/model from the workers.
   // orchestrator_cli: "claude",
 
   // Command templates for supported CLIs.
@@ -56,7 +56,7 @@ module.exports = {
     // rather than trying to fit a single mega-prompt through the shell.
     kilo: 'kilo run "$(cat {prompt_file})" --auto',
     aider: { cmd: "aider", args: ["--message-file", { prompt_file: true }, "--yes"] },
-    // claude is the one CLI that NEEDS --model pinned in this template. The other CLIs
+    // claude is the one CLI that should usually have --model pinned in this template. The other CLIs
     // (kilo / aider / gemini / codex / opencode) read their model from their own
     // independent config — env vars, BYOK providers, model files — so spawning them
     // as workers picks up the user's existing setup. The `claude` CLI is different:
@@ -67,7 +67,7 @@ module.exports = {
     // Pinning Sonnet 4.6 keeps workers on a fast, cheap, capable model regardless
     // of what your interactive orchestrator session is using. Swap the id for a
     // different one (claude-haiku-4-5-20251001 to go even cheaper, or claude-opus-4-7
-    // if you want this template to double as `orchestrator_cli`).
+    // if you want this template to be used as an explicit `orchestrator_cli`).
     claude: { cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
     gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo"] },
     codex: { cmd: "codex", args: ["exec", "--dangerously-bypass-approvals-and-sandbox", { prompt_text: true }] },
