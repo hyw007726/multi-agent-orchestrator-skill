@@ -44,6 +44,26 @@ Workers run non-interactively. Any selected CLI must already be signed in and ab
 
 ## Install For Callers
 
+### Codex
+
+Run one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hyw007726/claud-multi-agent-orchestrator-skill/main/install-codex.sh | sh
+```
+
+Then restart Codex. Running the same command later updates the skill.
+
+The installer clones this repo into:
+
+```bash
+${CODEX_HOME:-$HOME/.codex}/skills/multi-agent-orchestrator
+```
+
+This repository also includes `agents/openai.yaml` for Codex UI metadata and `AGENTS.md` as a lightweight repository-level caller guide.
+
+### Manual Use
+
 Clone the repository anywhere if you only want manual use:
 
 ```bash
@@ -52,18 +72,6 @@ git clone https://github.com/hyw007726/claud-multi-agent-orchestrator-skill.git 
 ```
 
 Then ask your coding agent to read `~/src/multi-agent-orchestrator/SKILL.md` and use that workflow from the target project.
-
-### Codex
-
-Install or symlink this folder into your Codex skills directory:
-
-```bash
-mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-ln -s /path/to/multi-agent-orchestrator \
-  "${CODEX_HOME:-$HOME/.codex}/skills/multi-agent-orchestrator"
-```
-
-This repository also includes `agents/openai.yaml` for Codex UI metadata and `AGENTS.md` as a lightweight repository-level caller guide.
 
 ### Gemini CLI
 
