@@ -18,7 +18,7 @@ const DEFAULT_CLI_TEMPLATES = {
   aider: { cmd: "aider", args: ["--message-file", { prompt_file: true }, "--yes"] },
   claude: { cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
   gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo"] },
-  codex: { cmd: "codex", args: ["--exec", { prompt_text: true }] },
+  codex: { cmd: "codex", args: ["exec", "--dangerously-bypass-approvals-and-sandbox", { prompt_text: true }] },
   opencode: { cmd: "opencode", args: ["run", { prompt_text: true }, "--yes"] },
 };
 
@@ -30,7 +30,8 @@ const DEFAULTS = {
   default_timeout_mins: 10,
   default_progress_timeout_mins: 15,
   default_max_restarts: 3,
-  claude_failure_threshold: 5,
+  orchestrator_failure_threshold: 5,
+  claude_failure_threshold: 5, // Deprecated alias kept for existing project configs.
   poll_min_ms: 1000,
   poll_max_ms: 15000,
   launch_dashboard: false,
@@ -66,7 +67,12 @@ function loadConfig(cwd = process.cwd()) {
   if (typeof parsed.default_timeout_mins === "number") merged.default_timeout_mins = parsed.default_timeout_mins;
   if (typeof parsed.default_progress_timeout_mins === "number") merged.default_progress_timeout_mins = parsed.default_progress_timeout_mins;
   if (typeof parsed.default_max_restarts === "number") merged.default_max_restarts = parsed.default_max_restarts;
-  if (typeof parsed.claude_failure_threshold === "number") merged.claude_failure_threshold = parsed.claude_failure_threshold;
+  if (typeof parsed.orchestrator_failure_threshold === "number") {
+    merged.orchestrator_failure_threshold = parsed.orchestrator_failure_threshold;
+  } else if (typeof parsed.claude_failure_threshold === "number") {
+    merged.orchestrator_failure_threshold = parsed.claude_failure_threshold;
+  }
+  merged.claude_failure_threshold = merged.orchestrator_failure_threshold;
   if (typeof parsed.poll_min_ms === "number") merged.poll_min_ms = parsed.poll_min_ms;
   if (typeof parsed.poll_max_ms === "number") merged.poll_max_ms = parsed.poll_max_ms;
   if (typeof parsed.launch_dashboard === "boolean") merged.launch_dashboard = parsed.launch_dashboard;

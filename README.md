@@ -1,11 +1,11 @@
-# Multi-Agent Orchestrator (Claude Skill)
+# Multi-Agent Orchestrator (Claude Code Skill)
 
-A production-ready, CLI-agnostic skill that turns your Claude Code session into a high-level orchestrator managing multiple headless worker agents in parallel.
+A production-ready, CLI-agnostic orchestrator runtime that turns an interactive coding-agent session into a high-level coordinator managing multiple headless worker agents in parallel. This repository currently ships that runtime as a Claude Code skill.
 
-It safely sandboxes workers into `git worktrees`, manages their lifecycles via a self-healing background daemon, and natively supports Kilo Code, Aider, Claude Code, Gemini CLI, and OpenCode.
+It safely sandboxes workers into `git worktrees`, manages their lifecycles via a self-healing background daemon, and natively supports Kilo Code, Aider, Claude Code, Codex, Gemini CLI, and OpenCode.
 
 ## 🚀 Features
-- **Turn One Agent Into Many**: Break a complex task into parallel workstreams — Claude decomposes the work, spawns independent agents, and merges the results.
+- **Turn One Agent Into Many**: Break a complex task into parallel workstreams — the caller agent decomposes the work, spawns independent agents, and merges the results.
 - **CLI Agnostic**: Use any headless coding agent as a worker — Kilo Code, Aider, Claude Code, Gemini CLI, OpenCode, or Codex. Mix and match freely.
 - **Two-Tier Cost Control**: A configurable `orchestrator_cli` arbitrates cross-cutting decisions (point it at a strong reasoning model), while the worker CLI handles bulk coding and the cheap monitor calls — strong architecture at a fraction of the cost.
 - **Self-Healing Loop**: Detects hung agents (no log output) and stuck agents (log output but no code progress). When an agent stalls, a single-shot LLM call diagnoses what's wrong and respawns with a 1-sentence course-correction.
@@ -30,7 +30,7 @@ The skill reads `orchestrator.config.js` at the project root. Key knobs:
 - `cli_templates` — structured argv templates or explicit shell-string templates for supported CLIs; insulates the system from third-party flag changes.
 - `default_timeout_mins` / `default_progress_timeout_mins` — liveness and progress thresholds.
 - `default_max_restarts` — restart cap per agent.
-- `claude_failure_threshold` — consecutive arbitration-CLI failures before the dashboard shows the stalled banner.
+- `orchestrator_failure_threshold` — consecutive arbitration-CLI failures before the dashboard shows the stalled banner. `claude_failure_threshold` remains accepted as a deprecated alias.
 - `launch_dashboard` / `launch_review_terminal` — opt-in GUI terminal spawning for environments where it is supported.
 
 If the file is absent, the orchestrator picks sensible defaults based on project size.
@@ -39,7 +39,7 @@ If the file is absent, the orchestrator picks sensible defaults based on project
 
 ## 📦 Prerequisites
 
-1. **Claude Code CLI** (acts as the orchestrator session and as the default arbitration CLI):
+1. **Claude Code CLI** (hosts the current skill packaging and can act as the interactive orchestrator session):
    ```bash
    npm install -g @anthropic-ai/claude-code
    ```
@@ -50,7 +50,7 @@ If the file is absent, the orchestrator picks sensible defaults based on project
 
 That's it for prerequisites — the skill itself ships zero external dependencies. Every script runs on Node.js built-ins, so there's no `npm install`, no `node_modules/`, no build step at any point.
 
-> **Note:** This is a **Claude Code skill**, not a Claude.ai (web) or Claude Desktop one. The orchestrator shells out to `nohup`, `git worktree`, `kill`, and `osascript`/terminal-spawning commands, none of which run inside the web/desktop sandbox. Install it under Claude Code as described below.
+> **Note:** This repository currently ships as a **Claude Code skill**, not a Claude.ai (web) or Claude Desktop one. The runtime shells out to `nohup`, `git worktree`, `kill`, and `osascript`/terminal-spawning commands, none of which run inside the web/desktop sandbox. Install it under Claude Code as described below.
 
 ## 🛠️ Installation
 
@@ -84,11 +84,11 @@ ln -s ~/src/multi-agent-orchestrator ~/.claude/skills/multi-agent-orchestrator
    node ~/.claude/skills/multi-agent-orchestrator/scripts/preflight.js
    ```
    Preflight prints a model heads-up before probing: pinned template models are shown by name, while external-config CLIs are called out as using their own selected provider/model.
-3. **Start a project**: Ask Claude Code to build something complex. The orchestrator session decomposes the task, writes `coord/context.json`, then runs `scripts/launch-all.js --coord ./coord` to create worktrees, render prompts, spawn every agent, and background the self-healing loop — all from a single command.
-4. **Sit back**: when all agents finish, the loop writes `coord/review-summary.txt`. Return to Claude and say *"The agents are done. Please review and integrate their work."*
+3. **Start a project**: Ask the interactive orchestrator session to build something complex. It decomposes the task, writes `coord/context.json`, then runs `scripts/launch-all.js --coord ./coord` to create worktrees, render prompts, spawn every agent, and background the self-healing loop — all from a single command.
+4. **Sit back**: when all agents finish, the loop writes `coord/review-summary.txt`. Return to the interactive orchestrator session and say *"The agents are done. Please review and integrate their work."*
 
 ## 🔄 Supported CLIs
-You can instruct Claude to use different CLIs by appending the `--cli` flag:
+You can instruct the skill to use different worker CLIs by appending the `--cli` flag:
 - `--cli kilo` (Default)
 - `--cli aider`
 - `--cli claude`

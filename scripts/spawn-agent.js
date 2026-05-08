@@ -140,7 +140,7 @@ function spawnAgent() {
     let cmdArgs = [prompt, "--mode", mode, "--auto"];
     if (cli === "aider")     { cmd = "aider";     cmdArgs = ["--message-file", promptFile, "--yes"]; }
     else if (cli === "claude")   { cmd = "claude";    cmdArgs = ["-p", prompt, "--dangerously-skip-permissions"]; }
-    else if (cli === "codex")    { cmd = "codex";     cmdArgs = ["--exec", prompt]; }
+    else if (cli === "codex")    { cmd = "codex";     cmdArgs = ["exec", "--dangerously-bypass-approvals-and-sandbox", prompt]; }
     else if (cli === "gemini")   { cmd = "gemini";    cmdArgs = ["--prompt", prompt, "--yolo"]; }
     else if (cli === "opencode") { cmd = "opencode";  cmdArgs = ["run", prompt, "--yes"]; }
     if (extra.length > 0) cmdArgs.push(...extra);

@@ -22,6 +22,7 @@ describe('config merging', () => {
     assert.strictEqual(config.default_timeout_mins, 10);
     assert.strictEqual(config.default_progress_timeout_mins, 15);
     assert.strictEqual(config.default_max_restarts, 3);
+    assert.strictEqual(config.orchestrator_failure_threshold, 5);
     assert.strictEqual(config.claude_failure_threshold, 5);
     assert.strictEqual(config.poll_min_ms, 1000);
     assert.strictEqual(config.poll_max_ms, 15000);
@@ -40,6 +41,8 @@ describe('config merging', () => {
     assert.strictEqual(config.cli_templates.aider.cmd, 'aider', 'aider should use argv template mode');
     assert.strictEqual(config.cli_templates.claude.cmd, 'claude', 'claude should use argv template mode');
     assert.strictEqual(config.cli_templates.codex.cmd, 'codex', 'codex should use argv template mode');
+    assert.ok(config.cli_templates.codex.args.includes('exec'), 'codex should use the exec subcommand');
+    assert.ok(!config.cli_templates.codex.args.includes('--exec'), 'codex should not use the removed --exec flag');
 
     // Verify cli_health_checks defaults are present.
     assert.ok(config.cli_health_checks, 'cli_health_checks should exist');
@@ -59,7 +62,7 @@ describe('config merging', () => {
         '  default_timeout_mins: 20,',
         '  default_progress_timeout_mins: 30,',
         '  default_max_restarts: 5,',
-        '  claude_failure_threshold: 10,',
+        '  orchestrator_failure_threshold: 10,',
         '  poll_min_ms: 500,',
         '  poll_max_ms: 30000,',
         '  launch_dashboard: true,',
@@ -78,6 +81,7 @@ describe('config merging', () => {
     assert.strictEqual(config.default_timeout_mins, 20);
     assert.strictEqual(config.default_progress_timeout_mins, 30);
     assert.strictEqual(config.default_max_restarts, 5);
+    assert.strictEqual(config.orchestrator_failure_threshold, 10);
     assert.strictEqual(config.claude_failure_threshold, 10);
     assert.strictEqual(config.poll_min_ms, 500);
     assert.strictEqual(config.poll_max_ms, 30000);
@@ -172,6 +176,7 @@ describe('config merging', () => {
     assert.strictEqual(config.orchestrator_cli, 'claude');
     assert.strictEqual(config.default_timeout_mins, 10);
     assert.strictEqual(config.default_max_restarts, 3);
+    assert.strictEqual(config.orchestrator_failure_threshold, 5);
     assert.strictEqual(config.claude_failure_threshold, 5);
     assert.strictEqual(config.poll_max_ms, 15000);
     assert.strictEqual(config.launch_dashboard, false);
@@ -204,6 +209,26 @@ describe('config merging', () => {
     // Extra keys should NOT leak onto the merged config.
     assert.strictEqual(config.unsupported_key, undefined);
     assert.strictEqual(config.another_random, undefined);
+  });
+
+  it('accepts claude_failure_threshold as a deprecated alias', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+    let config;
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  claude_failure_threshold: 9,',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
+      config = loadConfig(tmpDir);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    assert.strictEqual(config.orchestrator_failure_threshold, 9);
+    assert.strictEqual(config.claude_failure_threshold, 9);
   });
 });
 

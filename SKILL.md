@@ -3,7 +3,7 @@ name: multi-agent-orchestrator
 description: Decompose a large coding task into parallel worker agents (Kilo, Aider, Claude, Codex, Gemini, OpenCode) running in isolated git worktrees with self-healing supervision. Use when the user asks to "build something complex with multiple agents", "split this work in parallel", "spawn a swarm", or to coordinate background headless CLI workers.
 ---
 
-# FULL Claude Orchestrator Skill
+# FULL Multi-Agent Orchestrator Skill
 
 This skill defines a COMPLETE, CLI-agnostic multi-agent orchestration system.
 
@@ -15,7 +15,7 @@ Before using this skill, ensure you have:
 > **Architectural Recommendation & Intelligence Boundaries:**
 > This skill is highly optimized for cost-efficiency without sacrificing quality. It relies on **three distinct decision-making contexts**, each driven by a configurable CLI in `orchestrator.config.js`:
 >
-> 1. **Initial Decomposition (Interactive Session):** Your active Orchestrator session (e.g., Claude Code with a high-tier reasoning model like Opus 4.7) acts as the primary architect. It analyzes the task, breaks it into non-overlapping boundaries, writes the `coord/context.json`, and spawns the background agents.
+> 1. **Initial Decomposition (Interactive Session):** Your active orchestrator session acts as the primary architect. It analyzes the task, breaks it into non-overlapping boundaries, writes the `coord/context.json`, and spawns the background agents.
 > 2. **The Background Orchestrator Loop (Headless Script):** Once launched, the background loop has **no access to your chat history**. It splits its LLM work across two CLIs:
 >     - **Request arbitration** (cross-cutting decisions over pending requests, plus `end_agent` / `soft_restart` / `hard_restart` actions) is invoked through the **`orchestrator_cli`** (defaults to `claude`). Arbitration benefits from a stronger reasoning model since it weighs conflicts and architectural trade-offs.
 >     - **Triggered AI-Review** (the 1-sentence course-correction sent when an agent stalls) and the **final review summary** in Phase 6 are invoked through the **Worker CLI** (`default_cli`). These are narrow, single-turn calls that stay cheap.
@@ -27,7 +27,7 @@ Before using this skill, ensure you have:
 > - **Inline-flag CLIs** (claude, aider, gemini): model selection is part of `cli_templates`. Prefer structured argv templates and add the CLI's model flag in `args` — e.g. `{ cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] }` for Sonnet, or add `--model gpt-4o-mini` to the Aider args.
 > - **External-config CLIs** (kilo, opencode, codex): model selection lives in the CLI's own settings (BYOK provider + model picker), not the template. The template stays simple; the model is whatever the user has configured in that CLI.
 >
-> **`claude` is the one CLI where pinning is effectively required, not optional.** The other inline-flag CLIs (aider, gemini) read their model from independent config (env vars, model files), so a worker spawn picks up the user's existing setup. `claude` is different — without `--model`, the spawned worker silently inherits the model of the parent Claude Code session running this skill (typically Opus 4.7 if you launched from an Opus orchestrator session), routing bulk worker coding to the orchestrator's expensive reasoning model. The shipped `cli_templates.claude` already pins Sonnet 4.6 for this reason.
+> **`claude` is the one CLI where pinning is effectively required, not optional.** The other inline-flag CLIs (aider, gemini) read their model from independent config (env vars, model files), so a worker spawn picks up the user's existing setup. `claude` is different when this runtime is launched from Claude Code — without `--model`, the spawned worker can inherit the model of the parent Claude Code session running this skill (for example, an expensive high-tier orchestrator model), routing bulk worker coding to the orchestrator's model. The shipped `cli_templates.claude` already pins Sonnet 4.6 for this reason.
 >
 > There is intentionally no separate `default_model` config key, because each CLI uses different flag names and model-id namespaces (and some don't take a flag at all), so keeping it close to the actual mechanism avoids a leaky aliasing layer.
 >
@@ -43,7 +43,7 @@ If it exists, read it to determine:
 - **`default_timeout_mins`**: The default time before an agent is considered hanging (Liveness).
 - **`default_progress_timeout_mins`**: The default time before an active agent with zero code changes is considered stuck (Progress).
 - **`default_max_restarts`**: The maximum number of times the loop will respawn the same agent before marking it `errored` (defaults to 3). Counted across both validation-failure restarts and AI-Review restarts.
-- **`claude_failure_threshold`**: Consecutive arbitration-CLI failures before the loop writes `coord/orchestrator-stalled.flag` (which the dashboard surfaces). Defaults to 5.
+- **`orchestrator_failure_threshold`**: Consecutive arbitration-CLI failures before the loop writes `coord/orchestrator-stalled.flag` (which the dashboard surfaces). Defaults to 5. `claude_failure_threshold` remains accepted as a deprecated alias for existing configs.
 - **`poll_min_ms` / `poll_max_ms`**: Adaptive polling bounds for the orchestrator loop. The loop polls at `poll_min_ms` (default 1000) right after seeing pending requests, then exponentially backs off (×1.5 per idle cycle) up to `poll_max_ms` (default 15000). Pass `--poll-interval <ms>` to the loop to disable the heuristic and force a fixed cadence.
 - **`cli_health_checks`**: Per-CLI probe commands run by `scripts/preflight.js` to fail fast on install / auth issues. Defaults to `<cli> --version` for every supported CLI.
 - **`launch_dashboard` / `launch_review_terminal`**: Optional GUI terminal auto-launch. Disabled by default for MVP reliability in headless/sandboxed terminals; run the dashboard manually or set these to `true` if your terminal environment supports spawning new windows.
@@ -65,7 +65,7 @@ module.exports = {
     aider: { cmd: "aider", args: ["--message-file", { prompt_file: true }, "--yes"] },
     claude: { cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
     gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo"] },
-    codex: { cmd: "codex", args: ["--exec", { prompt_text: true }] },
+    codex: { cmd: "codex", args: ["exec", "--dangerously-bypass-approvals-and-sandbox", { prompt_text: true }] },
     opencode: { cmd: "opencode", args: ["run", { prompt_text: true }, "--yes"] },
   },
 };
@@ -73,7 +73,7 @@ module.exports = {
 
 If the file does not exist, you MUST dynamically evaluate the overall size and complexity of the user's project to determine sensible default bounds (e.g., a simple script might only need a 5-minute progress timeout and 3 iterations, while a complex React app might need a 20-minute progress timeout and 10 iterations). You can also offer to create this config file for the user so they can explicitly customize their workflow bounds in the future!
 
-> **Note:** All worker CLIs are automatically launched with their respective "bypass permissions" flags (`--yes`, `--dangerously-skip-permissions`, `--yolo`, `--auto`) so they run fully autonomously in the background. The Orchestrator Loop will remember which CLI tool you spawned the agent with and will automatically use the exact same tool if it needs to respawn the agent after a rollback!
+> **Note:** All worker CLIs are automatically launched with their respective "bypass permissions" flags (`--yes`, `--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--auto`) so they run fully autonomously in the background. The Orchestrator Loop will remember which CLI tool you spawned the agent with and will automatically use the exact same tool if it needs to respawn the agent after a rollback!
 
 ## Phase 0 — Setup
 
@@ -120,7 +120,7 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/bootstrap.js \
 ```
 
 ### `coord/context.json`
-Because the orchestrator loop runs after your Claude CLI session is done, it has **zero access** to your original chat history. **You must heavily compress all user preferences, architectural nuances, and conversational context into a structured `chat_context` object.**
+Because the orchestrator loop runs after your interactive caller session is done, it has **zero access** to your original chat history. **You must heavily compress all user preferences, architectural nuances, and conversational context into a structured `chat_context` object.**
 
 You should also include the tasks you generated in Phase 1 under the `"tasks"` key.
 
@@ -198,7 +198,7 @@ The loop then uses this AI-generated instruction as the prompt for the `soft_res
 
 **Aborting:** Closing the dashboard window (SIGHUP/SIGTERM) leaves the agents running. Pressing Ctrl+C asks for confirmation, then writes `coord/abort.flag`. The loop's abort path performs a soft stop only — it kills the running agent processes and marks them `terminated`, but **does not** `git reset --hard` the worktrees. Any in-flight work is preserved and can be inspected with `git status` in each worktree.
 
-**Stalled CLI surfacing:** If the orchestrator CLI fails `claude_failure_threshold` cycles in a row (default 5), the loop writes `coord/orchestrator-stalled.flag` with a diagnostic payload. The dashboard renders a red banner so you can see at a glance that arbitration is stuck (e.g., `claude` is unauthenticated, rate-limited, or down). The flag is removed automatically as soon as a cycle succeeds.
+**Stalled CLI surfacing:** If the orchestrator CLI fails `orchestrator_failure_threshold` cycles in a row (default 5), the loop writes `coord/orchestrator-stalled.flag` with a diagnostic payload. The dashboard renders a red banner so you can see at a glance that arbitration is stuck (e.g., the configured `orchestrator_cli` is unauthenticated, rate-limited, or down). The flag is removed automatically as soon as a cycle succeeds.
 
 ## Phase 5 — Review and Integration
 
@@ -208,7 +208,7 @@ When all worker agents finish, the `orchestrator-loop.js` script will automatica
 3. **Optional Popup Notification**: If `launch_review_terminal` is enabled, open a **new terminal window** displaying this summary.
 4. **Exit**: The orchestrator loop will then safely terminate.
 
-At this point, the user will return to Claude. They can either use their original chat window, or open a completely new chat window. They will give you a command like *"The agents are done. Please review and integrate their work."*
+At this point, the user will return to the interactive orchestrator session. They can either use their original chat window, or open a completely new chat window. They will give you a command like *"The agents are done. Please review and integrate their work."*
 
 When you receive this instruction to perform the final integration, you should:
 1. Identify the completed agent worktrees (look in both `.kilocode/worktrees/` and `.agents/worktrees/`).

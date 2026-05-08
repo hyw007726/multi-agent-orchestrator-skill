@@ -28,7 +28,7 @@ module.exports = {
   // argument. They run with shell:false, so prompt paths and extra args are not
   // shell-expanded:
   //   aider: { cmd: "aider", args: ["--message-file", { prompt_file: true }, "--yes"] }
-  //   codex: { cmd: "codex", args: ["--exec", { prompt_text: true }] }
+  //   codex: { cmd: "codex", args: ["exec", "--dangerously-bypass-approvals-and-sandbox", { prompt_text: true }] }
   //
   // Keep string templates only when you intentionally need shell behavior. String
   // templates still work as the shell escape hatch and are logged as shell mode.
@@ -61,15 +61,16 @@ module.exports = {
     // independent config — env vars, BYOK providers, model files — so spawning them
     // as workers picks up the user's existing setup. The `claude` CLI is different:
     // without --model, the spawned worker silently inherits the model of the parent
-    // Claude Code session running this skill — typically Opus 4.7 (your orchestrator
-    // session's model), which is far too expensive for bulk worker coding.
+    // parent Claude Code session when this runtime is launched from Claude Code —
+    // typically your interactive orchestrator session's model, which is far too
+    // expensive for bulk worker coding.
     // Pinning Sonnet 4.6 keeps workers on a fast, cheap, capable model regardless
     // of what your interactive orchestrator session is using. Swap the id for a
     // different one (claude-haiku-4-5-20251001 to go even cheaper, or claude-opus-4-7
     // if you want this template to double as `orchestrator_cli`).
     claude: { cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
     gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo"] },
-    codex: { cmd: "codex", args: ["--exec", { prompt_text: true }] },
+    codex: { cmd: "codex", args: ["exec", "--dangerously-bypass-approvals-and-sandbox", { prompt_text: true }] },
     opencode: { cmd: "opencode", args: ["run", { prompt_text: true }, "--yes"] },
   },
 
@@ -98,7 +99,8 @@ module.exports = {
 
   // Consecutive orchestrator-CLI failures (per cycle) before writing
   // coord/orchestrator-stalled.flag, which the dashboard surfaces as a red banner.
-  // claude_failure_threshold: 5,
+  // `claude_failure_threshold` is still accepted as a deprecated alias.
+  // orchestrator_failure_threshold: 5,
 
   // Adaptive polling bounds. The loop polls fast right after seeing pending
   // requests, then exponentially backs off (×1.5 per idle cycle) up to poll_max_ms.
