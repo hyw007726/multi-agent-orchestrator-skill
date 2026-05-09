@@ -45,6 +45,10 @@ describe('restart contract preservation', () => {
         '    console.error("orchestrator prompt lost DECISIONS.md context");',
         '    process.exit(1);',
         '  }',
+        '  if (!prompt.includes("## Caller Session Context") || !prompt.includes("Restart caller nuance survives arbitration")) {',
+        '    console.error("orchestrator prompt lost CALLER_CONTEXT.md context");',
+        '    process.exit(1);',
+        '  }',
         '  const start = prompt.indexOf("## New Requests from Agents");',
         '  const end = prompt.indexOf("## Your Responsibilities");',
         '  const section = prompt.slice(start, end === -1 ? undefined : end);',
@@ -74,6 +78,7 @@ describe('restart contract preservation', () => {
         '  && prompt.includes("src/index.js")',
         '  && prompt.includes("src/**")',
         '  && prompt.includes("package.json")',
+        '  && prompt.includes("Restart caller nuance survives restart")',
         '  && prompt.includes("\\"agent\\": \\"agent-contract\\"")',
         '  && prompt.includes("Continue after hard restart.");',
         'if (restarted && hasFullContract) {',
@@ -113,6 +118,13 @@ describe('restart contract preservation', () => {
       ].join('\n') + '\n', 'utf-8');
 
       bootstrapProject(project.root, 'Restart contract preservation test project');
+      fs.writeFileSync(path.join(project.root, 'coord', 'CALLER_CONTEXT.md'), [
+        '# Caller Context',
+        '',
+        '- Restart caller nuance survives arbitration',
+        '- Restart caller nuance survives restart',
+        '',
+      ].join('\n'), 'utf-8');
       const contextPath = path.join(project.root, 'coord', 'context.json');
       const context = readJson(contextPath);
       context.tasks = {

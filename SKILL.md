@@ -50,6 +50,7 @@ Before beginning Phase 1, you MUST check if an `orchestrator.config.js` file exi
 If it exists, read it to determine:
 - **`default_cli`**: The Worker CLI to use for spawning agents and for the final-summary call.
 - **`orchestrator_cli`**: Optional CLI used by the background loop for request arbitration. If omitted, it follows `default_cli`. Set this independently from `default_cli` only when you want arbitration to use a different CLI/model than your workers.
+- **`planner_cli`**: Optional CLI used by `scripts/draft-plan.js` for the initial read-only decomposition draft. If omitted, it follows `orchestrator_cli`.
 - **`cli_templates`**: The template definitions used to spawn worker CLIs. Prefer structured `{ cmd, args }` entries so they run with `shell:false`; keep string templates when you intentionally need shell behavior. The same templates are reused for `orchestrator_cli` calls and final-summary calls, so the system is immune to third-party tool interface changes. **This is also where you pin a model** — add the CLI's model flag (`--model <id>`, `--llm <id>`, etc.) to the template args/string and that model is used for every spawn driven by it.
 - **`reviewers`**: Optional Phase 1.5 read-only plan reviewer CLIs. Each entry has `name`, `cli`, `review_focus`, optional `model`, optional `model_flag`, optional `template_args`, and optional `timeout_mins`. Every reviewer `cli` must have matching `cli_templates.<cli>` and `cli_health_checks.<cli>` entries.
 - **`max_plan_review_iterations`**: `"auto"` by default, or a positive integer. In `"auto"` mode, run at least one review iteration when reviewers are configured, then explicitly decide after reconciliation whether another pass is worth it. Numeric mode means run exactly that many iterations.
@@ -71,6 +72,10 @@ module.exports = {
   // Optional: uncomment only if request arbitration should use a different CLI
   // from the workers. If omitted, orchestrator_cli follows default_cli.
   // orchestrator_cli: "claude",
+
+  // Optional: uncomment only if initial draft planning should use a different CLI
+  // from arbitration. If omitted, planner_cli follows orchestrator_cli.
+  // planner_cli: "claude",
 
   // Optional Phase 1.5 plan reviewers. They critique the draft decomposition
   // before coord/context.json is finalized; they do not launch workers or edit.
@@ -118,7 +123,7 @@ These three steps run unconditionally on every invocation, before any task reaso
 node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.js
 ```
 
-The script checks `default_cli`, `orchestrator_cli`, and any configured plan reviewer CLIs by default. Before probing, it prints a model heads-up: pinned template models are shown by name, external-config CLIs are called out as using their own selected provider/model, and reviewer-specific `model` / `template_args` overrides are listed. It then runs two probes per CLI: a `--version` install check, then an auth probe that exercises the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection. Pass `--skip-auth` for install-only checks (CI / offline). If any check fails, abort and surface the diagnostic — typical fixes are installing the CLI, putting it on `$PATH`, signing in, or selecting a default model.
+The script checks `default_cli`, `orchestrator_cli`, `planner_cli`, and any configured plan reviewer CLIs by default. Before probing, it prints a model heads-up: pinned template models are shown by name, external-config CLIs are called out as using their own selected provider/model, and reviewer-specific `model` / `template_args` overrides are listed. It then runs two probes per CLI: a `--version` install check, then an auth probe that exercises the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection. Pass `--skip-auth` for install-only checks (CI / offline). If any check fails, abort and surface the diagnostic — typical fixes are installing the CLI, putting it on `$PATH`, signing in, or selecting a default model.
 
 ## Phase 1 — Task Evaluation, Topology Selection & Decomposition
 
@@ -144,9 +149,42 @@ If proceeding:
 4. Determine a `validation_command` for each agent. **Prefer JSON-argv form** so the loop can run it with no shell expansion (e.g. `--validate '["npm","run","test","--","src/foo"]'`); fall back to a shell string only when you need pipes / `&&` / env expansion (e.g. `--validate "npm run lint && npm test"`). Use `null` if no automated validation is possible/needed.
 5. Prepare a mapping of agent names to their task descriptions.
 
+### Guided Starter Helper
+
+Instead of running the starter scripts one by one, the caller may use the guided helper from the target project root:
+
+```bash
+node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/prepare-run.js \
+  --project "Short project description" \
+  --task "The user's requested implementation" \
+  --coord ./coord
+```
+
+Default mode runs preflight, bootstraps `coord/` when needed, drafts `coord/plan-reviews/draft-plan-v1.json`, validates the draft shape, and then stops for caller approval. It does not materialize `context.json` or launch workers until the caller has reviewed or edited the draft.
+
+After caller approval:
+
+```bash
+node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/prepare-run.js \
+  --approve-draft \
+  --draft-plan ./coord/plan-reviews/draft-plan-v1.json \
+  --coord ./coord
+```
+
+Approval mode materializes `context.json`, `DECISIONS.md`, and `CALLER_CONTEXT.md`, validates the generated context, and prints the final `launch-all.js` command. It still does not launch workers automatically.
+
 ## Phase 1.5 — Optional Plan Review
 
-If `reviewers` is configured, do not write the final `coord/context.json` task map yet. First draft the decomposition as `coord/plan-reviews/draft-plan-v1.json`. Include the user requirements, constraints, candidate execution topology, rejected topology alternatives, topology reason, dependency notes, candidate file ownership, shared-foundation assumptions, mode-specific task decomposition, validation commands, known risks, and any sequencing dependencies.
+If `reviewers` is configured, do not write the final `coord/context.json` task map yet. First draft the decomposition as `coord/plan-reviews/draft-plan-v1.json`. You may write this manually from the caller session, or use the read-only planner helper:
+
+```bash
+node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/draft-plan.js \
+  --task "The user's requested implementation" \
+  --project "Short project description" \
+  --coord ./coord
+```
+
+The planner uses `planner_cli` if configured, otherwise `orchestrator_cli`, writes `coord/plan-reviews/draft-plan-v1.prompt.md`, `coord/plan-reviews/draft-plan-v1.raw.md`, and the canonical `coord/plan-reviews/draft-plan-v1.json`, and must not launch workers or edit project files. Include the user requirements, constraints, candidate execution topology, rejected topology alternatives, topology reason, dependency notes, candidate file ownership, shared-foundation assumptions, mode-specific task decomposition, validation commands, known risks, and any sequencing dependencies.
 
 Run one read-only review iteration:
 
@@ -178,6 +216,16 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/review-plan.js \
 
 If `max_plan_review_iterations` is `"auto"`, run at least one iteration and then stop after each reconciliation to explicitly decide whether another pass is worth running. Do not let the runner self-continue. Reviewers never chat with each other; the main caller owns synthesis between iterations. Only after reconciling the final chosen/configured iteration should you write the final `coord/context.json` and update `coord/DECISIONS.md`.
 
+To materialize an approved draft plan into the launchable coordination files, either edit `coord/context.json` and `coord/DECISIONS.md` manually, or run:
+
+```bash
+node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/materialize-plan.js \
+  --draft-plan ./coord/plan-reviews/draft-plan-v1.json \
+  --coord ./coord
+```
+
+The materializer preserves existing compact `chat_context`, writes the final execution topology and task map to `context.json`, writes topology rationale, rejected alternatives, shared-foundation assumptions, durable requirements, constraints, file ownership, sequencing notes, validation commands, and known risks to `DECISIONS.md`, writes user intent, important chat nuance, environment assumptions, and non-durable rationale to `CALLER_CONTEXT.md`, then validates the generated context. It refuses to overwrite an existing non-empty task map unless `--force` is passed. If the final topology is `direct`, it writes no worker tasks and tells the caller not to run `launch-all.js`.
+
 ## Phase 2 — Bootstrap
 When starting a new orchestrated project, create the `coord/` directory at the project root and initialize these files.
 
@@ -194,7 +242,7 @@ Because the orchestrator loop runs after your interactive caller session is done
 
 You should also include the final execution topology and the tasks you generated in Phase 1 under the `"tasks"` key. If the final mode is `direct`, do not create or launch an orchestrated run.
 
-`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`, `execution_topology: { execution_mode: "", reason: "", dependency_notes: [] }`, `tasks: {}`). After running it, edit `context.json` with the structured shape below before you spawn any workers. Put durable requirements, architecture, shared contracts, topology rationale, and file ownership in `coord/DECISIONS.md`; use `context.json` as the compact run index.
+`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`, `execution_topology: { execution_mode: "", reason: "", dependency_notes: [] }`, `tasks: {}`). After running it, edit `context.json` with the structured shape below or run `scripts/materialize-plan.js` from an approved draft before you spawn any workers. Put durable requirements, architecture, shared contracts, topology rationale, and file ownership in `coord/DECISIONS.md`; put user intent, important chat nuance, environment assumptions, and non-durable rationale in `coord/CALLER_CONTEXT.md`; use `context.json` as the compact run index.
 
 ```json
 {
@@ -229,6 +277,9 @@ You should also include the final execution topology and the tasks you generated
 
 ### `coord/DECISIONS.md`
 To ensure critical architectural rules are never lost in JSON compression, write a human-readable `coord/DECISIONS.md` file. This file is the curated source of truth for durable requirements, shared API contracts, data models, file ownership, and structural decisions made in Phase 1. The background loop includes `DECISIONS.md` in arbitration prompts, preserves approved request resolutions in `coord/decisions.jsonl`, and keeps only the latest 30 in `coord/decisions.json`; it does not automatically rewrite `DECISIONS.md`. If a runtime approval should become durable project policy, update `DECISIONS.md` from the orchestrator session.
+
+### `coord/CALLER_CONTEXT.md`
+To keep `context.json` compact while still giving the headless loop enough caller context, write a human-readable `coord/CALLER_CONTEXT.md` file. This file is for compressed user intent, important chat nuance, local environment assumptions, and temporary planning rationale that should not become durable project policy. The background loop includes it in arbitration prompts and worker restart prompts. Workers are instructed to read it after `DECISIONS.md`. Do not put stable architecture contracts or file ownership rules here; those belong in `DECISIONS.md`.
 
 ## Phase 3 — Prompt Generation
 

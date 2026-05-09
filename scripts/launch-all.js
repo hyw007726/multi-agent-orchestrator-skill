@@ -8,6 +8,7 @@ const { loadConfig } = require('./lib/config');
 const { safeKill } = require('./lib/process');
 const { renderWorkerPrompt } = require('./lib/prompt-render');
 const { formatModelHeadsUp } = require('./lib/model-headsup');
+const { validateContext, formatValidationReport } = require('./lib/context-validation');
 
 launchAll();
 
@@ -29,12 +30,27 @@ function launchAll() {
     process.exit(1);
   }
 
-  const tasks = context.tasks;
-  if (!tasks || Object.keys(tasks).length === 0) {
-    console.error('Error: No tasks found in context.json.');
+  const config = loadConfig();
+  const validation = validateContext(context, config, {
+    projectRoot,
+    coordDir: args.coordDir,
+    requireLaunchable: true,
+  });
+  const validationText = formatValidationReport(validation, {
+    coordDir: args.coordDir,
+    contextPath: path.relative(projectRoot, contextPath),
+    decisionsPath: path.relative(projectRoot, path.resolve(args.coordDir, 'DECISIONS.md')),
+    validateCommand: `node ${path.join(__dirname, 'validate-context.js')} --coord ${args.coordDir}`,
+  });
+  if (validationText) {
+    const stream = validation.errors.length > 0 ? process.stderr : process.stdout;
+    stream.write(`${validationText}\n\n`);
+  }
+  if (validation.errors.length > 0) {
     process.exit(1);
   }
-  validateExecutionTopology(context, tasks);
+
+  const tasks = context.tasks;
 
   const requestsDir = path.join(args.coordDir, 'requests');
   if (!fs.existsSync(requestsDir)) {
@@ -42,7 +58,6 @@ function launchAll() {
     console.log(`Created staging directory: ${requestsDir}`);
   }
 
-  const config = loadConfig();
   const projectDescription = context.project || '';
 
   const templatePath = path.resolve(__dirname, '..', 'references', 'worker-prompt-template.md');
@@ -168,30 +183,6 @@ function launchAll() {
 
   console.log(`Orchestrator loop backgrounded (PID: ${loop.pid})`);
   console.log(`Dashboard: node ${path.join(__dirname, 'dashboard.js')} --coord ${args.coordDir}`);
-}
-
-function validateExecutionTopology(context, tasks) {
-  const topology = context.execution_topology;
-  if (!topology || typeof topology.execution_mode !== 'string' || topology.execution_mode.trim() === '') {
-    console.error('Error: context.json execution_topology.execution_mode is required before launching workers. Expected single_worker, parallel, or phased; use direct only when handling the task in the caller session.');
-    process.exit(1);
-  }
-
-  const mode = topology.execution_mode.trim();
-  const taskCount = Object.keys(tasks || {}).length;
-  const launchableModes = new Set(['single_worker', 'parallel', 'phased']);
-  if (mode === 'direct') {
-    console.error('Error: context.json execution_topology.execution_mode is "direct"; handle this task in the caller session instead of launching workers.');
-    process.exit(1);
-  }
-  if (!launchableModes.has(mode)) {
-    console.error(`Error: Invalid execution_topology.execution_mode "${mode}". Expected direct, single_worker, parallel, or phased.`);
-    process.exit(1);
-  }
-  if (mode === 'single_worker' && taskCount !== 1) {
-    console.error(`Error: execution_mode "single_worker" requires exactly one task, but context.json has ${taskCount}.`);
-    process.exit(1);
-  }
 }
 
 function parseArgs() {

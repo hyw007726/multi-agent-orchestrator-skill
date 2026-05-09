@@ -34,6 +34,7 @@ describe('worker prompt rendering', () => {
     assert.ok(prompt.includes(WORKER_CONCISION_PROMPT));
     assert.ok(prompt.includes('src/index.js, tests/index.test.js'));
     assert.ok(prompt.includes('Use `coord/context.json` only as the compact run index'));
+    assert.ok(prompt.includes('coord/CALLER_CONTEXT.md'));
   });
 
   it('keeps worker-specific data out of the stable worker prompt prefix', () => {
@@ -94,6 +95,7 @@ describe('orchestrator arbitration prompt rendering', () => {
       'Durable dynamic decision',
       [{ request_id: 'old-1', decision: 'Existing dynamic decision' }],
       { 'agent-a': 'Dynamic worktree state' },
+      'Caller nuance from the starter session',
     );
 
     const dynamicStart = prompt.indexOf('## Dynamic Inputs');
@@ -103,6 +105,8 @@ describe('orchestrator arbitration prompt rendering', () => {
     assert.strictEqual(prompt.slice(0, dynamicStart).includes('req-1'), false);
     assert.ok(prompt.indexOf('## New Requests from Agents') < prompt.indexOf('## Your Responsibilities'));
     assert.ok(prompt.indexOf('req-1') > dynamicStart);
+    assert.ok(prompt.indexOf('## Caller Session Context from coord/CALLER_CONTEXT.md') > dynamicStart);
+    assert.ok(prompt.indexOf('Caller nuance from the starter session') > dynamicStart);
   });
 });
 

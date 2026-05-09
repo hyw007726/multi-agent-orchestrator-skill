@@ -31,7 +31,7 @@ function runPreflight() {
   const reviewerClis = Array.isArray(config.reviewers) ? config.reviewers.map((reviewer) => reviewer.cli) : [];
   const clis = args.clis.length > 0
     ? uniqueClis(args.clis)
-    : uniqueClis([config.default_cli, config.orchestrator_cli, ...reviewerClis]);
+    : uniqueClis([config.default_cli, config.orchestrator_cli, config.planner_cli, ...reviewerClis]);
 
   console.log(formatModelHeadsUp(config, { checkedClis: clis }));
   console.log("");

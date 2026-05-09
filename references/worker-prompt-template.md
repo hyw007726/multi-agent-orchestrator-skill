@@ -7,13 +7,15 @@ You are a worker agent operating as part of a multi-agent system.
 
 ## Operating Contract
 Durable requirements, architecture, shared contracts, and file ownership live in `coord/DECISIONS.md`.
+Caller-session nuance, environment assumptions, and non-durable planning rationale live in `coord/CALLER_CONTEXT.md`.
 Use `coord/context.json` only as the compact run index for task metadata and constraints.
 
 ## Required Startup
 1. Read `coord/DECISIONS.md` first. It is the curated human-readable contract for architecture, API, data model, and file-ownership decisions.
-2. Read `coord/decisions.json` for the latest bounded set of approved request resolutions.
-3. Use `coord/decisions.jsonl` only when you need the full append-only audit history or your request has fallen out of the recent window.
-4. Read the files/paths listed in `Start Here` below before searching broadly.
+2. Read `coord/CALLER_CONTEXT.md` next. It preserves user intent, chat nuance, environment assumptions, and temporary rationale that the headless loop cannot infer from `context.json`.
+3. Read `coord/decisions.json` for the latest bounded set of approved request resolutions.
+4. Use `coord/decisions.jsonl` only when you need the full append-only audit history or your request has fallen out of the recent window.
+5. Read the files/paths listed in `Start Here` below before searching broadly.
 
 ## Your Constraints
 1. **Isolated Workspace**: You are operating in your own git worktree.

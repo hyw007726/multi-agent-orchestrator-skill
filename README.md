@@ -11,7 +11,8 @@ Use it from Codex, Gemini CLI, Claude Code, or any local coding agent that can r
 - Splits large implementation work across multiple coding agents.
 - Runs each worker in its own git worktree.
 - Keeps durable requirements, shared architecture, contracts, and file ownership in `coord/DECISIONS.md`.
-- Stores compact run context and per-agent task boundaries in `coord/context.json` so the background loop does not need the original chat.
+- Stores compact run context and per-agent task boundaries in `coord/context.json`.
+- Preserves caller-session nuance and runtime assumptions in `coord/CALLER_CONTEXT.md` so the headless loop does not need the original chat.
 - Supervises liveness, progress, validation, restarts, and worker questions.
 - Supports optional worker progress heartbeats and converts repeated no-diff stalls into escalating arbitration requests instead of launching a separate review model call.
 - Provides a live terminal dashboard.
@@ -116,7 +117,7 @@ The caller session will:
 
 1. choose an execution topology: `direct`, `single_worker`, `parallel`, or `phased`;
 2. handle shared foundation files first;
-3. draft the topology-aware decomposition and, if configured, run optional read-only plan reviewers;
+3. draft the topology-aware decomposition with the caller or `scripts/draft-plan.js`, then run optional read-only plan reviewers if configured;
 4. create or update compact `coord/context.json` plus durable `coord/DECISIONS.md`;
 5. split the remaining work into non-overlapping agent tasks;
 6. launch the workers and the background supervision loop.
@@ -136,11 +137,25 @@ node /path/to/multi-agent-orchestrator/scripts/bootstrap.js \
   --project "Build the requested feature" \
   --coord ./coord
 
+# Optional: ask the configured planner CLI for a read-only initial decomposition.
+node /path/to/multi-agent-orchestrator/scripts/draft-plan.js \
+  --task "Build the requested feature" \
+  --project "Build the requested feature" \
+  --coord ./coord
+
 # Optional: run one read-only plan-review iteration before finalizing context.json.
 node /path/to/multi-agent-orchestrator/scripts/review-plan.js \
   --iteration 1 \
   --draft-plan ./coord/plan-reviews/draft-plan-v1.json \
   --coord ./coord
+
+# Convert the approved draft plan into coord/context.json, coord/DECISIONS.md, and coord/CALLER_CONTEXT.md.
+node /path/to/multi-agent-orchestrator/scripts/materialize-plan.js \
+  --draft-plan ./coord/plan-reviews/draft-plan-v1.json \
+  --coord ./coord
+
+# Validate context.json before creating worktrees.
+node /path/to/multi-agent-orchestrator/scripts/validate-context.js --coord ./coord
 
 # Launch worker worktrees and the background loop.
 node /path/to/multi-agent-orchestrator/scripts/launch-all.js --coord ./coord
@@ -151,14 +166,38 @@ node /path/to/multi-agent-orchestrator/scripts/dashboard.js --coord ./coord
 
 Most users should let the caller agent run these commands after it has read `SKILL.md`.
 
+### Guided Starter Command
+
+For the common starter-session path, use `prepare-run.js` from the target project root:
+
+```bash
+node /path/to/multi-agent-orchestrator/scripts/prepare-run.js \
+  --project "Build the requested feature" \
+  --task "Build the requested feature" \
+  --coord ./coord
+```
+
+This runs preflight, bootstraps `coord/` when needed, asks the configured planner CLI for `coord/plan-reviews/draft-plan-v1.json`, and then stops for caller review. After reviewing or editing the draft, materialize it with:
+
+```bash
+node /path/to/multi-agent-orchestrator/scripts/prepare-run.js \
+  --approve-draft \
+  --draft-plan ./coord/plan-reviews/draft-plan-v1.json \
+  --coord ./coord
+```
+
+The approval step writes `context.json`, `DECISIONS.md`, and `CALLER_CONTEXT.md`, validates `context.json`, and prints the final `launch-all.js` command. It does not launch workers for you.
+
 ## How It Works
 
 1. The interactive caller session acts as architect. It chooses the execution topology, decomposes the task, resolves shared foundations, assigns file ownership, records durable decisions, and gives each worker a `read_first` file/path list.
 2. `scripts/bootstrap.js` initializes `coord/`, the state directory shared by the caller, workers, and background loop.
-3. `scripts/launch-all.js` creates one git worktree per agent, renders prompts from `references/worker-prompt-template.md`, spawns workers, and starts the background loop.
-4. `scripts/orchestrator-loop.js` supervises workers. It arbitrates questions, reads optional progress heartbeats, converts progress timeouts into synthetic arbitration requests, detects hung workers, restarts within limits, and runs validation commands.
-5. When all workers finish, the loop writes `coord/review-summary.txt`.
-6. The interactive caller session reviews diffs, runs final checks, merges approved work, and removes completed worktrees.
+3. `scripts/draft-plan.js` can ask the configured planner CLI for `coord/plan-reviews/draft-plan-v1.json`; callers can also write this artifact manually.
+4. `scripts/materialize-plan.js` converts an approved draft into compact `coord/context.json`, durable `coord/DECISIONS.md`, and human-readable `coord/CALLER_CONTEXT.md`.
+5. `scripts/launch-all.js` validates context, creates one git worktree per agent, renders prompts from `references/worker-prompt-template.md`, spawns workers, and starts the background loop.
+6. `scripts/orchestrator-loop.js` supervises workers. It arbitrates questions, reads optional progress heartbeats, converts progress timeouts into synthetic arbitration requests, detects hung workers, restarts within limits, and runs validation commands.
+7. When all workers finish, the loop writes `coord/review-summary.txt`.
+8. The interactive caller session reviews diffs, runs final checks, merges approved work, and removes completed worktrees.
 
 ## Runtime Files
 
@@ -166,6 +205,7 @@ Most users should let the caller agent run these commands after it has read `SKI
 | --- | --- |
 | `coord/context.json` | Compact run context, final execution topology, task map, `read_first` hints, and worker boundaries. |
 | `coord/DECISIONS.md` | Human-readable source of truth for durable requirements, architecture, APIs, ownership, and constraints. |
+| `coord/CALLER_CONTEXT.md` | Human-readable caller-session context: user intent, chat nuance, environment assumptions, and non-durable rationale. Included in arbitration and worker restart prompts. |
 | `coord/agents.json` | Current worker state. |
 | `coord/decisions.jsonl` | Arbitration and restart decisions. |
 | `coord/progress/<agent>.json` | Optional worker-written heartbeat with phase, summary, latest action, and blocker context. |
@@ -182,6 +222,7 @@ The most important settings are:
 
 - `default_cli`: worker CLI for coding tasks and cheap monitor calls.
 - `orchestrator_cli`: optional CLI for request arbitration. If omitted, it follows `default_cli`.
+- `planner_cli`: optional CLI for `scripts/draft-plan.js` initial decomposition. If omitted, it follows `orchestrator_cli`.
 - `cli_templates`: command templates for supported or custom CLIs.
 - `cli_health_checks`: lightweight install checks used by preflight.
 - `reviewers`: optional read-only plan reviewer CLI agents for Phase 1.5.
@@ -199,6 +240,9 @@ module.exports = {
 
   // Optional: use a different CLI/model for arbitration.
   // orchestrator_cli: "claude",
+
+  // Optional: use a different CLI/model for initial read-only draft planning.
+  // planner_cli: "claude",
 
   // Optional: read-only plan reviewers run before final task decomposition.
   // reviewers: [

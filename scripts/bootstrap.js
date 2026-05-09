@@ -79,6 +79,12 @@ function runBootstrap() {
 
   const decisionsMd = buildDecisionsMd(project, requirements, constraints);
   fs.writeFileSync(path.join(coordDir, "DECISIONS.md"), decisionsMd);
+  fs.writeFileSync(path.join(coordDir, "CALLER_CONTEXT.md"), buildCallerContextMd({
+    project,
+    requirements,
+    constraints,
+    chatContext,
+  }));
   fs.writeFileSync(path.join(coordDir, "requests.jsonl"), "");
   fs.mkdirSync(path.join(coordDir, "requests"), { recursive: true });
   fs.mkdirSync(path.join(coordDir, "progress"), { recursive: true });
@@ -133,7 +139,7 @@ Options:
   --project <description>    Project description (required)
   --requirements <list>      Comma-separated compact requirements; also written to DECISIONS.md
   --constraints <list>       Comma-separated compact constraints; also written to DECISIONS.md
-  --chat-context <string>    Compacted summary of original conversation context
+  --chat-context <string>    Compacted summary of original conversation context; written to CALLER_CONTEXT.md
   --help                     Show this help message
 
 Example:
@@ -150,6 +156,35 @@ Example:
 
     return config;
   }
+}
+
+function buildCallerContextMd({ project, requirements, constraints, chatContext }) {
+  const chatSummary = String(chatContext || "").trim();
+  return [
+    "# Caller Context",
+    "",
+    "This file preserves compressed caller-session context for the headless orchestration loop. It is for user intent, chat nuance, environment assumptions, and non-durable rationale that should not bloat coord/context.json. Durable requirements, shared contracts, and ownership rules belong in coord/DECISIONS.md.",
+    "",
+    "## User Intent",
+    project ? `- ${project}` : "- Fill in the user's intent before launch.",
+    "",
+    "## Important Chat Nuance",
+    chatSummary ? `- ${chatSummary}` : "- Fill in user preferences, caveats, and chat nuance that the background loop cannot infer from files.",
+    "",
+    "## Environment Assumptions",
+    "- Fill in local runtime assumptions, external services, credentials, platform constraints, and anything workers should not rediscover expensively.",
+    "",
+    "## Non-Durable Rationale",
+    "- Fill in temporary planning rationale, tradeoffs, and context that informed this run but should not become durable project policy.",
+    "",
+    "## Compact Inputs",
+    "### Requirements",
+    formatMarkdownList(requirements, "No bootstrap requirements were provided."),
+    "",
+    "### Constraints",
+    formatMarkdownList(constraints, "No bootstrap constraints were provided."),
+    "",
+  ].join("\n");
 }
 
 function buildDecisionsMd(project, requirements, constraints) {

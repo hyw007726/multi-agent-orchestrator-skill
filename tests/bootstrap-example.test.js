@@ -104,6 +104,14 @@ describe('bootstrap example file', () => {
       assert.ok(decisions.includes('- Node 18'));
       assert.deepStrictEqual(context.requirements, ['Use streaming API', 'Support retries']);
       assert.deepStrictEqual(context.constraints, ['No new dependencies', 'Node 18']);
+
+      const callerContext = fs.readFileSync(path.join(project.root, 'coord', 'CALLER_CONTEXT.md'), 'utf-8');
+      assert.ok(callerContext.includes('# Caller Context'));
+      assert.ok(callerContext.includes('## User Intent'));
+      assert.ok(callerContext.includes('- Durable contract project'));
+      assert.ok(callerContext.includes('## Compact Inputs'));
+      assert.ok(callerContext.includes('- Use streaming API'));
+      assert.ok(callerContext.includes('- Node 18'));
     } finally {
       if (project) {
         project.cleanup();

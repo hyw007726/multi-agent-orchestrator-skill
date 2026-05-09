@@ -230,11 +230,12 @@ async function runLoop() {
         log(`Found ${pending.length} pending requests.`);
         const context = readJSON(paths.context);
         const durableDecisions = readTextIfExists(paths.decisionsMd);
+        const callerContext = readTextIfExists(paths.callerContextMd);
         const recentDecisions = readRecentDecisions(paths.decisions);
         const agentsForPrompt = readJSON(paths.agents);
 
         const worktreeStates = collectWorktreeStates(pending, agentsForPrompt);
-        const prompt = buildOrchestratorPrompt(pending, context, durableDecisions, recentDecisions, worktreeStates);
+        const prompt = buildOrchestratorPrompt(pending, context, durableDecisions, recentDecisions, worktreeStates, callerContext);
         const response = callOrchestratorCli(prompt, parsedConfig, config.maxRetries, log);
 
         if (!response) {
@@ -561,7 +562,7 @@ async function runLoop() {
 
       const templatePath = path.resolve(__dirname, "..", "references", "worker-prompt-template.md");
       const template = fs.readFileSync(templatePath, "utf-8");
-      return renderWorkerPrompt(template, {
+      const contractPrompt = renderWorkerPrompt(template, {
         ASSIGNED_TASK: task.description || "",
         PROJECT_DESCRIPTION: context.project || "",
         AGENT_NAME: name,
@@ -570,6 +571,15 @@ async function runLoop() {
         FORBIDDEN_PATHS_LIST: task.forbidden_paths || [],
         READ_FIRST_LIST: task.read_first || task.relevant_files || [],
       });
+      const callerContext = readTextIfExists(paths.callerContextMd).trim();
+      if (!callerContext) return contractPrompt;
+      return [
+        contractPrompt,
+        "",
+        "## Caller Session Context from coord/CALLER_CONTEXT.md",
+        callerContext,
+        "",
+      ].join("\n");
     } catch (err) {
       log(`Restart prompt contract render failed for ${name}: ${err.message}`);
       return "";
@@ -654,6 +664,7 @@ function getPaths(coordDir) {
     decisions: path.join(coordDir, "decisions.json"),
     decisionsAudit: path.join(coordDir, "decisions.jsonl"),
     decisionsMd: path.join(coordDir, "DECISIONS.md"),
+    callerContextMd: path.join(coordDir, "CALLER_CONTEXT.md"),
     context: path.join(coordDir, "context.json"),
     agents: path.join(coordDir, "agents.json"),
     progressDir: path.join(coordDir, "progress"),
@@ -810,7 +821,7 @@ function buildProgressEscalation({ previousProgressTimeouts, restartCount, maxRe
 function buildDeterministicProgressInstruction(progressMins) {
   return [
     `You have produced no git-visible changes for ${progressMins} minute(s).`,
-    "Re-read coord/DECISIONS.md and coord/context.json, run git status, and inspect your assigned read_first files.",
+    "Re-read coord/DECISIONS.md, coord/CALLER_CONTEXT.md, and coord/context.json, run git status, and inspect your assigned read_first files.",
     "Then either make a concrete code/test/docs change within your allowed paths, or file a high-priority request explaining the exact blocker with relevant logs and file context.",
   ].join(" ");
 }
@@ -1179,7 +1190,7 @@ function collectWorktreeStates(pending, agents) {
 // ─── Orchestrator CLI invocation ─────────────────────────────────────────────
 
 // Builds the arbitration prompt sent to the orchestrator CLI for each pending-request cycle.
-function buildOrchestratorPrompt(requests, context, durableDecisions, decisions, worktreeStates) {
+function buildOrchestratorPrompt(requests, context, durableDecisions, decisions, worktreeStates, callerContext = "") {
   return `You are the system orchestrator for a multi-agent project.
 
 Worker agents are running as headless CLI sessions, each in an isolated git worktree.
@@ -1217,6 +1228,9 @@ ${JSON.stringify(context, null, 2)}
 
 ## Durable Project Decisions from coord/DECISIONS.md (DO NOT contradict these)
 ${durableDecisions.trim() || "(none recorded)"}
+
+## Caller Session Context from coord/CALLER_CONTEXT.md
+${callerContext.trim() || "(none recorded)"}
 
 ## Recent Runtime Decisions (DO NOT contradict these)
 ${JSON.stringify(decisions, null, 2)}

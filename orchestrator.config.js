@@ -18,6 +18,10 @@ module.exports = {
   // use a different CLI/model from the workers.
   // orchestrator_cli: "claude",
 
+  // Optional: the CLI used by scripts/draft-plan.js for the initial read-only
+  // decomposition draft. If omitted, planner_cli follows orchestrator_cli.
+  // planner_cli: "claude",
+
   // Optional Phase 1.5 plan reviewers. When configured, the caller can run
   // scripts/review-plan.js after drafting an initial decomposition and before
   // writing the final coord/context.json task map. Reviewers are read-only plan

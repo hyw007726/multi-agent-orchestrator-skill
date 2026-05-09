@@ -159,6 +159,7 @@ describe('preflight CLI', () => {
         'module.exports = {',
         '  default_cli: "mainfake",',
         '  orchestrator_cli: "mainfake",',
+        '  planner_cli: "plannerfake",',
         '  reviewers: [',
         '    {',
         '      name: "architecture",',
@@ -170,10 +171,12 @@ describe('preflight CLI', () => {
         '  ],',
         '  cli_templates: {',
         `    mainfake: { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(cliPath)}, { prompt_file: true }] },`,
+        `    plannerfake: { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(cliPath)}, { prompt_file: true }] },`,
         `    reviewfake: { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(cliPath)}, { prompt_file: true }] },`,
         '  },',
         '  cli_health_checks: {',
         `    mainfake: ${JSON.stringify(`${shellQuote(process.execPath)} ${shellQuote(healthPath)} mainfake`)},`,
+        `    plannerfake: ${JSON.stringify(`${shellQuote(process.execPath)} ${shellQuote(healthPath)} plannerfake`)},`,
         `    reviewfake: ${JSON.stringify(`${shellQuote(process.execPath)} ${shellQuote(healthPath)} reviewfake`)},`,
         '  },',
         '};',
@@ -182,11 +185,15 @@ describe('preflight CLI', () => {
       const result = runPreflight(tmp, ['--skip-auth', '--timeout', '1000']);
 
       assert.strictEqual(result.status, 0, result.stderr);
+      assert.match(result.stdout, /Planner CLI:/);
+      assert.match(result.stdout, /plannerfake:/);
       assert.match(result.stdout, /Plan reviewer CLI\(s\):/);
       assert.match(result.stdout, /architecture \(reviewfake\):/);
       assert.match(result.stdout, /reviewer override review-model via --model/);
       assert.match(result.stdout, /template args --json/);
-      assert.match(result.stdout, /Preflight: checking 2 CLI\(s\) .*mainfake, reviewfake/);
+      assert.match(result.stdout, /Preflight: checking 3 CLI\(s\) .*mainfake, plannerfake, reviewfake/);
+      assert.match(result.stdout, /plannerfake \(install\): plannerfake-health/);
+      assert.match(result.stdout, /plannerfake \(template\): argv mode/);
       assert.match(result.stdout, /reviewfake \(install\): reviewfake-health/);
       assert.match(result.stdout, /reviewfake \(template\): argv mode/);
     } finally {

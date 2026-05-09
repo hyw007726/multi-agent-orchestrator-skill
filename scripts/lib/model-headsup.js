@@ -58,6 +58,7 @@ function summarizeCliModel(cli, template) {
 function formatModelHeadsUp(config, options = {}) {
   const workerClis = unique(options.workerClis || [config.default_cli]);
   const orchestratorCli = options.orchestratorCli || config.orchestrator_cli;
+  const plannerCli = options.plannerCli || config.planner_cli;
   const reviewers = Array.isArray(options.reviewers)
     ? options.reviewers
     : (Array.isArray(config.reviewers) ? config.reviewers : []);
@@ -78,6 +79,15 @@ function formatModelHeadsUp(config, options = {}) {
     lines.push(...formatCliLines(orchestratorCli, config));
   }
 
+  if (plannerCli && plannerCli === orchestratorCli) {
+    lines.push(`  Planner CLI: same as orchestrator CLI (${plannerCli})`);
+  } else if (plannerCli && workerClis.includes(plannerCli)) {
+    lines.push(`  Planner CLI: same as worker CLI (${plannerCli})`);
+  } else if (plannerCli) {
+    lines.push("  Planner CLI:");
+    lines.push(...formatCliLines(plannerCli, config));
+  }
+
   if (reviewers.length > 0) {
     lines.push("  Plan reviewer CLI(s):");
     for (const reviewer of reviewers) {
@@ -88,6 +98,7 @@ function formatModelHeadsUp(config, options = {}) {
   const extraClis = checkedClis.filter((cli) => (
     !workerClis.includes(cli) &&
     cli !== orchestratorCli &&
+    cli !== plannerCli &&
     !reviewerClis.includes(cli)
   ));
   if (extraClis.length > 0) {

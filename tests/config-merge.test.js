@@ -19,6 +19,7 @@ describe('config merging', () => {
 
     assert.strictEqual(config.default_cli, 'kilo');
     assert.strictEqual(config.orchestrator_cli, 'kilo');
+    assert.strictEqual(config.planner_cli, 'kilo');
     assert.strictEqual(config.default_timeout_mins, 10);
     assert.strictEqual(config.default_progress_timeout_mins, 15);
     assert.strictEqual(config.default_max_restarts, 3);
@@ -61,6 +62,7 @@ describe('config merging', () => {
         'module.exports = {',
         '  default_cli: "aider",',
         '  orchestrator_cli: "gemini",',
+        '  planner_cli: "claude",',
         '  default_timeout_mins: 20,',
         '  default_progress_timeout_mins: 30,',
         '  default_max_restarts: 5,',
@@ -80,6 +82,7 @@ describe('config merging', () => {
 
     assert.strictEqual(config.default_cli, 'aider');
     assert.strictEqual(config.orchestrator_cli, 'gemini');
+    assert.strictEqual(config.planner_cli, 'claude');
     assert.strictEqual(config.default_timeout_mins, 20);
     assert.strictEqual(config.default_progress_timeout_mins, 30);
     assert.strictEqual(config.default_max_restarts, 5);
@@ -153,7 +156,7 @@ describe('config merging', () => {
     assert.ok(config.cli_health_checks.opencode, 'opencode health check should still exist from defaults');
   });
 
-  it('uses default_cli as the orchestrator_cli when no explicit orchestrator_cli is set', () => {
+  it('uses default_cli as the orchestrator_cli and planner_cli when no explicit role CLIs are set', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
     let config;
     try {
@@ -176,6 +179,7 @@ describe('config merging', () => {
 
     // Unspecified orchestrator_cli follows the worker CLI.
     assert.strictEqual(config.orchestrator_cli, 'codex');
+    assert.strictEqual(config.planner_cli, 'codex');
     assert.strictEqual(config.default_timeout_mins, 10);
     assert.strictEqual(config.default_max_restarts, 3);
     assert.strictEqual(config.orchestrator_failure_threshold, 5);
@@ -187,6 +191,28 @@ describe('config merging', () => {
     // Templates and health checks should still have full defaults.
     assert.ok(config.cli_templates.kilo && config.cli_templates.kilo.includes('kilo'));
     assert.ok(config.cli_health_checks.kilo && config.cli_health_checks.kilo.includes('kilo'));
+  });
+
+  it('uses orchestrator_cli as planner_cli when planner_cli is not explicit', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+    let config;
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  default_cli: "kilo",',
+        '  orchestrator_cli: "claude",',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
+      config = loadConfig(tmpDir);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    assert.strictEqual(config.default_cli, 'kilo');
+    assert.strictEqual(config.orchestrator_cli, 'claude');
+    assert.strictEqual(config.planner_cli, 'claude');
   });
 
   it('ignores non-standard keys in the config file', () => {
