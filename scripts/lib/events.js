@@ -17,6 +17,8 @@ const VALID_EVENTS = new Set([
   "signal_sent",
   "process_exited",
   "validation_failed",
+  "progress_timeout_requested",
+  "heartbeat_grace_used",
   "restart_scheduled",
   "restart_aborted",
   "agent_completed",

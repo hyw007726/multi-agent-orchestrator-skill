@@ -82,6 +82,269 @@ describe('orchestrator loop failure paths', () => {
     }
   });
 
+  it('converts progress timeout into a synthetic arbitration request', () => {
+    let project;
+    try {
+      project = createTempProject('progress-timeout-');
+      const cliPath = writeScript(project.root, 'progress-cli.js', [
+        'const fs = require("node:fs");',
+        'const path = require("node:path");',
+        'const promptFile = process.argv[2];',
+        'const prompt = promptFile ? fs.readFileSync(promptFile, "utf-8") : "";',
+        'const agentName = "agent-progress";',
+        'if (prompt.includes("This agent is stuck.")) {',
+        '  fs.writeFileSync(path.join(process.cwd(), "unexpected-ai-review.txt"), prompt, "utf-8");',
+        '  process.exit(2);',
+        '}',
+        'if (prompt.includes("reviewing the completed output")) { console.log("Progress timeout summary."); process.exit(0); }',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  const requests = parseRequests(prompt);',
+        '  const approved = requests.map((r) => ({ request_id: r.request_id, decision: "approved " + r.type, reason: "test arbitration" }));',
+        '  const actions = requests.map((r) => r.type === "progress_timeout"',
+        '    ? ({ type: "soft_restart", agent: r.agent, instruction: r.suggested_instruction || "deterministic restart" })',
+        '    : ({ type: "end_agent", agent: r.agent }));',
+        '  console.log(JSON.stringify({ approved, rejected: [], actions }));',
+        '  process.exit(0);',
+        '}',
+        'if (prompt.includes("## Restart Instruction")) {',
+        '  fs.writeFileSync("recovered.txt", "made progress after deterministic timeout\\n", "utf-8");',
+        '  writeHeartbeat("done", "Recovered after progress timeout.");',
+        '  stageRequest({',
+        '    request_id: agentName + "-done",',
+        '    agent: agentName,',
+        '    type: "review_request",',
+        '    priority: "medium",',
+        '    status: "pending",',
+        '    content: "Progress timeout recovery completed.",',
+        '    created_at: new Date().toISOString()',
+        '  });',
+        '  setTimeout(() => process.exit(0), 50);',
+        '} else {',
+        '  writeHeartbeat("reading", "Inspecting context before making changes.");',
+        '  setInterval(() => console.log("still thinking without changing files"), 50);',
+        '}',
+        'process.on("SIGTERM", () => process.exit(0));',
+        'function stageRequest(request) {',
+        '  const requestsDir = path.join("coord", "requests");',
+        '  fs.mkdirSync(requestsDir, { recursive: true });',
+        '  const tmpFile = path.join(requestsDir, request.request_id + ".tmp");',
+        '  const finalFile = path.join(requestsDir, request.request_id + ".json");',
+        '  fs.writeFileSync(tmpFile, JSON.stringify(request) + "\\n", "utf-8");',
+        '  fs.renameSync(tmpFile, finalFile);',
+        '}',
+        'function writeHeartbeat(phase, summary) {',
+        '  const progressDir = path.join("coord", "progress");',
+        '  fs.mkdirSync(progressDir, { recursive: true });',
+        '  const heartbeat = { agent: agentName, phase, summary, last_action: summary, blocker: "", updated_at: new Date().toISOString() };',
+        '  const tmpFile = path.join(progressDir, agentName + ".tmp");',
+        '  const finalFile = path.join(progressDir, agentName + ".json");',
+        '  fs.writeFileSync(tmpFile, JSON.stringify(heartbeat) + "\\n", "utf-8");',
+        '  fs.renameSync(tmpFile, finalFile);',
+        '}',
+        'function parseRequests(value) {',
+        '  const start = value.indexOf("## New Requests from Agents");',
+        '  const end = value.indexOf("## Your Responsibilities");',
+        '  const section = value.slice(start, end === -1 ? undefined : end);',
+        '  const match = section.match(/\\[[\\s\\S]*\\]/);',
+        '  return match ? JSON.parse(match[0]) : [];',
+        '}',
+      ]);
+      writeProjectConfig(project.root, cliPath, 'progressfake');
+      bootstrapProject(project.root, 'Progress timeout test project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.tasks = {
+        'agent-progress': {
+          description: 'Test synthetic progress-timeout arbitration.',
+          cli: 'progressfake',
+          read_first: ['README.md'],
+          allowed_paths: ['*.txt'],
+          forbidden_paths: ['package.json'],
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2), 'utf-8');
+
+      addKiloWorktree(project.root, 'agent-progress');
+
+      const promptFile = path.join(project.root, 'worker-prompt.txt');
+      fs.writeFileSync(promptFile, 'Start the agent without changing files.', 'utf-8');
+      const spawnResult = spawnSync(process.execPath, [
+        path.join(repoRoot(), 'scripts', 'spawn-agent.js'),
+        '--agent',
+        'agent-progress',
+        '--prompt-file',
+        promptFile,
+        '--coord',
+        './coord',
+        '--cli',
+        'progressfake',
+        '--progress-timeout',
+        '-1',
+      ], { cwd: project.root, encoding: 'utf-8' });
+      assert.strictEqual(spawnResult.status, 0, spawnResult.stderr);
+
+      const result = runLoop(project.root);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.strictEqual(fs.existsSync(path.join(project.root, 'unexpected-ai-review.txt')), false);
+
+      const agents = readJson(path.join(project.root, 'coord', 'agents.json'));
+      assert.strictEqual(agents['agent-progress'].status, 'completed');
+      assert.strictEqual(agents['agent-progress'].restart_count, 1);
+
+      const requests = readJsonl(path.join(project.root, 'coord', 'requests.jsonl'));
+      const timeoutRequest = requests.find((request) => request.type === 'progress_timeout');
+      assert.ok(timeoutRequest, 'expected a synthetic progress_timeout request');
+      assert.strictEqual(timeoutRequest.status, 'resolved');
+      assert.strictEqual(timeoutRequest.source, 'orchestrator-loop');
+      assert.strictEqual(timeoutRequest.escalation_level, 'first_timeout');
+      assert.strictEqual(timeoutRequest.progress_timeout_count, 1);
+      assert.strictEqual(timeoutRequest.suggested_action, 'soft_restart');
+      assert.match(timeoutRequest.content, /Suggested instruction/);
+      assert.match(timeoutRequest.content, /Progress heartbeat/);
+      assert.match(timeoutRequest.content, /"phase": "reading"/);
+      assert.match(timeoutRequest.content, /Last 50 log lines/);
+
+      const log = fs.readFileSync(path.join(project.root, 'coord', 'orchestrator.log'), 'utf-8');
+      assert.match(log, /Writing progress-timeout request for arbitration/);
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
+  it('escalates repeated progress timeouts to a hard-restart candidate', () => {
+    let project;
+    try {
+      project = createTempProject('progress-ladder-');
+      const cliPath = writeScript(project.root, 'ladder-cli.js', [
+        'const fs = require("node:fs");',
+        'const path = require("node:path");',
+        'const promptFile = process.argv[2];',
+        'const prompt = promptFile ? fs.readFileSync(promptFile, "utf-8") : "";',
+        'const agentName = "agent-ladder";',
+        'if (prompt.includes("reviewing the completed output")) { console.log("Progress ladder summary."); process.exit(0); }',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  const requests = parseRequests(prompt);',
+        '  const approved = requests.map((r) => ({ request_id: r.request_id, decision: "approved " + r.type, reason: "ladder test" }));',
+        '  const actions = requests.map((r) => {',
+        '    if (r.type === "progress_timeout") return { type: r.suggested_action === "hard_restart" ? "hard_restart" : "soft_restart", agent: r.agent, instruction: r.suggested_instruction };',
+        '    return { type: "end_agent", agent: r.agent };',
+        '  });',
+        '  console.log(JSON.stringify({ approved, rejected: [], actions }));',
+        '  process.exit(0);',
+        '}',
+        'if (prompt.includes("## Restart Instruction")) {',
+        '  fs.writeFileSync("ladder-recovered.txt", "made progress after escalated restart\\n", "utf-8");',
+        '  stageRequest({',
+        '    request_id: agentName + "-done",',
+        '    agent: agentName,',
+        '    type: "review_request",',
+        '    priority: "medium",',
+        '    status: "pending",',
+        '    content: "Progress ladder recovery completed.",',
+        '    created_at: new Date().toISOString()',
+        '  });',
+        '  setTimeout(() => process.exit(0), 50);',
+        '} else {',
+        '  setInterval(() => console.log("still looping before ladder escalation"), 50);',
+        '}',
+        'process.on("SIGTERM", () => process.exit(0));',
+        'function stageRequest(request) {',
+        '  const requestsDir = path.join("coord", "requests");',
+        '  fs.mkdirSync(requestsDir, { recursive: true });',
+        '  const tmpFile = path.join(requestsDir, request.request_id + ".tmp");',
+        '  const finalFile = path.join(requestsDir, request.request_id + ".json");',
+        '  fs.writeFileSync(tmpFile, JSON.stringify(request) + "\\n", "utf-8");',
+        '  fs.renameSync(tmpFile, finalFile);',
+        '}',
+        'function parseRequests(value) {',
+        '  const start = value.indexOf("## New Requests from Agents");',
+        '  const end = value.indexOf("## Your Responsibilities");',
+        '  const section = value.slice(start, end === -1 ? undefined : end);',
+        '  const match = section.match(/\\[[\\s\\S]*\\]/);',
+        '  return match ? JSON.parse(match[0]) : [];',
+        '}',
+      ]);
+      writeProjectConfig(project.root, cliPath, 'ladderfake');
+      bootstrapProject(project.root, 'Progress ladder test project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.tasks = {
+        'agent-ladder': {
+          description: 'Test repeated progress timeout escalation.',
+          cli: 'ladderfake',
+          allowed_paths: ['*.txt'],
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2), 'utf-8');
+
+      writeRequests(project.root, [
+        {
+          request_id: 'progress-timeout-agent-ladder-old-1',
+          agent: 'agent-ladder',
+          type: 'progress_timeout',
+          priority: 'high',
+          status: 'resolved',
+          content: 'Historical timeout 1.',
+          created_at: new Date().toISOString(),
+        },
+        {
+          request_id: 'progress-timeout-agent-ladder-old-2',
+          agent: 'agent-ladder',
+          type: 'progress_timeout',
+          priority: 'high',
+          status: 'resolved',
+          content: 'Historical timeout 2.',
+          created_at: new Date().toISOString(),
+        },
+      ]);
+
+      addKiloWorktree(project.root, 'agent-ladder');
+
+      const promptFile = path.join(project.root, 'worker-prompt.txt');
+      fs.writeFileSync(promptFile, 'Start the agent without changing files.', 'utf-8');
+      const spawnResult = spawnSync(process.execPath, [
+        path.join(repoRoot(), 'scripts', 'spawn-agent.js'),
+        '--agent',
+        'agent-ladder',
+        '--prompt-file',
+        promptFile,
+        '--coord',
+        './coord',
+        '--cli',
+        'ladderfake',
+        '--progress-timeout',
+        '-1',
+      ], { cwd: project.root, encoding: 'utf-8' });
+      assert.strictEqual(spawnResult.status, 0, spawnResult.stderr);
+
+      const result = runLoop(project.root);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      const agents = readJson(path.join(project.root, 'coord', 'agents.json'));
+      assert.strictEqual(agents['agent-ladder'].status, 'completed');
+      assert.strictEqual(agents['agent-ladder'].restart_count, 1);
+
+      const requests = readJsonl(path.join(project.root, 'coord', 'requests.jsonl'));
+      const freshTimeout = requests.find((request) =>
+        request.type === 'progress_timeout' &&
+        request.agent === 'agent-ladder' &&
+        request.status === 'resolved' &&
+        request.source === 'orchestrator-loop'
+      );
+      assert.ok(freshTimeout, 'expected a new progress_timeout request');
+      assert.strictEqual(freshTimeout.previous_progress_timeouts, 2);
+      assert.strictEqual(freshTimeout.progress_timeout_count, 3);
+      assert.strictEqual(freshTimeout.escalation_level, 'hard_restart_candidate');
+      assert.strictEqual(freshTimeout.suggested_action, 'hard_restart');
+      assert.match(freshTimeout.content, /Escalation rationale/);
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
   it('surfaces repeated orchestrator CLI failures and clears the stalled flag after recovery', () => {
     let project;
     try {

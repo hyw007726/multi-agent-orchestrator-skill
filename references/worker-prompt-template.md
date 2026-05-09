@@ -57,6 +57,16 @@ Specific assignment: {ASSIGNED_TASK}
 Start Here: {READ_FIRST_LIST}
 Worktree path: {WORKTREE_PATH}
 
+## Progress Heartbeat
+Write optional progress heartbeats to `coord/progress/{AGENT_NAME}.json` so the orchestrator can distinguish expected non-editing work from suspicious no-diff stalls. This is advisory only; it does not replace review requests or completion requests.
+
+Update the heartbeat at startup, before/after long reading or test/build phases, and whenever you become blocked. The orchestrator uses the file's wall-clock modification time; do not rely on your own perception of elapsed time.
+
+Write atomically: create `coord/progress/{AGENT_NAME}.tmp`, then rename it to `coord/progress/{AGENT_NAME}.json`.
+
+Example content:
+{"agent":"{AGENT_NAME}","phase":"reading|planning|editing|testing|blocked|waiting|done","summary":"Short current state","last_action":"Most recent concrete action","blocker":"","updated_at":"<ISO-timestamp>"}
+
 ## Path Restrictions
 - **ALLOWED PATHS**: {ALLOWED_PATHS_LIST} (You may freely create/edit files here)
 - **FORBIDDEN PATHS**: {FORBIDDEN_PATHS_LIST} (e.g. package.json, shared types, configurations. Assume the orchestrator has already handled these. Do not touch them.)

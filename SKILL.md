@@ -28,11 +28,11 @@ The runtime itself is independent of the caller. The caller only performs decomp
 >
 > 1. **Initial Decomposition (Interactive Session):** Your active orchestrator session acts as the primary architect. It analyzes the task, breaks it into non-overlapping boundaries, writes the `coord/context.json`, and spawns the background agents.
 > 2. **The Background Orchestrator Loop (Headless Script):** Once launched, the background loop has **no access to your chat history**. It splits its LLM work across two CLI roles:
->     - **Request arbitration** (cross-cutting decisions over pending requests, plus `end_agent` / `soft_restart` / `hard_restart` actions) is invoked through the **`orchestrator_cli`**. If omitted, it follows `default_cli`, so no caller is forced to have Claude installed. Arbitration benefits from a stronger reasoning model when conflicts and architectural trade-offs are complex.
->     - **Triggered AI-Review** (the 1-sentence course-correction sent when an agent stalls) and the **final review summary** in Phase 5 are invoked through the **Worker CLI** (`default_cli`). These are narrow, single-turn calls that stay cheap.
+>     - **Request arbitration** (cross-cutting decisions over pending requests, synthetic `progress_timeout` requests, plus `end_agent` / `soft_restart` / `hard_restart` actions) is invoked through the **`orchestrator_cli`**. If omitted, it follows `default_cli`, so no caller is forced to have Claude installed. Arbitration benefits from a stronger reasoning model when conflicts and architectural trade-offs are complex.
+>     - **Final review summary** in Phase 5 is invoked through the **Worker CLI** (`default_cli`). This is a narrow, single-turn handoff call that stays cheap.
 > 3. **Final Integration (Interactive Session):** After the background loop completes, you return to a high-tier Orchestrator session to act as the integrator, reviewing the completed worktrees and safely merging them.
 >
-> **Model Selection Strategy:** Use a powerful reasoning model for your interactive orchestrator sessions (Contexts 1 & 3). Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for the bulk coding and the cheap monitor calls. Set `orchestrator_cli` only when request arbitration should use a different CLI/model from the workers.
+> **Model Selection Strategy:** Use a powerful reasoning model for your interactive orchestrator sessions (Contexts 1 & 3). Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for the bulk coding and final summary call. Set `orchestrator_cli` only when request arbitration should use a different CLI/model from the workers.
 >
 > **How to pin a model:** Two patterns depending on the CLI.
 > - **Inline-flag CLIs** (claude, aider, gemini): model selection is part of `cli_templates`. Prefer structured argv templates and add the CLI's model flag in `args` — e.g. `{ cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] }` for Sonnet, or add `--model gpt-4o-mini` to the Aider args.
@@ -48,14 +48,14 @@ The runtime itself is independent of the caller. The caller only performs decomp
 Before beginning Phase 1, you MUST check if an `orchestrator.config.js` file exists in the project root. This file acts as the dynamic source of truth for the user's preferences.
 
 If it exists, read it to determine:
-- **`default_cli`**: The Worker CLI to use for spawning agents and for the cheap AI-Review / final-summary calls.
+- **`default_cli`**: The Worker CLI to use for spawning agents and for the final-summary call.
 - **`orchestrator_cli`**: Optional CLI used by the background loop for request arbitration. If omitted, it follows `default_cli`. Set this independently from `default_cli` only when you want arbitration to use a different CLI/model than your workers.
-- **`cli_templates`**: The template definitions used to spawn worker CLIs. Prefer structured `{ cmd, args }` entries so they run with `shell:false`; keep string templates when you intentionally need shell behavior. The same templates are reused for `orchestrator_cli` calls and the AI-Review calls, so the system is immune to third-party tool interface changes. **This is also where you pin a model** — add the CLI's model flag (`--model <id>`, `--llm <id>`, etc.) to the template args/string and that model is used for every spawn driven by it.
+- **`cli_templates`**: The template definitions used to spawn worker CLIs. Prefer structured `{ cmd, args }` entries so they run with `shell:false`; keep string templates when you intentionally need shell behavior. The same templates are reused for `orchestrator_cli` calls and final-summary calls, so the system is immune to third-party tool interface changes. **This is also where you pin a model** — add the CLI's model flag (`--model <id>`, `--llm <id>`, etc.) to the template args/string and that model is used for every spawn driven by it.
 - **`reviewers`**: Optional Phase 1.5 read-only plan reviewer CLIs. Each entry has `name`, `cli`, `review_focus`, optional `model`, optional `model_flag`, optional `template_args`, and optional `timeout_mins`. Every reviewer `cli` must have matching `cli_templates.<cli>` and `cli_health_checks.<cli>` entries.
 - **`max_plan_review_iterations`**: `"auto"` by default, or a positive integer. In `"auto"` mode, run at least one review iteration when reviewers are configured, then explicitly decide after reconciliation whether another pass is worth it. Numeric mode means run exactly that many iterations.
 - **`default_timeout_mins`**: The default time before an agent is considered hanging (Liveness).
 - **`default_progress_timeout_mins`**: The default time before an active agent with zero code changes is considered stuck (Progress).
-- **`default_max_restarts`**: The maximum number of times the loop will respawn the same agent before marking it `errored` (defaults to 3). Counted across both validation-failure restarts and AI-Review restarts.
+- **`default_max_restarts`**: The maximum number of times the loop will respawn the same agent before marking it `errored` (defaults to 3). Counted across validation-failure restarts, progress-timeout arbitration restarts, and explicit arbitrator restarts.
 - **`orchestrator_failure_threshold`**: Consecutive arbitration-CLI failures before the loop writes `coord/orchestrator-stalled.flag` (which the dashboard surfaces). Defaults to 5. `claude_failure_threshold` remains accepted as a deprecated alias for existing configs.
 - **`poll_min_ms` / `poll_max_ms`**: Adaptive polling bounds for the orchestrator loop. The loop polls at `poll_min_ms` (default 1000) right after seeing pending requests, then exponentially backs off (×1.5 per idle cycle) up to `poll_max_ms` (default 15000). Pass `--poll-interval <ms>` to the loop to disable the heuristic and force a fixed cadence.
 - **`cli_health_checks`**: Per-CLI probe commands run by `scripts/preflight.js` to fail fast on install / auth issues. Defaults to `<cli> --version` for every supported CLI.
@@ -254,24 +254,25 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/dashboard.js --coord ./coord
 ```
 
 ### Progress Monitoring
-The orchestrator loop doesn't just watch for crashes; it monitors for **actual code progress**. 
+The orchestrator loop doesn't just watch for crashes; it monitors for **actual code progress**.
 - **The "Killer" Timeout (Liveness Detection)**: If an agent stops emitting logs for the configured `timeout_mins` duration, it is assumed hanging, killed, and marked as errored.
-- **The "Reviewer" Timeout (Progress Detection)**: If an agent is active (emitting logs) but fails to accumulate any git commits or unstaged code changes (`git diff --stat`) for the configured `progress_timeout_mins` duration (e.g., 15 minutes), it is assumed to be stuck in a runaway hallucination loop. 
+- **Progress Timeout (Progress Detection)**: If an agent is alive but fails to accumulate any git commits or unstaged code changes (`git diff --stat`) for the configured `progress_timeout_mins` duration (e.g., 15 minutes), the loop writes a synthetic `progress_timeout` request into `coord/requests.jsonl` for normal arbitration.
 
-**Triggered AI Review**: When the Reviewer Timeout trips, the loop does *not* blindly restart the agent. Instead, it extracts the last 50 lines of the stuck agent's logs and spawns a single, stateless, headless LLM call (using the Worker CLI) with a targeted system prompt:
-> *"This agent is stuck. Look at its last 50 lines of logs. What is it failing to understand? Write a 1-sentence instruction I can send it to break it out of this loop."*
+**Progress heartbeat**: Workers may write optional heartbeat files to `coord/progress/<agent>.json` using atomic tmp-file rename. These files can include `phase`, `summary`, `last_action`, `blocker`, and `updated_at`. The loop uses filesystem modification time as the wall-clock signal; models are not expected to perceive elapsed time accurately. A fresh heartbeat in an expected non-editing phase such as `reading`, `planning`, `testing`, `building`, `installing`, or `debugging` can grant one bounded progress grace after the last code change.
 
-The loop then uses this AI-generated instruction as the prompt for the `soft_restart`, ensuring the agent gets intelligent course-correction without the massive token cost of continuous monitoring.
+**Synthetic progress-timeout request**: The generated request includes a deterministic recommended instruction, escalation fields (`escalation_level`, `progress_timeout_count`, `restart_count`, `restarts_remaining`, `suggested_action`), the current task, allowed/forbidden path context, validation command, heartbeat snapshot, diff/progress snapshot, and the last 50 log lines. The existing `orchestrator_cli` arbitration path decides whether to `soft_restart`, `hard_restart`, wait, or reject for manual inspection. This avoids a separate one-off review LLM call while keeping stall handling in the same decision log as worker questions.
+
+**Escalation ladder**: The first progress timeout recommends a deterministic `soft_restart`; the second recommends a stronger `soft_restart`; the third and later timeouts recommend `hard_restart` unless a recovery tag already exists or the restart budget is exhausted, in which case the request recommends manual inspection. The arbitrator still makes the final decision.
 
 ### Action Types
 
 | Action | Effect |
 |--------|--------|
 | `end_agent` | Orchestrator loop runs the agent's `validation_command` (if configured) inside its worktree. If it **passes**, it sends SIGTERM and marks it `"completed"`. If it **fails**, the loop automatically triggers a `soft_restart`, packaging the stderr/stdout back to the agent with instructions to fix its code. |
-| `soft_restart` | Orchestrator loop kills the rogue process, creates a `WIP` commit to preserve uncommitted work, and respawns the agent with new `instruction`s (e.g., test failure logs or the course-correction instruction generated by the Triggered AI Review) so it can correct its course. |
+| `soft_restart` | Orchestrator loop kills the rogue process, creates a `WIP` commit to preserve uncommitted work, and respawns the agent with new `instruction`s (e.g., test failure logs or an instruction approved during progress-timeout arbitration) so it can correct its course. |
 | `hard_restart` | Orchestrator loop kills the process, captures any uncommitted+untracked work as a `recovery/<agent>/<timestamp>` git tag, then resets the worktree clean and respawns the agent. The tag preserves the wiped state so it can be inspected with `git show <tag>` or recovered later. Useful for escaping hallucination loops. |
 
-**Restart cap:** Every restart (soft or hard, whether triggered by validation failure, the AI-Review course-correction, or an orchestrator action) increments the agent's `restart_count`. Once it exceeds `default_max_restarts` (default 3), the loop stops respawning the agent and marks it `errored` so failures can't thrash forever.
+**Restart cap:** Every restart (soft or hard, whether triggered by validation failure, progress-timeout arbitration, or an orchestrator action) increments the agent's `restart_count`. Once it exceeds `default_max_restarts` (default 3), the loop stops respawning the agent and marks it `errored` so failures can't thrash forever.
 
 **PID/process-group safety:** Before sending any signal the loop validates that the stored PID still matches the spawned worker CLI's command line (POSIX `ps`). If the PID has been recycled to an unrelated process, the signal is skipped. On POSIX the worker is launched as a detached process group, so stops/restarts signal the whole group rather than only the wrapper PID.
 

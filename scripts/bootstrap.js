@@ -81,6 +81,7 @@ function runBootstrap() {
   fs.writeFileSync(path.join(coordDir, "DECISIONS.md"), decisionsMd);
   fs.writeFileSync(path.join(coordDir, "requests.jsonl"), "");
   fs.mkdirSync(path.join(coordDir, "requests"), { recursive: true });
+  fs.mkdirSync(path.join(coordDir, "progress"), { recursive: true });
   fs.writeFileSync(path.join(coordDir, "agents.json"), "{}\n");
 
   const gitignorePath = path.join(process.cwd(), ".gitignore");

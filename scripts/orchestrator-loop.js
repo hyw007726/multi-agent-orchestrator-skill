@@ -13,6 +13,7 @@ const { appendEvent } = require("./lib/events");
 const { cliTemplateMode, spawnCliTemplateSync } = require("./lib/cli-template");
 
 const RECENT_DECISION_LIMIT = 30;
+const HEARTBEAT_GRACE_PHASES = new Set(["starting", "reading", "planning", "testing", "running_tests", "building", "installing", "debugging"]);
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
@@ -90,7 +91,7 @@ async function runLoop() {
       // ── Per-agent liveness + progress checks ─────────────────────────────
       // Snapshot read for diagnostics; each actual mutation takes its own lock.
       const snapshot = readJSON(paths.agents);
-      const allRequests = readJSONL(paths.requests);
+      let allRequests = readJSONL(paths.requests);
 
       for (const name in snapshot) {
         if (snapshot[name].status !== "running") continue;
@@ -156,32 +157,68 @@ async function runLoop() {
           continue;
         }
 
-        // Progress ("Reviewer") timeout: log output present but no code change.
+        // Progress timeout: process is alive, but git-visible work is not changing.
         const progressMins = agent.progress_timeout_mins || parsedConfig.default_progress_timeout_mins;
         const currentDiff = readDiffSnapshot(agent.worktree);
+        const heartbeat = readProgressHeartbeat(paths.progressDir, name);
         const tracker = agentProgress[name];
         if (!tracker) {
-          agentProgress[name] = { last_diff: currentDiff, last_progress_time: Date.now() };
+          agentProgress[name] = {
+            last_diff: currentDiff,
+            last_progress_time: Date.now(),
+            last_heartbeat_mtime: heartbeat.mtimeMs || 0,
+            heartbeat_grace_count: 0,
+          };
         } else if (tracker.last_diff !== currentDiff) {
           tracker.last_diff = currentDiff;
           tracker.last_progress_time = Date.now();
-        } else if (Date.now() - tracker.last_progress_time > progressMins * 60 * 1000) {
-          log(`Agent ${name} stuck for ${progressMins} mins (no code changes). Triggering AI Review.`);
-          const tailLines = readTail(logFile, 50);
-          const reviewInstruction = generateAiReviewInstruction(tailLines, parsedConfig, log);
-          log(`AI Review fix: ${reviewInstruction}`);
+          tracker.last_heartbeat_mtime = heartbeat.mtimeMs || tracker.last_heartbeat_mtime || 0;
+          tracker.heartbeat_grace_count = 0;
+        } else {
+          if (heartbeatChanged(heartbeat, tracker)) {
+            tracker.last_heartbeat_mtime = heartbeat.mtimeMs;
+            if (shouldGrantHeartbeatGrace(heartbeat, tracker)) {
+              tracker.last_progress_time = Date.now();
+              tracker.heartbeat_grace_count += 1;
+              log(`Agent ${name} heartbeat updated in phase '${heartbeat.phase || "(unknown)"}'; granting one bounded progress grace.`);
+              appendEvent(config.coordDir, "heartbeat_grace_used", {
+                agent: name,
+                reason: `phase ${heartbeat.phase || "(unknown)"}`,
+                data: { heartbeat_mtime: heartbeat.mtime, grace_count: tracker.heartbeat_grace_count },
+              });
+              continue;
+            }
+          }
 
-          const restarted = bumpRestartAndRespawn({
-            name,
-            instruction: reviewInstruction,
-            reason: "progress timeout",
-            paths,
-            parsedConfig,
-            mode: "soft",
-            log,
-          });
-          if (restarted) tracker.last_progress_time = Date.now();
-          continue;
+          if (Date.now() - tracker.last_progress_time > progressMins * 60 * 1000) {
+            if (hasPendingProgressTimeoutRequest(allRequests, name)) {
+              tracker.last_progress_time = Date.now();
+              log(`Agent ${name} still has a pending progress-timeout request; waiting for arbitration.`);
+              continue;
+            }
+
+            log(`Agent ${name} stuck for ${progressMins} mins (no code changes). Writing progress-timeout request for arbitration.`);
+            const request = buildProgressTimeoutRequest({
+              agentName: name,
+              agent,
+              progressMins,
+              logFile,
+              diffSnapshot: currentDiff,
+              heartbeat,
+              paths,
+              allRequests,
+              parsedConfig,
+            });
+            appendJSONL(paths.requests, [request]);
+            appendEvent(config.coordDir, "progress_timeout_requested", {
+              agent: name,
+              reason: `no git-visible changes for ${progressMins} minute(s)`,
+              data: { request_id: request.request_id, type: request.type, source: request.source },
+            });
+            tracker.last_progress_time = Date.now();
+            allRequests = readJSONL(paths.requests);
+            continue;
+          }
         }
       }
 
@@ -619,6 +656,7 @@ function getPaths(coordDir) {
     decisionsMd: path.join(coordDir, "DECISIONS.md"),
     context: path.join(coordDir, "context.json"),
     agents: path.join(coordDir, "agents.json"),
+    progressDir: path.join(coordDir, "progress"),
   };
 }
 
@@ -643,6 +681,231 @@ function readRecentDecisions(decisionsPath) {
   const decisions = readJSON(decisionsPath);
   if (!Array.isArray(decisions)) return [];
   return decisions.slice(-RECENT_DECISION_LIMIT);
+}
+
+function hasPendingProgressTimeoutRequest(requests, agentName) {
+  return requests.some((request) =>
+    request &&
+    request.agent === agentName &&
+    request.type === "progress_timeout" &&
+    request.status === "pending"
+  );
+}
+
+function buildProgressTimeoutRequest({ agentName, agent, progressMins, logFile, diffSnapshot, heartbeat, paths, allRequests, parsedConfig }) {
+  const task = readTaskContext(paths.context, agentName);
+  const history = progressTimeoutHistory(allRequests, agentName);
+  const escalation = buildProgressEscalation({
+    previousProgressTimeouts: history.previousCount,
+    restartCount: agent.restart_count || 0,
+    maxRestarts: parsedConfig.default_max_restarts,
+    hasRecoveryTag: Boolean(agent.recovery_tag),
+    progressMins,
+  });
+  const tailLines = readTail(logFile, 50).trim();
+  const validateCmd = agent.validate_cmd === undefined ? null : agent.validate_cmd;
+
+  const content = [
+    `The orchestrator loop detected a progress timeout for ${agentName}.`,
+    `No git-visible changes were observed for ${progressMins} minute(s) while the process remained alive.`,
+    `Escalation level: ${escalation.level}`,
+    `Progress timeout count for this agent: ${history.timeoutCount}`,
+    `Current restart_count: ${agent.restart_count || 0}; restart budget remaining: ${escalation.restartsRemaining}`,
+    `Suggested action: ${escalation.suggestedAction}`,
+    `Suggested instruction:\n${escalation.instruction}`,
+    `Escalation rationale:\n${escalation.rationale}`,
+    `Current agent task:\n${agent.task || task?.description || "(unknown)"}`,
+    `Original task description:\n${task?.description || "(not available)"}`,
+    `Allowed paths: ${formatList(task?.allowed_paths)}`,
+    `Forbidden paths: ${formatList(task?.forbidden_paths)}`,
+    `Validation command: ${JSON.stringify(validateCmd)}`,
+    `Progress heartbeat:\n${formatHeartbeatForRequest(heartbeat)}`,
+    `Current diff/progress snapshot:\n${diffSnapshot.trim() || "(no git-visible changes)"}`,
+    `Last 50 log lines:\n${tailLines || "(no log lines captured)"}`,
+    "Decide whether to follow the suggested action, wait, choose another restart mode, or reject for manual inspection.",
+  ].join("\n\n");
+
+  return {
+    request_id: `progress-timeout-${agentName}-${Date.now()}`,
+    agent: agentName,
+    type: "progress_timeout",
+    priority: "high",
+    content,
+    status: "pending",
+    created_at: new Date().toISOString(),
+    source: "orchestrator-loop",
+    escalation_level: escalation.level,
+    previous_progress_timeouts: history.previousCount,
+    progress_timeout_count: history.timeoutCount,
+    restart_count: agent.restart_count || 0,
+    restarts_remaining: escalation.restartsRemaining,
+    suggested_action: escalation.suggestedAction,
+    suggested_instruction: escalation.instruction,
+  };
+}
+
+function progressTimeoutHistory(requests, agentName) {
+  const previousCount = requests.filter((request) =>
+    request &&
+    request.agent === agentName &&
+    request.type === "progress_timeout"
+  ).length;
+  return { previousCount, timeoutCount: previousCount + 1 };
+}
+
+function buildProgressEscalation({ previousProgressTimeouts, restartCount, maxRestarts, hasRecoveryTag, progressMins }) {
+  const timeoutCount = previousProgressTimeouts + 1;
+  const restartsRemaining = Math.max((maxRestarts || 0) - restartCount, 0);
+  const baseInstruction = buildDeterministicProgressInstruction(progressMins);
+
+  if (restartsRemaining === 0) {
+    return {
+      level: "restart_budget_exhausted",
+      suggestedAction: "manual_inspection",
+      instruction: baseInstruction,
+      rationale: "The agent has no restart budget remaining. Prefer manual inspection or allow the restart cap to mark the agent errored instead of scheduling another respawn.",
+      restartsRemaining,
+    };
+  }
+
+  if (timeoutCount === 1) {
+    return {
+      level: "first_timeout",
+      suggestedAction: "soft_restart",
+      instruction: baseInstruction,
+      rationale: "First no-progress timeout. Prefer a deterministic soft restart unless heartbeat or logs show the agent should be allowed to continue.",
+      restartsRemaining,
+    };
+  }
+
+  if (timeoutCount === 2) {
+    return {
+      level: "repeated_timeout",
+      suggestedAction: "soft_restart",
+      instruction: `This is your second no-progress timeout. ${baseInstruction}`,
+      rationale: "The agent has already timed out once without git-visible progress. Prefer a stronger soft restart instruction unless the heartbeat clearly explains expected non-editing work.",
+      restartsRemaining,
+    };
+  }
+
+  if (hasRecoveryTag) {
+    return {
+      level: "manual_inspection_after_recovery",
+      suggestedAction: "manual_inspection",
+      instruction: `Repeated progress timeouts continue after a prior hard-restart recovery tag. ${baseInstruction}`,
+      rationale: "A recovery tag already exists, so another destructive reset is less likely to help. Prefer manual inspection unless the current worktree is clearly disposable.",
+      restartsRemaining,
+    };
+  }
+
+  return {
+    level: "hard_restart_candidate",
+    suggestedAction: "hard_restart",
+    instruction: `Repeated progress timeouts indicate the current worktree may be trapped in an unproductive state. Restart from a clean worktree, then ${baseInstruction.charAt(0).toLowerCase()}${baseInstruction.slice(1)}`,
+    rationale: "This is the third or later progress timeout and no recovery tag is recorded yet. A hard restart is now reasonable, while preserving current work in a recovery tag.",
+    restartsRemaining,
+  };
+}
+
+function buildDeterministicProgressInstruction(progressMins) {
+  return [
+    `You have produced no git-visible changes for ${progressMins} minute(s).`,
+    "Re-read coord/DECISIONS.md and coord/context.json, run git status, and inspect your assigned read_first files.",
+    "Then either make a concrete code/test/docs change within your allowed paths, or file a high-priority request explaining the exact blocker with relevant logs and file context.",
+  ].join(" ");
+}
+
+function readTaskContext(contextPath, agentName) {
+  try {
+    const context = readJSON(contextPath);
+    return context.tasks?.[agentName] || null;
+  } catch {
+    return null;
+  }
+}
+
+function readProgressHeartbeat(progressDir, agentName) {
+  const filePath = path.join(progressDir, `${agentName}.json`);
+  if (!fs.existsSync(filePath)) {
+    return { exists: false, path: filePath, mtimeMs: 0 };
+  }
+
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch (err) {
+    return { exists: true, path: filePath, valid: false, error: err.message, mtimeMs: 0 };
+  }
+
+  const base = {
+    exists: true,
+    path: filePath,
+    mtimeMs: stat.mtimeMs,
+    mtime: new Date(stat.mtimeMs).toISOString(),
+    ageMs: Math.max(0, Date.now() - stat.mtimeMs),
+  };
+
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    const phase = normalizeHeartbeatPhase(data.phase || data.status);
+    return {
+      ...base,
+      valid: true,
+      phase,
+      data: limitHeartbeatData(data),
+    };
+  } catch (err) {
+    return { ...base, valid: false, error: err.message };
+  }
+}
+
+function heartbeatChanged(heartbeat, tracker) {
+  return heartbeat.exists && heartbeat.mtimeMs > (tracker.last_heartbeat_mtime || 0);
+}
+
+function shouldGrantHeartbeatGrace(heartbeat, tracker) {
+  if (!heartbeat.valid || !heartbeat.phase) return false;
+  if (!HEARTBEAT_GRACE_PHASES.has(heartbeat.phase)) return false;
+  return (tracker.heartbeat_grace_count || 0) < 1;
+}
+
+function normalizeHeartbeatPhase(value) {
+  if (typeof value !== "string") return "";
+  return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function limitHeartbeatData(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+  const allowed = ["agent", "phase", "status", "summary", "last_action", "blocker", "updated_at"];
+  const out = {};
+  for (const key of allowed) {
+    if (data[key] === undefined) continue;
+    const value = data[key];
+    out[key] = typeof value === "string" ? value.slice(0, 1000) : value;
+  }
+  return out;
+}
+
+function formatHeartbeatForRequest(heartbeat) {
+  if (!heartbeat || !heartbeat.exists) return "(none)";
+  const base = {
+    file_mtime: heartbeat.mtime || null,
+    age_seconds: heartbeat.ageMs === undefined ? null : Math.round(heartbeat.ageMs / 1000),
+  };
+  if (!heartbeat.valid) {
+    return JSON.stringify({ ...base, valid: false, error: heartbeat.error || "invalid heartbeat" }, null, 2);
+  }
+  return JSON.stringify({
+    ...base,
+    valid: true,
+    phase: heartbeat.phase || "",
+    data: heartbeat.data || {},
+  }, null, 2);
+}
+
+function formatList(value) {
+  if (Array.isArray(value) && value.length > 0) return value.join(", ");
+  return "(unspecified)";
 }
 
 function readTextIfExists(filePath) {
@@ -929,6 +1192,8 @@ The loop consolidates those files into coord/requests.jsonl for arbitration.
 - Prevent conflicts between agents working in parallel worktrees
 - Prefer minimal disruption to running sessions
 - Reject unclear requests — ask for clarification rather than guessing
+- Treat \`progress_timeout\` requests as loop-generated diagnostics for agents that are alive but making no git-visible progress; choose whether to \`soft_restart\`, \`hard_restart\`, wait, or reject for manual inspection based on the request context.
+- For \`progress_timeout\` requests, consider \`escalation_level\`, \`suggested_action\`, \`progress_timeout_count\`, \`restart_count\`, \`restarts_remaining\`, and any progress heartbeat before choosing an action.
 - Every request you process MUST be explicitly included in either the \`approved\` or \`rejected\` array. Even if you issue an action like \`end_agent\`, you MUST STILL approve the request that triggered it so it is marked as resolved.
 
 ## Response Format
@@ -1023,39 +1288,6 @@ function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
     }
     return { stdout: "", error: `No cli_templates.${cli} configured for orchestrator_cli.` };
   }
-}
-
-function generateAiReviewInstruction(tailLogs, parsedConfig, log) {
-  const reviewPrompt = `This agent is stuck.
-
-Look at its last 50 lines of logs and identify what it is failing to understand.
-Write exactly one sentence I can send it to break it out of this loop.
-
-## Last 50 Log Lines
-${tailLogs}`;
-  const cli = parsedConfig.default_cli;
-  const template = parsedConfig.cli_templates[cli];
-  const promptFile = path.join(os.tmpdir(), `review-prompt-${Date.now()}.txt`);
-  fs.writeFileSync(promptFile, reviewPrompt, "utf-8");
-  try {
-    if (template) {
-      log(`Triggered AI Review invoking '${cli}' via ${cliTemplateMode(template)} mode...`);
-      const { result } = spawnCliTemplateSync(cli, template, {
-        promptFile,
-        promptText: reviewPrompt,
-        encoding: "utf-8",
-        timeout: 60000,
-      });
-      if (result.stdout?.trim()) return result.stdout.trim();
-    } else {
-      log(`Triggered AI Review skipped: no cli_templates.${cli} configured.`);
-    }
-  } catch (e) {
-    log(`Triggered AI Review failed: ${e.message}`);
-  } finally {
-    try { fs.unlinkSync(promptFile); } catch {}
-  }
-  return "You seem stuck. Please review the logs and continue.";
 }
 
 // ─── Stalled-flag handling ───────────────────────────────────────────────────

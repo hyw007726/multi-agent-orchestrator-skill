@@ -40,7 +40,7 @@ module.exports = {
   // Use {prompt_file} as a placeholder for the generated prompt text file.
   // By centralizing these here you can adapt if a tool changes its CLI flags, and
   // the same template is reused for the worker spawn, the orchestrator-CLI call,
-  // and the AI-Review course-correction call.
+  // and the final review-summary call.
   //
   // Prefer structured argv templates when the CLI accepts a prompt file or prompt
   // argument. They run with shell:false, so prompt paths and extra args are not
@@ -108,7 +108,8 @@ module.exports = {
   // default_progress_timeout_mins: 15,
 
   // Maximum times the loop will respawn the same agent before marking it errored.
-  // Restarts are counted across both validation-failure restarts and AI-Review restarts.
+  // Restarts are counted across validation-failure, progress-timeout, and explicit
+  // soft/hard restart paths.
   // default_max_restarts: 3,
 
   // Base branch for computing agent diffs. Detected automatically from the main

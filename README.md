@@ -13,6 +13,7 @@ Use it from Codex, Gemini CLI, Claude Code, or any local coding agent that can r
 - Keeps durable requirements, shared architecture, contracts, and file ownership in `coord/DECISIONS.md`.
 - Stores compact run context and per-agent task boundaries in `coord/context.json` so the background loop does not need the original chat.
 - Supervises liveness, progress, validation, restarts, and worker questions.
+- Supports optional worker progress heartbeats and converts repeated no-diff stalls into escalating arbitration requests instead of launching a separate review model call.
 - Provides a live terminal dashboard.
 - Produces `coord/review-summary.txt` for final human/agent integration.
 - Supports Kilo Code, Aider, Claude Code, Codex, Gemini CLI, OpenCode, and custom CLIs.
@@ -155,7 +156,7 @@ Most users should let the caller agent run these commands after it has read `SKI
 1. The interactive caller session acts as architect. It chooses the execution topology, decomposes the task, resolves shared foundations, assigns file ownership, records durable decisions, and gives each worker a `read_first` file/path list.
 2. `scripts/bootstrap.js` initializes `coord/`, the state directory shared by the caller, workers, and background loop.
 3. `scripts/launch-all.js` creates one git worktree per agent, renders prompts from `references/worker-prompt-template.md`, spawns workers, and starts the background loop.
-4. `scripts/orchestrator-loop.js` supervises workers. It arbitrates questions, detects hung or stuck workers, restarts within limits, and runs validation commands.
+4. `scripts/orchestrator-loop.js` supervises workers. It arbitrates questions, reads optional progress heartbeats, converts progress timeouts into synthetic arbitration requests, detects hung workers, restarts within limits, and runs validation commands.
 5. When all workers finish, the loop writes `coord/review-summary.txt`.
 6. The interactive caller session reviews diffs, runs final checks, merges approved work, and removes completed worktrees.
 
@@ -167,6 +168,7 @@ Most users should let the caller agent run these commands after it has read `SKI
 | `coord/DECISIONS.md` | Human-readable source of truth for durable requirements, architecture, APIs, ownership, and constraints. |
 | `coord/agents.json` | Current worker state. |
 | `coord/decisions.jsonl` | Arbitration and restart decisions. |
+| `coord/progress/<agent>.json` | Optional worker-written heartbeat with phase, summary, latest action, and blocker context. |
 | `coord/plan-reviews/` | Optional Phase 1.5 draft plans, reviewer streams, parsed reviewer JSON, and caller reconciliations. |
 | `coord/review-summary.txt` | Final handoff summary after workers complete. |
 | `.agents/worktrees/<agent>` | Worker git worktrees for most CLIs. |
