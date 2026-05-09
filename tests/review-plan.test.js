@@ -22,11 +22,13 @@ describe('plan review runner', () => {
         'const prompt = fs.readFileSync(promptFile, "utf-8");',
         'if (!prompt.includes("Do not edit files, create git worktrees, launch workers")) process.exit(4);',
         'if (!prompt.includes("\\"tasks\\"")) process.exit(5);',
+        'if (!prompt.includes("whether `parallel` should really be `phased`")) process.exit(6);',
         'console.error("checking " + reviewer);',
         'process.stdout.write(JSON.stringify({',
         '  iteration: 1,',
         '  reviewer,',
         '  summary: "ok",',
+        '  execution_mode_issues: [],',
         '  blockers: [],',
         '  overlaps: [],',
         '  missing_foundation_work: [],',
@@ -78,7 +80,7 @@ describe('plan review runner', () => {
       const validScript = writeScript(tmp, 'valid.js', [
         'const reviewer = process.argv[2];',
         'process.stdout.write(JSON.stringify({',
-        '  iteration: 1, reviewer, summary: "ok", blockers: [], overlaps: [],',
+        '  iteration: 1, reviewer, summary: "ok", execution_mode_issues: [], blockers: [], overlaps: [],',
         '  missing_foundation_work: [], sequencing_risks: [], validation_gaps: [], suggested_changes: []',
         '}));',
       ]);
@@ -178,7 +180,7 @@ describe('plan review runner', () => {
         'if (!prompt.includes("accepted_feedback")) process.exit(12);',
         'if (!args.includes("--model") || !args.includes("review-model") || !args.includes("--json")) process.exit(13);',
         'process.stdout.write(JSON.stringify({',
-        '  iteration: 2, reviewer, summary: "ok", blockers: [], overlaps: [],',
+        '  iteration: 2, reviewer, summary: "ok", execution_mode_issues: [], blockers: [], overlaps: [],',
         '  missing_foundation_work: [], sequencing_risks: [], validation_gaps: [], suggested_changes: []',
         '}));',
       ]);
@@ -232,7 +234,7 @@ describe('plan review runner', () => {
         'fs.writeFileSync("attempted-write.txt", process.cwd());',
         'if (process.cwd() === process.argv[4]) process.exit(20);',
         'process.stdout.write(JSON.stringify({',
-        '  iteration: 1, reviewer, summary: "ok", blockers: [], overlaps: [],',
+        '  iteration: 1, reviewer, summary: "ok", execution_mode_issues: [], blockers: [], overlaps: [],',
         '  missing_foundation_work: [], sequencing_risks: [], validation_gaps: [], suggested_changes: []',
         '}));',
       ]);

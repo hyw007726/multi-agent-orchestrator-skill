@@ -34,6 +34,11 @@ describe('launch-all smoke test', () => {
 
       const contextPath = path.join(project.root, 'coord', 'context.json');
       const context = readJson(contextPath);
+      context.execution_topology = {
+        execution_mode: 'parallel',
+        reason: 'Fake workers own separate paths.',
+        dependency_notes: [],
+      };
       context.tasks = {
         'agent-alpha': {
           description: 'Fake worker alpha task — produce alpha output',
@@ -143,14 +148,71 @@ describe('launch-all smoke test', () => {
       }
     }
   });
+
+  it('rejects non-launchable or inconsistent execution topologies before spawning workers', () => {
+    let project;
+    try {
+      project = createTempProject('launch-all-topology-');
+      bootstrapProject(project.root, 'Launch-all topology guard project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.tasks = {
+        'agent-unneeded': {
+          description: 'This should not launch',
+          validation_command: null,
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2));
+
+      const launchScript = path.join(repoRoot(), 'scripts', 'launch-all.js');
+      const blankTopologyResult = runLaunchAllRaw(launchScript, project.root);
+      assert.notStrictEqual(blankTopologyResult.status, 0);
+      assert.match(blankTopologyResult.stderr, /execution_topology\.execution_mode is required/);
+      assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees')));
+
+      delete context.execution_topology;
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2));
+
+      const missingTopologyResult = runLaunchAllRaw(launchScript, project.root);
+      assert.notStrictEqual(missingTopologyResult.status, 0);
+      assert.match(missingTopologyResult.stderr, /execution_topology\.execution_mode is required/);
+      assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees')));
+
+      context.execution_topology = {
+        execution_mode: 'direct',
+        reason: 'Small sequential task.',
+        dependency_notes: [],
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2));
+
+      const directResult = runLaunchAllRaw(launchScript, project.root);
+      assert.notStrictEqual(directResult.status, 0);
+      assert.match(directResult.stderr, /execution_topology\.execution_mode is "direct"/);
+      assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees')));
+
+      context.execution_topology.execution_mode = 'single_worker';
+      context.execution_topology.reason = 'Substantial but sequential.';
+      context.tasks['agent-extra'] = {
+        description: 'Second worker should be rejected in single_worker mode',
+        validation_command: null,
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2));
+
+      const singleWorkerResult = runLaunchAllRaw(launchScript, project.root);
+      assert.notStrictEqual(singleWorkerResult.status, 0);
+      assert.match(singleWorkerResult.stderr, /requires exactly one task/);
+      assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees')));
+    } finally {
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
 });
 
 function runLaunchAll(scriptPath, cwd) {
-  const { spawnSync } = require('child_process');
-  const result = spawnSync('node', [scriptPath, '--coord', './coord'], {
-    encoding: 'utf-8',
-    cwd,
-  });
+  const result = runLaunchAllRaw(scriptPath, cwd);
   if (result.error) {
     throw new Error(
       `launch-all.js failed: ${result.error.message}`
@@ -164,5 +226,14 @@ function runLaunchAll(scriptPath, cwd) {
     ].join('\n');
     throw new Error(msg);
   }
+  return result;
+}
+
+function runLaunchAllRaw(scriptPath, cwd) {
+  const { spawnSync } = require('child_process');
+  const result = spawnSync('node', [scriptPath, '--coord', './coord'], {
+    encoding: 'utf-8',
+    cwd,
+  });
   return result;
 }

@@ -17,6 +17,7 @@ function runBootstrap() {
 
   // Schema (see references/schemas.md):
   //   chat_context: compact structured object — { preferences, architecture, naming_conventions, gotchas, ... }
+  //   execution_topology: durable topology choice — { execution_mode, reason, dependency_notes }
   //   requirements/constraints: compact summaries only; durable detail belongs in DECISIONS.md.
   //   tasks:        Record<agent-name, { description, read_first?, timeout_mins?, progress_timeout_mins? }>
   // The caller session is expected to populate these between Phase 2 and Phase 4.
@@ -26,6 +27,11 @@ function runBootstrap() {
   const context = {
     project,
     chat_context,
+    execution_topology: {
+      execution_mode: "",
+      reason: "",
+      dependency_notes: [],
+    },
     requirements,
     constraints,
     created_at: new Date().toISOString(),
@@ -40,6 +46,14 @@ function runBootstrap() {
       architecture: ["Worker-agent pattern with central orchestrator loop", "File-system-based IPC via coord/ directory"],
       naming_conventions: ["camelCase for variables", "kebab-case for agent names"],
       gotchas: ["Node 18 minimum, no top-level await", "Worktree symlinks resolve coord/ to project root"],
+    },
+    execution_topology: {
+      execution_mode: "single_worker",
+      reason: "The work is substantial enough for delegated background execution but fits one sequential implementation boundary.",
+      dependency_notes: [
+        "Commit shared foundation files before launching the worker.",
+        "Use parallel or phased only after splitting independent non-overlapping leaves.",
+      ],
     },
     requirements: ["Add a new subcommand that accepts --format and --output flags"],
     constraints: ["Must use Node.js built-ins only", "No new npm dependencies", "All paths relative to project root"],

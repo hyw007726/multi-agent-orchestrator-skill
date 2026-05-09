@@ -26,6 +26,12 @@ describe('bootstrap example file', () => {
 
       assert.ok(fs.existsSync(decisionAuditPath), 'bootstrap should create decisions.jsonl');
 
+      assert.ok(example.execution_topology, 'should have execution topology object');
+      assert.strictEqual(example.execution_topology.execution_mode, 'single_worker');
+      assert.strictEqual(typeof example.execution_topology.reason, 'string');
+      assert.ok(Array.isArray(example.execution_topology.dependency_notes));
+      assert.ok(example.execution_topology.dependency_notes.length > 0);
+
       assert.ok(example.tasks, 'should have tasks object');
       const agentNames = Object.keys(example.tasks);
       assert.strictEqual(agentNames.length, 1, 'should have exactly one agent entry');
@@ -85,6 +91,11 @@ describe('bootstrap example file', () => {
       const decisions = fs.readFileSync(path.join(project.root, 'coord', 'DECISIONS.md'), 'utf-8');
       const context = readJson(path.join(project.root, 'coord', 'context.json'));
 
+      assert.deepStrictEqual(context.execution_topology, {
+        execution_mode: '',
+        reason: '',
+        dependency_notes: [],
+      });
       assert.ok(decisions.includes('## Durable Requirements'));
       assert.ok(decisions.includes('- Use streaming API'));
       assert.ok(decisions.includes('- Support retries'));

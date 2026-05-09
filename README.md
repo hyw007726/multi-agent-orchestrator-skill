@@ -113,12 +113,14 @@ For Gemini CLI, use `/multi-agent-orchestrator`. For other callers, ask them to 
 
 The caller session will:
 
-1. decide whether the task is actually worth parallelizing;
+1. choose an execution topology: `direct`, `single_worker`, `parallel`, or `phased`;
 2. handle shared foundation files first;
-3. draft the decomposition and, if configured, run optional read-only plan reviewers;
+3. draft the topology-aware decomposition and, if configured, run optional read-only plan reviewers;
 4. create or update compact `coord/context.json` plus durable `coord/DECISIONS.md`;
 5. split the remaining work into non-overlapping agent tasks;
 6. launch the workers and the background supervision loop.
+
+Use `direct` for small or tightly coupled tasks and skip orchestration. Use `single_worker` for substantial sequential work, `parallel` for genuinely independent worker boundaries, and `phased` when shared foundations must be handled first before worker fan-out.
 
 ## Common Commands
 
@@ -150,7 +152,7 @@ Most users should let the caller agent run these commands after it has read `SKI
 
 ## How It Works
 
-1. The interactive caller session acts as architect. It decomposes the task, resolves shared foundations, assigns file ownership, records durable decisions, and gives each worker a `read_first` file/path list.
+1. The interactive caller session acts as architect. It chooses the execution topology, decomposes the task, resolves shared foundations, assigns file ownership, records durable decisions, and gives each worker a `read_first` file/path list.
 2. `scripts/bootstrap.js` initializes `coord/`, the state directory shared by the caller, workers, and background loop.
 3. `scripts/launch-all.js` creates one git worktree per agent, renders prompts from `references/worker-prompt-template.md`, spawns workers, and starts the background loop.
 4. `scripts/orchestrator-loop.js` supervises workers. It arbitrates questions, detects hung or stuck workers, restarts within limits, and runs validation commands.
@@ -161,7 +163,7 @@ Most users should let the caller agent run these commands after it has read `SKI
 
 | Path | Purpose |
 | --- | --- |
-| `coord/context.json` | Compact run context, task map, `read_first` hints, and worker boundaries. |
+| `coord/context.json` | Compact run context, final execution topology, task map, `read_first` hints, and worker boundaries. |
 | `coord/DECISIONS.md` | Human-readable source of truth for durable requirements, architecture, APIs, ownership, and constraints. |
 | `coord/agents.json` | Current worker state. |
 | `coord/decisions.jsonl` | Arbitration and restart decisions. |

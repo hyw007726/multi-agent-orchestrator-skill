@@ -14,6 +14,11 @@ encode anything the headless background loop won't otherwise know.
     "naming_conventions": ["string — e.g. 'camelCase for variables'"],
     "gotchas": ["string — e.g. 'User is on Node 18, no top-level await'"]
   },
+  "execution_topology": {
+    "execution_mode": "string — direct | single_worker | parallel | phased",
+    "reason": "string — why this topology is the right amount of orchestration",
+    "dependency_notes": ["string — shared-foundation, sequencing, or fan-out dependency notes"]
+  },
   "requirements": ["string — compact requirement summaries only; durable detail belongs in DECISIONS.md"],
   "constraints": ["string — compact constraint summaries only; durable detail belongs in DECISIONS.md"],
   "created_at": "ISO 8601 timestamp",
@@ -35,19 +40,28 @@ encode anything the headless background loop won't otherwise know.
 ```
 
 `bootstrap.js` initializes `chat_context` and `tasks` as empty objects (or wraps
-a `--chat-context` string as `{ "summary": "<string>" }` for backward compat);
-the orchestrator session is expected to use the `Edit` tool to populate them
-between Phase 2 and Phase 4. Keep this file compact: it is serialized into
-arbitration prompts. Do not paste full specs, long chat transcripts, file
-contents, or large diffs into it. Put durable requirements, architecture,
-shared API/data contracts, and file-ownership rules in `coord/DECISIONS.md`.
+a `--chat-context` string as `{ "summary": "<string>" }` for backward compat)
+and creates an empty `execution_topology` skeleton; the orchestrator session is
+expected to use the `Edit` tool to populate them between Phase 2 and Phase 4.
+Keep this file compact: it is serialized into arbitration prompts. Do not paste
+full specs, long chat transcripts, file contents, or large diffs into it. Put
+durable requirements, architecture, topology rationale, shared API/data
+contracts, and file-ownership rules in `coord/DECISIONS.md`.
+
+`execution_topology.execution_mode` is the final topology chosen by the caller:
+`direct`, `single_worker`, `parallel`, or `phased`. `direct` means the caller
+should handle the task without launching workers. `single_worker` means exactly
+one task should be present. `parallel` means worker boundaries are independent.
+`phased` means shared foundation work has already been completed and committed,
+and the remaining `tasks` are the independent fan-out leaves.
 
 The full per-agent record under `tasks` is the canonical contract — `launch-all.js`
 reads it to drive worktree creation, prompt rendering, and the `spawn-agent.js`
 invocation, and the orchestrator loop reads `validation_command` / `timeout_mins`
-/ `progress_timeout_mins` from the matching `agents.json` row. Anything not in
-this shape is the orchestrator session's free-form context (`chat_context`,
-`requirements`, `constraints`).
+/ `progress_timeout_mins` from the matching `agents.json` row. The top-level
+`execution_topology` is also read by `launch-all.js` to catch direct-mode and
+single-worker inconsistencies before spawning. Anything else is the orchestrator
+session's free-form context (`chat_context`, `requirements`, `constraints`).
 
 ## Optional plan reviewer config
 
@@ -96,6 +110,19 @@ Draft plans are versioned:
   "project": "string",
   "user_requirements": ["string"],
   "constraints": ["string"],
+  "candidate_execution_topology": {
+    "execution_mode": "direct | single_worker | parallel | phased",
+    "reason": "string",
+    "rejected_alternatives": [
+      {
+        "execution_mode": "direct | single_worker | parallel | phased",
+        "reason": "string"
+      }
+    ],
+    "dependency_notes": ["string"],
+    "shared_foundation_notes": ["string"],
+    "mode_specific_decomposition": ["string"]
+  },
   "shared_foundation_assumptions": ["string"],
   "known_risks": ["string"],
   "tasks": {
@@ -124,6 +151,7 @@ extracted and it satisfies the required shape, the parsed response is stored as
   "iteration": 1,
   "reviewer": "architecture",
   "summary": "string",
+  "execution_mode_issues": ["string"],
   "blockers": ["string"],
   "overlaps": ["string"],
   "missing_foundation_work": ["string"],
@@ -134,7 +162,11 @@ extracted and it satisfies the required shape, the parsed response is stored as
 ```
 
 Invalid JSON or missing required fields is a reviewer failure, not a blocker for
-the whole workflow unless every reviewer in the iteration fails.
+the whole workflow unless every reviewer in the iteration fails. Reviewers
+should use `execution_mode_issues` for topology-specific concerns: mode too
+heavy, too weak, incorrectly sequenced, `parallel` that should be `phased`,
+unnecessary coordination where `single_worker` or `direct` would suffice, or
+worker boundaries that are unsafe for the chosen mode.
 
 After each iteration, the main caller writes
 `coord/plan-reviews/iteration-<N>/reconciliation.json`:

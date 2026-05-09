@@ -34,6 +34,7 @@ function launchAll() {
     console.error('Error: No tasks found in context.json.');
     process.exit(1);
   }
+  validateExecutionTopology(context, tasks);
 
   const requestsDir = path.join(args.coordDir, 'requests');
   if (!fs.existsSync(requestsDir)) {
@@ -167,6 +168,30 @@ function launchAll() {
 
   console.log(`Orchestrator loop backgrounded (PID: ${loop.pid})`);
   console.log(`Dashboard: node ${path.join(__dirname, 'dashboard.js')} --coord ${args.coordDir}`);
+}
+
+function validateExecutionTopology(context, tasks) {
+  const topology = context.execution_topology;
+  if (!topology || typeof topology.execution_mode !== 'string' || topology.execution_mode.trim() === '') {
+    console.error('Error: context.json execution_topology.execution_mode is required before launching workers. Expected single_worker, parallel, or phased; use direct only when handling the task in the caller session.');
+    process.exit(1);
+  }
+
+  const mode = topology.execution_mode.trim();
+  const taskCount = Object.keys(tasks || {}).length;
+  const launchableModes = new Set(['single_worker', 'parallel', 'phased']);
+  if (mode === 'direct') {
+    console.error('Error: context.json execution_topology.execution_mode is "direct"; handle this task in the caller session instead of launching workers.');
+    process.exit(1);
+  }
+  if (!launchableModes.has(mode)) {
+    console.error(`Error: Invalid execution_topology.execution_mode "${mode}". Expected direct, single_worker, parallel, or phased.`);
+    process.exit(1);
+  }
+  if (mode === 'single_worker' && taskCount !== 1) {
+    console.error(`Error: execution_mode "single_worker" requires exactly one task, but context.json has ${taskCount}.`);
+    process.exit(1);
+  }
 }
 
 function parseArgs() {

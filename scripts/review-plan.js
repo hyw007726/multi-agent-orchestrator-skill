@@ -19,6 +19,7 @@ const { loadConfig } = require("./lib/config");
 const { spawnCliTemplate, validateCliTemplate } = require("./lib/cli-template");
 
 const REQUIRED_ARRAY_FIELDS = [
+  "execution_mode_issues",
   "blockers",
   "overlaps",
   "missing_foundation_work",
@@ -277,6 +278,7 @@ function renderReviewerPrompt(options) {
     iteration,
     reviewer: reviewer.name,
     summary: "string",
+    execution_mode_issues: ["string"],
     blockers: ["string"],
     overlaps: ["string"],
     missing_foundation_work: ["string"],
@@ -296,7 +298,9 @@ function renderReviewerPrompt(options) {
     "- Critique only the decomposition plan. Do not edit files, create git worktrees, launch workers, or start the background loop.",
     "- Do not communicate with other reviewers. The main caller owns synthesis and final decisions.",
     "- Review the latest draft plan and prior reconciliation notes below. Do not assume an earlier draft is current.",
-    "- Focus on decomposition quality, ownership boundaries, shared-foundation work, sequencing, and validation.",
+    "- Focus on execution topology, decomposition quality, ownership boundaries, shared-foundation work, sequencing, and validation.",
+    "- Critique whether the selected execution mode is too heavy, too weak, or incorrectly sequenced.",
+    "- Ask whether `parallel` should really be `phased`, whether `single_worker` or `direct` would avoid unnecessary coordination, and whether worker boundaries are safe for the chosen mode.",
     "- Return exactly one JSON object and no prose outside it. Use empty arrays when no issues exist.",
     "",
     "Required JSON response shape:",
@@ -304,7 +308,7 @@ function renderReviewerPrompt(options) {
     JSON.stringify(responseShape, null, 2),
     "```",
     "",
-    "Review inputs the draft plan should cover: user requirements, constraints, candidate file ownership, shared-foundation assumptions, validation commands, and known risks.",
+    "Review inputs the draft plan should cover: user requirements, constraints, candidate execution topology, rejected topology alternatives, topology reason, dependency notes, candidate file ownership, shared-foundation assumptions, mode-specific task decomposition, validation commands, and known risks.",
     "",
     `Latest draft plan source path: ${draftPlanPath}`,
     `Latest draft plan audit path: ${draftPlanAuditPath}`,

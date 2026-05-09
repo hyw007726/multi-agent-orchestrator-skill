@@ -120,16 +120,22 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.js
 
 The script checks `default_cli`, `orchestrator_cli`, and any configured plan reviewer CLIs by default. Before probing, it prints a model heads-up: pinned template models are shown by name, external-config CLIs are called out as using their own selected provider/model, and reviewer-specific `model` / `template_args` overrides are listed. It then runs two probes per CLI: a `--version` install check, then an auth probe that exercises the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection. Pass `--skip-auth` for install-only checks (CI / offline). If any check fails, abort and surface the diagnostic — typical fixes are installing the CLI, putting it on `$PATH`, signing in, or selecting a default model.
 
-## Phase 1 — Task Evaluation & Decomposition
+## Phase 1 — Task Evaluation, Topology Selection & Decomposition
 
 Evaluate whether the user's overall task is suitable for multi-agent orchestration.
-- **Do not use this skill** if the task is small, trivial, or requires tightly coupled sequential steps. Advise the user to let you handle it normally.
+- Before splitting work, propose an execution topology:
+  - `direct`: small or tightly coupled sequential work that does not justify orchestration. Stop using this skill for the task; handle it in the caller session and do not bootstrap or launch workers.
+  - `single_worker`: substantial but mostly sequential work that benefits from delegated background execution. Create exactly one worker task.
+  - `parallel`: genuinely independent task boundaries with non-overlapping file ownership and worker-specific validation. Use this only when workers can proceed at the same time safely.
+  - `phased`: shared foundations must be handled first, then independent leaves can fan out to workers. Implement and commit the shared foundation in the caller session before writing the final worker task map.
+- Record the candidate topology before decomposition: `execution_mode`, rejected alternatives with reasons, `reason`, `dependency_notes`, shared-foundation notes, and the mode-specific task decomposition.
+- Treat the topology as a candidate until after optional Phase 1.5 review and reconciliation. The main caller may change the mode before writing final `coord/context.json`, or decide not to launch workers.
 - **Handle Overlapping Foundations First (CRITICAL):** True non-overlapping boundaries are rare. If agents will need to touch shared files (e.g., `package.json`, generic `types.ts`, test config, database schemas, router setups), **you must handle these sequentially before spawning agents.** If you spawn parallel worktrees that modify the same foundational files, you will create impossible merge conflicts.
   - *Action:* Tell the user: "I need to set up the shared foundation (schemas, package.json, etc.) first to prevent merge conflicts."
   - *Action:* Implement these shared foundations yourself in the current session.
   - *Action:* Commit the foundation.
   - *Action:* Only then, split the remaining work into truly parallel, isolated agent tasks.
-- **Proceed** if the task is large, complex, and the foundation is either already set or has just been completed by you.
+- **Proceed** only for `single_worker`, `parallel`, or `phased` after the foundation is either already set or has just been completed by you.
 
 If proceeding:
 1. Break the work down into non-overlapping agent boundaries.
@@ -140,7 +146,7 @@ If proceeding:
 
 ## Phase 1.5 — Optional Plan Review
 
-If `reviewers` is configured, do not write the final `coord/context.json` task map yet. First draft the decomposition as `coord/plan-reviews/draft-plan-v1.json`. Include the user requirements, constraints, candidate file ownership, shared-foundation assumptions, validation commands, known risks, and any sequencing dependencies.
+If `reviewers` is configured, do not write the final `coord/context.json` task map yet. First draft the decomposition as `coord/plan-reviews/draft-plan-v1.json`. Include the user requirements, constraints, candidate execution topology, rejected topology alternatives, topology reason, dependency notes, candidate file ownership, shared-foundation assumptions, mode-specific task decomposition, validation commands, known risks, and any sequencing dependencies.
 
 Run one read-only review iteration:
 
@@ -156,7 +162,7 @@ The runner invokes all configured reviewers in parallel for that iteration and w
 - parsed valid reviewer JSON to `coord/plan-reviews/iteration-<N>/<reviewer>.json`;
 - the draft plan audit copy to `coord/plan-reviews/draft-plan-v<N>.json`.
 
-Each reviewer must return JSON with `iteration`, `reviewer`, `summary`, `blockers`, `overlaps`, `missing_foundation_work`, `sequencing_risks`, `validation_gaps`, and `suggested_changes`. Invalid JSON is a reviewer failure, but the workflow can continue if at least one reviewer returns valid JSON.
+Each reviewer must return JSON with `iteration`, `reviewer`, `summary`, `execution_mode_issues`, `blockers`, `overlaps`, `missing_foundation_work`, `sequencing_risks`, `validation_gaps`, and `suggested_changes`. Reviewers must critique both the selected execution mode and the resulting task decomposition, including whether the mode is too heavy, too weak, incorrectly sequenced, whether `parallel` should really be `phased`, whether `single_worker` or `direct` would avoid unnecessary coordination, and whether worker boundaries are safe for the chosen mode. Invalid JSON is a reviewer failure, but the workflow can continue if at least one reviewer returns valid JSON.
 
 After every iteration, the main caller reconciles the feedback and writes `coord/plan-reviews/iteration-<N>/reconciliation.json` with accepted and rejected feedback plus rationale. Reviewer feedback informs the final decomposition, but reviewers never mutate `coord/context.json` or `coord/DECISIONS.md` directly.
 
@@ -186,9 +192,9 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/bootstrap.js \
 ### `coord/context.json`
 Because the orchestrator loop runs after your interactive caller session is done, it has **zero access** to your original chat history. **You must heavily compress all user preferences, architectural nuances, and conversational context into a structured `chat_context` object.** Keep `context.json` compact: it is serialized into arbitration prompts. Do not paste long specs, transcripts, file contents, or diffs here.
 
-You should also include the tasks you generated in Phase 1 under the `"tasks"` key.
+You should also include the final execution topology and the tasks you generated in Phase 1 under the `"tasks"` key. If the final mode is `direct`, do not create or launch an orchestrated run.
 
-`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`, `tasks: {}`). After running it, edit `context.json` with the structured shape below before you spawn any workers. Put durable requirements, architecture, shared contracts, and file ownership in `coord/DECISIONS.md`; use `context.json` as the compact run index.
+`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`, `execution_topology: { execution_mode: "", reason: "", dependency_notes: [] }`, `tasks: {}`). After running it, edit `context.json` with the structured shape below before you spawn any workers. Put durable requirements, architecture, shared contracts, topology rationale, and file ownership in `coord/DECISIONS.md`; use `context.json` as the compact run index.
 
 ```json
 {
@@ -198,6 +204,11 @@ You should also include the tasks you generated in Phase 1 under the `"tasks"` k
     "architecture": ["<e.g., MVVM pattern>", "<e.g., Redux for state>"],
     "naming_conventions": ["<e.g., camelCase for variables>", "<e.g., PascalCase for interfaces>"],
     "gotchas": ["<e.g., User is using an older version of Node>"]
+  },
+  "execution_topology": {
+    "execution_mode": "<single_worker | parallel | phased>",
+    "reason": "<why this topology is the right amount of orchestration>",
+    "dependency_notes": ["<shared foundations already committed, fan-out dependencies, or sequencing constraints>"]
   },
   "requirements": ["<compact requirement summary 1>", "<compact requirement summary 2>"],
   "constraints": ["<compact constraint summary 1>", "<compact constraint summary 2>"],
