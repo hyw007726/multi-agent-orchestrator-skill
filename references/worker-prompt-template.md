@@ -8,7 +8,11 @@ Your specific assignment is: {ASSIGNED_TASK}
 
 ## The Project
 We are building: {PROJECT_DESCRIPTION}
-Read `coord/context.json` for full requirements and constraints.
+Durable requirements, architecture, shared contracts, and file ownership live in `coord/DECISIONS.md`.
+Use `coord/context.json` only as the compact run index for task metadata and constraints.
+
+## Start Here
+Before searching broadly, read these files/paths if specified: {READ_FIRST_LIST}
 
 ## Your Constraints
 1. **Isolated Workspace**: You are operating in your own git worktree at `{WORKTREE_PATH}`.

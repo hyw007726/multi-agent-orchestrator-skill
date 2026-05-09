@@ -16,9 +16,10 @@ function runBootstrap() {
   }
 
   // Schema (see references/schemas.md):
-  //   chat_context: structured object — { preferences, architecture, naming_conventions, gotchas, ... }
-  //   tasks:        Record<agent-name, { description, timeout_mins?, progress_timeout_mins? }>
-  // The caller session is expected to populate both between Phase 2 and Phase 4.
+  //   chat_context: compact structured object — { preferences, architecture, naming_conventions, gotchas, ... }
+  //   requirements/constraints: compact summaries only; durable detail belongs in DECISIONS.md.
+  //   tasks:        Record<agent-name, { description, read_first?, timeout_mins?, progress_timeout_mins? }>
+  // The caller session is expected to populate these between Phase 2 and Phase 4.
   // A legacy `--chat-context "<string>"` is wrapped under a `summary` key so flat-string callers remain valid.
   const chat_context = chatContext.trim() === "" ? {} : { summary: chatContext };
 
@@ -48,6 +49,7 @@ function runBootstrap() {
         description: "Implement the 'task-runner' subcommand that reads a YAML config, spawns child processes for each job, and writes results to --output",
         cli: "kilo",
         mode: "code",
+        read_first: ["src/commands/index.js", "src/lib/process-helpers.js", "tests/commands/"],
         allowed_paths: ["src/commands/task-runner/**", "tests/commands/task-runner/**", "src/lib/process-helpers.js"],
         forbidden_paths: ["package.json", "orchestrator.config.js", "coord/", "README.md"],
         validation_command: ["node", "--test", "tests/commands/task-runner/"],
@@ -61,7 +63,7 @@ function runBootstrap() {
   fs.writeFileSync(path.join(coordDir, "decisions.json"), "[]\n");
   fs.writeFileSync(path.join(coordDir, "decisions.jsonl"), "");
 
-  const decisionsMd = `# Architectural Decisions\n\nThis file is the curated human-readable contract for shared API contracts, data models, file ownership, and structural decisions. The orchestrator session curates this file; the background loop does not automatically rewrite it. Worker agents MUST read this file before they begin coding.\n`;
+  const decisionsMd = buildDecisionsMd(project, requirements, constraints);
   fs.writeFileSync(path.join(coordDir, "DECISIONS.md"), decisionsMd);
   fs.writeFileSync(path.join(coordDir, "requests.jsonl"), "");
   fs.mkdirSync(path.join(coordDir, "requests"), { recursive: true });
@@ -114,8 +116,8 @@ Bootstrap Multi-Agent Orchestrator coordination
 Options:
   --coord <dir>              Path to coordination directory (default: ./coord)
   --project <description>    Project description (required)
-  --requirements <list>      Comma-separated requirements
-  --constraints <list>       Comma-separated constraints
+  --requirements <list>      Comma-separated compact requirements; also written to DECISIONS.md
+  --constraints <list>       Comma-separated compact constraints; also written to DECISIONS.md
   --chat-context <string>    Compacted summary of original conversation context
   --help                     Show this help message
 
@@ -133,4 +135,34 @@ Example:
 
     return config;
   }
+}
+
+function buildDecisionsMd(project, requirements, constraints) {
+  return [
+    "# Architectural Decisions",
+    "",
+    "This file is the curated human-readable contract for durable requirements, shared API contracts, data models, file ownership, and structural decisions. The orchestrator session curates this file; the background loop includes it in arbitration prompts but does not automatically rewrite it. Worker agents MUST read this file before they begin coding.",
+    "",
+    "## Project",
+    project ? `- ${project}` : "- Fill this in during decomposition.",
+    "",
+    "## Durable Requirements",
+    formatMarkdownList(requirements, "Move durable product and technical requirements here instead of expanding coord/context.json."),
+    "",
+    "## Constraints",
+    formatMarkdownList(constraints, "Move durable constraints here instead of expanding coord/context.json."),
+    "",
+    "## Shared Contracts",
+    "- Record API shapes, data models, invariants, and cross-agent integration points here.",
+    "",
+    "## File Ownership",
+    "- Record which agent owns each path or module before launch.",
+    "",
+  ].join("\n");
+}
+
+function formatMarkdownList(items, fallback) {
+  const cleaned = (items || []).map((item) => String(item).trim()).filter(Boolean);
+  if (cleaned.length === 0) return `- ${fallback}`;
+  return cleaned.map((item) => `- ${item}`).join("\n");
 }

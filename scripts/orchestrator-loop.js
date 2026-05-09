@@ -190,11 +190,12 @@ async function runLoop() {
         cycleHadPending = true;
         log(`Found ${pending.length} pending requests.`);
         const context = readJSON(paths.context);
+        const durableDecisions = readTextIfExists(paths.decisionsMd);
         const recentDecisions = readRecentDecisions(paths.decisions);
         const agentsForPrompt = readJSON(paths.agents);
 
         const worktreeStates = collectWorktreeStates(pending, agentsForPrompt);
-        const prompt = buildOrchestratorPrompt(pending, context, recentDecisions, worktreeStates);
+        const prompt = buildOrchestratorPrompt(pending, context, durableDecisions, recentDecisions, worktreeStates);
         const response = callOrchestratorCli(prompt, parsedConfig, config.maxRetries, log);
 
         if (!response) {
@@ -528,6 +529,7 @@ async function runLoop() {
         WORKTREE_PATH: worktree || "",
         ALLOWED_PATHS_LIST: task.allowed_paths || [],
         FORBIDDEN_PATHS_LIST: task.forbidden_paths || [],
+        READ_FIRST_LIST: task.read_first || task.relevant_files || [],
       });
     } catch (err) {
       log(`Restart prompt contract render failed for ${name}: ${err.message}`);
@@ -612,6 +614,7 @@ function getPaths(coordDir) {
     requestsDir: path.join(coordDir, "requests"),
     decisions: path.join(coordDir, "decisions.json"),
     decisionsAudit: path.join(coordDir, "decisions.jsonl"),
+    decisionsMd: path.join(coordDir, "DECISIONS.md"),
     context: path.join(coordDir, "context.json"),
     agents: path.join(coordDir, "agents.json"),
   };
@@ -638,6 +641,15 @@ function readRecentDecisions(decisionsPath) {
   const decisions = readJSON(decisionsPath);
   if (!Array.isArray(decisions)) return [];
   return decisions.slice(-RECENT_DECISION_LIMIT);
+}
+
+function readTextIfExists(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return "";
+    return fs.readFileSync(filePath, "utf-8");
+  } catch {
+    return "";
+  }
 }
 
 // Shared — called at the very beginning of each runLoop cycle and from the
@@ -902,17 +914,20 @@ function collectWorktreeStates(pending, agents) {
 // ─── Orchestrator CLI invocation ─────────────────────────────────────────────
 
 // Builds the arbitration prompt sent to the orchestrator CLI for each pending-request cycle.
-function buildOrchestratorPrompt(requests, context, decisions, worktreeStates) {
+function buildOrchestratorPrompt(requests, context, durableDecisions, decisions, worktreeStates) {
   return `You are the system orchestrator for a multi-agent project.
 
 Worker agents are running as headless CLI sessions, each in an isolated git worktree.
 They submit requests by atomically writing JSON files into coord/requests/.
 The loop consolidates those files into coord/requests.jsonl for arbitration.
 
-## Project Context
+## Compact Project Context
 ${JSON.stringify(context, null, 2)}
 
-## Existing Decisions (DO NOT contradict these)
+## Durable Project Decisions from coord/DECISIONS.md (DO NOT contradict these)
+${durableDecisions.trim() || "(none recorded)"}
+
+## Recent Runtime Decisions (DO NOT contradict these)
 ${JSON.stringify(decisions, null, 2)}
 
 ## Agent Worktree States (Code Context)

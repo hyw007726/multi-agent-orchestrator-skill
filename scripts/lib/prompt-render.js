@@ -14,6 +14,7 @@ function renderWorkerPrompt(template, vars) {
     'WORKTREE_PATH',
     'ALLOWED_PATHS_LIST',
     'FORBIDDEN_PATHS_LIST',
+    'READ_FIRST_LIST',
     'WORKER_CONCISION_PROMPT',
   ];
   for (const key of placeholders) {

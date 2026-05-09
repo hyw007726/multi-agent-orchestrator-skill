@@ -14,14 +14,16 @@ encode anything the headless background loop won't otherwise know.
     "naming_conventions": ["string — e.g. 'camelCase for variables'"],
     "gotchas": ["string — e.g. 'User is on Node 18, no top-level await'"]
   },
-  "requirements": ["string — each requirement"],
-  "constraints": ["string — each constraint"],
+  "requirements": ["string — compact requirement summaries only; durable detail belongs in DECISIONS.md"],
+  "constraints": ["string — compact constraint summaries only; durable detail belongs in DECISIONS.md"],
   "created_at": "ISO 8601 timestamp",
   "tasks": {
     "agent-name": {
       "description": "string — what this agent is allowed to build",
       "cli": "string — which worker CLI to spawn (kilo | aider | claude | codex | gemini | opencode); falls back to default_cli when omitted",
       "mode": "string | omitted — kilo-specific mode (code | architect | debug | ask); ignored by other CLIs",
+      "read_first": ["string — files or paths this worker should inspect before broad search; prompt-only guidance"],
+      "relevant_files": ["string — legacy alias for read_first; prefer read_first in new context files"],
       "allowed_paths": ["string — glob or path the agent may create/edit (e.g. 'scripts/launch-all.js', 'test/**')"],
       "forbidden_paths": ["string — glob or path the agent must NOT touch (e.g. 'SKILL.md', 'package.json')"],
       "validation_command": "string[] | string | null — JSON argv preferred (no shell expansion); shell-string fallback for pipes / && / env; null disables automated validation",
@@ -35,8 +37,10 @@ encode anything the headless background loop won't otherwise know.
 `bootstrap.js` initializes `chat_context` and `tasks` as empty objects (or wraps
 a `--chat-context` string as `{ "summary": "<string>" }` for backward compat);
 the orchestrator session is expected to use the `Edit` tool to populate them
-between Phase 2 and Phase 4. The keys under `chat_context` are advisory — the
-loop only serializes the whole object into the arbitration prompt.
+between Phase 2 and Phase 4. Keep this file compact: it is serialized into
+arbitration prompts. Do not paste full specs, long chat transcripts, file
+contents, or large diffs into it. Put durable requirements, architecture,
+shared API/data contracts, and file-ownership rules in `coord/DECISIONS.md`.
 
 The full per-agent record under `tasks` is the canonical contract — `launch-all.js`
 reads it to drive worktree creation, prompt rendering, and the `spawn-agent.js`
@@ -60,6 +64,7 @@ verbatim (`{NAME}`) and replaced once.
 | `{WORKTREE_PATH}`        | derived: `.kilocode/worktrees/<agent>` for kilo, else `.agents/worktrees/<agent>` |
 | `{ALLOWED_PATHS_LIST}`   | comma-joined `tasks[<agent>].allowed_paths`                     |
 | `{FORBIDDEN_PATHS_LIST}` | comma-joined `tasks[<agent>].forbidden_paths`                   |
+| `{READ_FIRST_LIST}`      | comma-joined `tasks[<agent>].read_first`; `relevant_files` is accepted as a legacy alias |
 | `{WORKER_CONCISION_PROMPT}` | built-in concise response-style instructions                 |
 
 Any placeholder whose source field is missing is replaced with the literal
@@ -68,10 +73,11 @@ prompt and can ask via `coord/requests/` for clarification.
 
 ## DECISIONS.md
 
-Human-curated contract for durable architecture, API, data-model, and
-file-ownership decisions. The starter/orchestrator session updates this file
-when an approved runtime decision should become shared project policy. The
-background loop does not automatically rewrite it.
+Human-curated contract for durable requirements, architecture, API, data-model,
+file ownership, and structural decisions. The starter/orchestrator session
+updates this file when an approved runtime decision should become shared project
+policy. The background loop includes this file in arbitration prompts but does
+not automatically rewrite it.
 
 ## decisions.json
 

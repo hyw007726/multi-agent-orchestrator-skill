@@ -10,8 +10,8 @@ Use it from Codex, Gemini CLI, Claude Code, or any local coding agent that can r
 
 - Splits large implementation work across multiple coding agents.
 - Runs each worker in its own git worktree.
-- Keeps shared architecture in `coord/DECISIONS.md`.
-- Stores compressed run context in `coord/context.json` so the background loop does not need the original chat.
+- Keeps durable requirements, shared architecture, contracts, and file ownership in `coord/DECISIONS.md`.
+- Stores compact run context and per-agent task boundaries in `coord/context.json` so the background loop does not need the original chat.
 - Supervises liveness, progress, validation, restarts, and worker questions.
 - Provides a live terminal dashboard.
 - Produces `coord/review-summary.txt` for final human/agent integration.
@@ -115,7 +115,7 @@ The caller session will:
 
 1. decide whether the task is actually worth parallelizing;
 2. handle shared foundation files first;
-3. create or update `coord/context.json` and `coord/DECISIONS.md`;
+3. create or update compact `coord/context.json` plus durable `coord/DECISIONS.md`;
 4. split the remaining work into non-overlapping agent tasks;
 5. launch the workers and the background supervision loop.
 
@@ -143,7 +143,7 @@ Most users should let the caller agent run these commands after it has read `SKI
 
 ## How It Works
 
-1. The interactive caller session acts as architect. It decomposes the task, resolves shared foundations, assigns file ownership, and records durable decisions.
+1. The interactive caller session acts as architect. It decomposes the task, resolves shared foundations, assigns file ownership, records durable decisions, and gives each worker a `read_first` file/path list.
 2. `scripts/bootstrap.js` initializes `coord/`, the state directory shared by the caller, workers, and background loop.
 3. `scripts/launch-all.js` creates one git worktree per agent, renders prompts from `references/worker-prompt-template.md`, spawns workers, and starts the background loop.
 4. `scripts/orchestrator-loop.js` supervises workers. It arbitrates questions, detects hung or stuck workers, restarts within limits, and runs validation commands.
@@ -154,8 +154,8 @@ Most users should let the caller agent run these commands after it has read `SKI
 
 | Path | Purpose |
 | --- | --- |
-| `coord/context.json` | Structured context the background loop and workers can read. |
-| `coord/DECISIONS.md` | Human-readable source of truth for architecture, APIs, ownership, and constraints. |
+| `coord/context.json` | Compact run context, task map, `read_first` hints, and worker boundaries. |
+| `coord/DECISIONS.md` | Human-readable source of truth for durable requirements, architecture, APIs, ownership, and constraints. |
 | `coord/agents.json` | Current worker state. |
 | `coord/decisions.jsonl` | Arbitration and restart decisions. |
 | `coord/review-summary.txt` | Final handoff summary after workers complete. |

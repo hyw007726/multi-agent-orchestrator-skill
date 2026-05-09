@@ -120,8 +120,9 @@ Evaluate whether the user's overall task is suitable for multi-agent orchestrati
 If proceeding:
 1. Break the work down into non-overlapping agent boundaries.
 2. Explicitly map out what files each agent is allowed to touch.
-3. Determine a `validation_command` for each agent. **Prefer JSON-argv form** so the loop can run it with no shell expansion (e.g. `--validate '["npm","run","test","--","src/foo"]'`); fall back to a shell string only when you need pipes / `&&` / env expansion (e.g. `--validate "npm run lint && npm test"`). Use `null` if no automated validation is possible/needed.
-4. Prepare a mapping of agent names to their task descriptions.
+3. List `read_first` files/paths for each agent so workers begin with targeted source context instead of broad repo scans.
+4. Determine a `validation_command` for each agent. **Prefer JSON-argv form** so the loop can run it with no shell expansion (e.g. `--validate '["npm","run","test","--","src/foo"]'`); fall back to a shell string only when you need pipes / `&&` / env expansion (e.g. `--validate "npm run lint && npm test"`). Use `null` if no automated validation is possible/needed.
+5. Prepare a mapping of agent names to their task descriptions.
 
 ## Phase 2 — Bootstrap
 When starting a new orchestrated project, create the `coord/` directory at the project root and initialize these files.
@@ -135,11 +136,11 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/bootstrap.js \
 ```
 
 ### `coord/context.json`
-Because the orchestrator loop runs after your interactive caller session is done, it has **zero access** to your original chat history. **You must heavily compress all user preferences, architectural nuances, and conversational context into a structured `chat_context` object.**
+Because the orchestrator loop runs after your interactive caller session is done, it has **zero access** to your original chat history. **You must heavily compress all user preferences, architectural nuances, and conversational context into a structured `chat_context` object.** Keep `context.json` compact: it is serialized into arbitration prompts. Do not paste long specs, transcripts, file contents, or diffs here.
 
 You should also include the tasks you generated in Phase 1 under the `"tasks"` key.
 
-`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`, `tasks: {}`). After running it, edit `context.json` with the structured shape below before you spawn any workers.
+`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`, `tasks: {}`). After running it, edit `context.json` with the structured shape below before you spawn any workers. Put durable requirements, architecture, shared contracts, and file ownership in `coord/DECISIONS.md`; use `context.json` as the compact run index.
 
 ```json
 {
@@ -150,12 +151,16 @@ You should also include the tasks you generated in Phase 1 under the `"tasks"` k
     "naming_conventions": ["<e.g., camelCase for variables>", "<e.g., PascalCase for interfaces>"],
     "gotchas": ["<e.g., User is using an older version of Node>"]
   },
-  "requirements": ["<requirement 1>", "<requirement 2>"],
-  "constraints": ["<constraint 1>", "<constraint 2>"],
+  "requirements": ["<compact requirement summary 1>", "<compact requirement summary 2>"],
+  "constraints": ["<compact constraint summary 1>", "<compact constraint summary 2>"],
   "created_at": "<ISO 8601 timestamp>",
   "tasks": {
     "agent-name": {
       "description": "description of the boundary",
+      "read_first": ["src/path/to/read.ts", "tests/path/to/read.test.ts"],
+      "allowed_paths": ["src/owned/**", "tests/owned/**"],
+      "forbidden_paths": ["package.json", "coord/"],
+      "validation_command": ["npm", "test", "--", "owned"],
       "timeout_mins": 10,
       "progress_timeout_mins": 15
     }
@@ -164,7 +169,7 @@ You should also include the tasks you generated in Phase 1 under the `"tasks"` k
 ```
 
 ### `coord/DECISIONS.md`
-To ensure critical architectural rules are never lost in JSON compression, write a human-readable `coord/DECISIONS.md` file. This file is the curated source of truth for shared API contracts, data models, file ownership, and structural decisions made in Phase 1. The background loop preserves approved request resolutions in `coord/decisions.jsonl` and keeps only the latest 30 in `coord/decisions.json`; it does not automatically rewrite `DECISIONS.md`. If a runtime approval should become durable project policy, update `DECISIONS.md` from the orchestrator session.
+To ensure critical architectural rules are never lost in JSON compression, write a human-readable `coord/DECISIONS.md` file. This file is the curated source of truth for durable requirements, shared API contracts, data models, file ownership, and structural decisions made in Phase 1. The background loop includes `DECISIONS.md` in arbitration prompts, preserves approved request resolutions in `coord/decisions.jsonl`, and keeps only the latest 30 in `coord/decisions.json`; it does not automatically rewrite `DECISIONS.md`. If a runtime approval should become durable project policy, update `DECISIONS.md` from the orchestrator session.
 
 ## Phase 3 — Prompt Generation
 

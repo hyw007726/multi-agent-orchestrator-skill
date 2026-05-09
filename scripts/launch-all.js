@@ -91,6 +91,7 @@ function launchAll() {
       WORKTREE_PATH: worktreePath,
       ALLOWED_PATHS_LIST: agentRecord.allowed_paths || [],
       FORBIDDEN_PATHS_LIST: agentRecord.forbidden_paths || [],
+      READ_FIRST_LIST: agentRecord.read_first || agentRecord.relevant_files || [],
     };
 
     const renderedPrompt = renderWorkerPrompt(template, vars);

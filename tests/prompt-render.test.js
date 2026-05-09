@@ -23,12 +23,15 @@ describe('worker prompt rendering', () => {
       PROJECT_DESCRIPTION: 'Test project',
       AGENT_NAME: 'agent-test',
       WORKTREE_PATH: '.agents/worktrees/agent-test',
+      READ_FIRST_LIST: ['src/index.js', 'tests/index.test.js'],
       ALLOWED_PATHS_LIST: ['src/**'],
       FORBIDDEN_PATHS_LIST: ['package.json'],
     });
 
     assert.ok(prompt.includes('## Response Style'));
     assert.ok(prompt.includes(WORKER_CONCISION_PROMPT));
+    assert.ok(prompt.includes('src/index.js, tests/index.test.js'));
+    assert.ok(prompt.includes('Use `coord/context.json` only as the compact run index'));
   });
 
   it('includes concise response instructions in restart prompts', () => {

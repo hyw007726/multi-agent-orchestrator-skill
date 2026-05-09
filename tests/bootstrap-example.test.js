@@ -8,6 +8,8 @@ const fs = require('node:fs');
 const {
   createTempProject,
   bootstrapProject,
+  repoRoot,
+  run,
   readJson,
 } = require('./helpers/temp-project');
 
@@ -34,6 +36,7 @@ describe('bootstrap example file', () => {
         'description',
         'cli',
         'mode',
+        'read_first',
         'allowed_paths',
         'forbidden_paths',
         'validation_command',
@@ -51,12 +54,45 @@ describe('bootstrap example file', () => {
       assert.ok(agent.cli.length > 0);
       assert.strictEqual(typeof agent.mode, 'string');
       assert.ok(agent.mode.length > 0);
+      assert.ok(Array.isArray(agent.read_first));
+      assert.ok(agent.read_first.length > 0);
       assert.ok(Array.isArray(agent.allowed_paths));
       assert.ok(agent.allowed_paths.length > 0);
       assert.ok(Array.isArray(agent.forbidden_paths));
       assert.ok(agent.forbidden_paths.length > 0);
       assert.strictEqual(typeof agent.timeout_mins, 'number');
       assert.strictEqual(typeof agent.progress_timeout_mins, 'number');
+    } finally {
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
+
+  it('writes bootstrap requirements and constraints into DECISIONS.md', () => {
+    let project;
+    try {
+      project = createTempProject('bootstrap-decisions');
+
+      run('node', [
+        path.join(repoRoot(), 'scripts', 'bootstrap.js'),
+        '--project', 'Durable contract project',
+        '--requirements', 'Use streaming API,Support retries',
+        '--constraints', 'No new dependencies,Node 18',
+        '--coord', './coord',
+      ], { cwd: project.root });
+
+      const decisions = fs.readFileSync(path.join(project.root, 'coord', 'DECISIONS.md'), 'utf-8');
+      const context = readJson(path.join(project.root, 'coord', 'context.json'));
+
+      assert.ok(decisions.includes('## Durable Requirements'));
+      assert.ok(decisions.includes('- Use streaming API'));
+      assert.ok(decisions.includes('- Support retries'));
+      assert.ok(decisions.includes('## Constraints'));
+      assert.ok(decisions.includes('- No new dependencies'));
+      assert.ok(decisions.includes('- Node 18'));
+      assert.deepStrictEqual(context.requirements, ['Use streaming API', 'Support retries']);
+      assert.deepStrictEqual(context.constraints, ['No new dependencies', 'Node 18']);
     } finally {
       if (project) {
         project.cleanup();
