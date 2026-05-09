@@ -16,7 +16,9 @@ const RECENT_DECISION_LIMIT = 30;
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-runLoop();
+if (require.main === module) {
+  runLoop();
+}
 
 async function runLoop() {
   const config = parseArgs();
@@ -921,6 +923,30 @@ Worker agents are running as headless CLI sessions, each in an isolated git work
 They submit requests by atomically writing JSON files into coord/requests/.
 The loop consolidates those files into coord/requests.jsonl for arbitration.
 
+## Responsibilities
+- Maintain consistency across all agent sessions
+- Resolve requests without contradicting existing decisions
+- Prevent conflicts between agents working in parallel worktrees
+- Prefer minimal disruption to running sessions
+- Reject unclear requests — ask for clarification rather than guessing
+- Every request you process MUST be explicitly included in either the \`approved\` or \`rejected\` array. Even if you issue an action like \`end_agent\`, you MUST STILL approve the request that triggered it so it is marked as resolved.
+
+## Response Format
+Return ONLY valid JSON matching this exact structure (no markdown, no explanation):
+{
+  "approved": [
+    { "request_id": "...", "decision": "clear statement of what was decided", "reason": "why this decision was made" }
+  ],
+  "rejected": [
+    { "request_id": "...", "reason": "why this was rejected" }
+  ],
+  "actions": [
+    { "type": "end_agent | soft_restart | hard_restart", "agent": "agent-name", "instruction": "optional — new instructions for the session" }
+  ]
+}
+
+## Dynamic Inputs
+
 ## Compact Project Context
 ${JSON.stringify(context, null, 2)}
 
@@ -938,26 +964,7 @@ ${JSON.stringify(worktreeStates, null, 2)}
 ${JSON.stringify(requests, null, 2)}
 
 ## Your Responsibilities
-- Maintain consistency across all agent sessions
-- Resolve requests without contradicting existing decisions
-- Prevent conflicts between agents working in parallel worktrees
-- Prefer minimal disruption to running sessions
-- Reject unclear requests — ask for clarification rather than guessing
-- **IMPORTANT**: Every request you process MUST be explicitly included in either the \`approved\` or \`rejected\` array. Even if you issue an action (like \`end_agent\`), you MUST STILL approve the request that triggered it so it is marked as resolved.
-
-## Response Format
-Return ONLY valid JSON matching this exact structure (no markdown, no explanation):
-{
-  "approved": [
-    { "request_id": "...", "decision": "clear statement of what was decided", "reason": "why this decision was made" }
-  ],
-  "rejected": [
-    { "request_id": "...", "reason": "why this was rejected" }
-  ],
-  "actions": [
-    { "type": "end_agent | soft_restart | hard_restart", "agent": "agent-name", "instruction": "optional — new instructions for the session" }
-  ]
-}
+Apply the responsibilities and response format above to these new requests.
 `;
 }
 
@@ -1019,7 +1026,13 @@ function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
 }
 
 function generateAiReviewInstruction(tailLogs, parsedConfig, log) {
-  const reviewPrompt = `This agent is stuck. Look at its last 50 lines of logs:\n\n${tailLogs}\n\nWhat is it failing to understand? Write a 1-sentence instruction I can send it to break it out of this loop.`;
+  const reviewPrompt = `This agent is stuck.
+
+Look at its last 50 lines of logs and identify what it is failing to understand.
+Write exactly one sentence I can send it to break it out of this loop.
+
+## Last 50 Log Lines
+${tailLogs}`;
   const cli = parsedConfig.default_cli;
   const template = parsedConfig.cli_templates[cli];
   const promptFile = path.join(os.tmpdir(), `review-prompt-${Date.now()}.txt`);
@@ -1173,3 +1186,7 @@ Keep the total output under 50 lines. Be direct.`;
   }
   log("Orchestrator loop ending.");
 }
+
+module.exports = {
+  buildOrchestratorPrompt,
+};
