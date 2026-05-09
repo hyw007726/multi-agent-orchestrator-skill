@@ -56,4 +56,34 @@ describe('model heads-up', () => {
     assert.match(output, /aider: model gpt-4o-mini/);
     assert.match(output, /claude: model claude-sonnet-4-6/);
   });
+
+  it('formats configured plan reviewer model and template overrides', () => {
+    const config = {
+      default_cli: 'kilo',
+      orchestrator_cli: 'kilo',
+      reviewers: [
+        {
+          name: 'architecture',
+          cli: 'claude',
+          model: 'claude-opus-4-7',
+          model_flag: '--model',
+          template_args: ['--json'],
+          review_focus: 'shared foundations',
+        },
+      ],
+      cli_templates: {
+        kilo: 'kilo run "$(cat {prompt_file})" --auto',
+        claude: { cmd: 'claude', args: ['-p', { prompt_text: true }, '--model', 'claude-sonnet-4-6'] },
+      },
+    };
+
+    const output = formatModelHeadsUp(config, { checkedClis: ['kilo', 'claude'] });
+
+    assert.match(output, /Plan reviewer CLI\(s\):/);
+    assert.match(output, /architecture \(claude\): model claude-sonnet-4-6/);
+    assert.match(output, /reviewer override claude-opus-4-7 via --model/);
+    assert.match(output, /template args --json/);
+    assert.match(output, /shared foundations/);
+    assert.doesNotMatch(output, /Additional checked CLI/);
+  });
 });

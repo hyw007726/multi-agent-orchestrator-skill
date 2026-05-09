@@ -51,6 +51,8 @@ If it exists, read it to determine:
 - **`default_cli`**: The Worker CLI to use for spawning agents and for the cheap AI-Review / final-summary calls.
 - **`orchestrator_cli`**: Optional CLI used by the background loop for request arbitration. If omitted, it follows `default_cli`. Set this independently from `default_cli` only when you want arbitration to use a different CLI/model than your workers.
 - **`cli_templates`**: The template definitions used to spawn worker CLIs. Prefer structured `{ cmd, args }` entries so they run with `shell:false`; keep string templates when you intentionally need shell behavior. The same templates are reused for `orchestrator_cli` calls and the AI-Review calls, so the system is immune to third-party tool interface changes. **This is also where you pin a model** — add the CLI's model flag (`--model <id>`, `--llm <id>`, etc.) to the template args/string and that model is used for every spawn driven by it.
+- **`reviewers`**: Optional Phase 1.5 read-only plan reviewer CLIs. Each entry has `name`, `cli`, `review_focus`, optional `model`, optional `model_flag`, optional `template_args`, and optional `timeout_mins`. Every reviewer `cli` must have matching `cli_templates.<cli>` and `cli_health_checks.<cli>` entries.
+- **`max_plan_review_iterations`**: `"auto"` by default, or a positive integer. In `"auto"` mode, run at least one review iteration when reviewers are configured, then explicitly decide after reconciliation whether another pass is worth it. Numeric mode means run exactly that many iterations.
 - **`default_timeout_mins`**: The default time before an agent is considered hanging (Liveness).
 - **`default_progress_timeout_mins`**: The default time before an active agent with zero code changes is considered stuck (Progress).
 - **`default_max_restarts`**: The maximum number of times the loop will respawn the same agent before marking it `errored` (defaults to 3). Counted across both validation-failure restarts and AI-Review restarts.
@@ -69,6 +71,18 @@ module.exports = {
   // Optional: uncomment only if request arbitration should use a different CLI
   // from the workers. If omitted, orchestrator_cli follows default_cli.
   // orchestrator_cli: "claude",
+
+  // Optional Phase 1.5 plan reviewers. They critique the draft decomposition
+  // before coord/context.json is finalized; they do not launch workers or edit.
+  // reviewers: [
+  //   {
+  //     name: "architecture",
+  //     cli: "claude",
+  //     model: "claude-sonnet-4-6",
+  //     review_focus: "ownership boundaries, shared foundation work, and sequencing risks",
+  //   },
+  // ],
+  // max_plan_review_iterations: "auto",
 
   // Command templates for supported CLIs.
   // Prefer structured argv templates. Use { prompt_file: true } to pass the
@@ -104,7 +118,7 @@ These three steps run unconditionally on every invocation, before any task reaso
 node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.js
 ```
 
-The script checks `default_cli` and `orchestrator_cli` by default. Before probing, it prints a model heads-up: pinned template models are shown by name, while external-config CLIs are called out as using their own selected provider/model. It then runs two probes per CLI: a `--version` install check, then an auth probe that exercises the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection. Pass `--skip-auth` for install-only checks (CI / offline). If any check fails, abort and surface the diagnostic — typical fixes are installing the CLI, putting it on `$PATH`, signing in, or selecting a default model.
+The script checks `default_cli`, `orchestrator_cli`, and any configured plan reviewer CLIs by default. Before probing, it prints a model heads-up: pinned template models are shown by name, external-config CLIs are called out as using their own selected provider/model, and reviewer-specific `model` / `template_args` overrides are listed. It then runs two probes per CLI: a `--version` install check, then an auth probe that exercises the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection. Pass `--skip-auth` for install-only checks (CI / offline). If any check fails, abort and surface the diagnostic — typical fixes are installing the CLI, putting it on `$PATH`, signing in, or selecting a default model.
 
 ## Phase 1 — Task Evaluation & Decomposition
 
@@ -123,6 +137,40 @@ If proceeding:
 3. List `read_first` files/paths for each agent so workers begin with targeted source context instead of broad repo scans.
 4. Determine a `validation_command` for each agent. **Prefer JSON-argv form** so the loop can run it with no shell expansion (e.g. `--validate '["npm","run","test","--","src/foo"]'`); fall back to a shell string only when you need pipes / `&&` / env expansion (e.g. `--validate "npm run lint && npm test"`). Use `null` if no automated validation is possible/needed.
 5. Prepare a mapping of agent names to their task descriptions.
+
+## Phase 1.5 — Optional Plan Review
+
+If `reviewers` is configured, do not write the final `coord/context.json` task map yet. First draft the decomposition as `coord/plan-reviews/draft-plan-v1.json`. Include the user requirements, constraints, candidate file ownership, shared-foundation assumptions, validation commands, known risks, and any sequencing dependencies.
+
+Run one read-only review iteration:
+
+```bash
+node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/review-plan.js \
+  --iteration 1 \
+  --draft-plan ./coord/plan-reviews/draft-plan-v1.json \
+  --coord ./coord
+```
+
+The runner invokes all configured reviewers in parallel for that iteration and writes:
+- live reviewer streams to `coord/plan-reviews/iteration-<N>/<reviewer>.md`;
+- parsed valid reviewer JSON to `coord/plan-reviews/iteration-<N>/<reviewer>.json`;
+- the draft plan audit copy to `coord/plan-reviews/draft-plan-v<N>.json`.
+
+Each reviewer must return JSON with `iteration`, `reviewer`, `summary`, `blockers`, `overlaps`, `missing_foundation_work`, `sequencing_risks`, `validation_gaps`, and `suggested_changes`. Invalid JSON is a reviewer failure, but the workflow can continue if at least one reviewer returns valid JSON.
+
+After every iteration, the main caller reconciles the feedback and writes `coord/plan-reviews/iteration-<N>/reconciliation.json` with accepted and rejected feedback plus rationale. Reviewer feedback informs the final decomposition, but reviewers never mutate `coord/context.json` or `coord/DECISIONS.md` directly.
+
+If `max_plan_review_iterations` is a positive integer, run exactly that many iterations, writing an updated `draft-plan-v<N+1>.json` and passing the prior reconciliation before each later iteration:
+
+```bash
+node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/review-plan.js \
+  --iteration 2 \
+  --draft-plan ./coord/plan-reviews/draft-plan-v2.json \
+  --previous-reconciliation ./coord/plan-reviews/iteration-1/reconciliation.json \
+  --coord ./coord
+```
+
+If `max_plan_review_iterations` is `"auto"`, run at least one iteration and then stop after each reconciliation to explicitly decide whether another pass is worth running. Do not let the runner self-continue. Reviewers never chat with each other; the main caller owns synthesis between iterations. Only after reconciling the final chosen/configured iteration should you write the final `coord/context.json` and update `coord/DECISIONS.md`.
 
 ## Phase 2 — Bootstrap
 When starting a new orchestrated project, create the `coord/` directory at the project root and initialize these files.

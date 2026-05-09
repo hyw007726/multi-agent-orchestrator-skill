@@ -115,21 +115,28 @@ The caller session will:
 
 1. decide whether the task is actually worth parallelizing;
 2. handle shared foundation files first;
-3. create or update compact `coord/context.json` plus durable `coord/DECISIONS.md`;
-4. split the remaining work into non-overlapping agent tasks;
-5. launch the workers and the background supervision loop.
+3. draft the decomposition and, if configured, run optional read-only plan reviewers;
+4. create or update compact `coord/context.json` plus durable `coord/DECISIONS.md`;
+5. split the remaining work into non-overlapping agent tasks;
+6. launch the workers and the background supervision loop.
 
 ## Common Commands
 
 Run from the target project root.
 
 ```bash
-# Verify configured CLIs are installed and authenticated.
+# Verify configured worker, orchestrator, and reviewer CLIs are installed and authenticated.
 node /path/to/multi-agent-orchestrator/scripts/preflight.js
 
 # Bootstrap coord/ state for a new orchestrated run.
 node /path/to/multi-agent-orchestrator/scripts/bootstrap.js \
   --project "Build the requested feature" \
+  --coord ./coord
+
+# Optional: run one read-only plan-review iteration before finalizing context.json.
+node /path/to/multi-agent-orchestrator/scripts/review-plan.js \
+  --iteration 1 \
+  --draft-plan ./coord/plan-reviews/draft-plan-v1.json \
   --coord ./coord
 
 # Launch worker worktrees and the background loop.
@@ -158,6 +165,7 @@ Most users should let the caller agent run these commands after it has read `SKI
 | `coord/DECISIONS.md` | Human-readable source of truth for durable requirements, architecture, APIs, ownership, and constraints. |
 | `coord/agents.json` | Current worker state. |
 | `coord/decisions.jsonl` | Arbitration and restart decisions. |
+| `coord/plan-reviews/` | Optional Phase 1.5 draft plans, reviewer streams, parsed reviewer JSON, and caller reconciliations. |
 | `coord/review-summary.txt` | Final handoff summary after workers complete. |
 | `.agents/worktrees/<agent>` | Worker git worktrees for most CLIs. |
 | `.kilocode/worktrees/<agent>` | Worker git worktrees for Kilo Code. |
@@ -172,6 +180,8 @@ The most important settings are:
 - `orchestrator_cli`: optional CLI for request arbitration. If omitted, it follows `default_cli`.
 - `cli_templates`: command templates for supported or custom CLIs.
 - `cli_health_checks`: lightweight install checks used by preflight.
+- `reviewers`: optional read-only plan reviewer CLI agents for Phase 1.5.
+- `max_plan_review_iterations`: `"auto"` or a positive integer for configured plan review passes.
 - `default_timeout_mins`: liveness timeout when logs stop.
 - `default_progress_timeout_mins`: progress timeout when logs continue but code does not change.
 - `default_max_restarts`: restart cap per agent.
@@ -185,6 +195,17 @@ module.exports = {
 
   // Optional: use a different CLI/model for arbitration.
   // orchestrator_cli: "claude",
+
+  // Optional: read-only plan reviewers run before final task decomposition.
+  // reviewers: [
+  //   {
+  //     name: "architecture",
+  //     cli: "claude",
+  //     model: "claude-sonnet-4-6",
+  //     review_focus: "ownership boundaries, shared foundations, and validation gaps",
+  //   },
+  // ],
+  // max_plan_review_iterations: "auto",
 
   default_timeout_mins: 10,
   default_progress_timeout_mins: 15,

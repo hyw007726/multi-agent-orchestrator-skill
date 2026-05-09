@@ -49,6 +49,126 @@ invocation, and the orchestrator loop reads `validation_command` / `timeout_mins
 this shape is the orchestrator session's free-form context (`chat_context`,
 `requirements`, `constraints`).
 
+## Optional plan reviewer config
+
+`orchestrator.config.js` may opt into Phase 1.5 plan reviews before the final
+`coord/context.json` task map is written.
+
+```js
+module.exports = {
+  reviewers: [
+    {
+      name: "architecture",          // stable filename-safe reviewer id
+      cli: "claude",                 // must have cli_templates.<cli> and cli_health_checks.<cli>
+      review_focus: "ownership boundaries and sequencing risks",
+      model: "claude-sonnet-4-6",    // optional; appends --model <id> unless model_flag is set
+      model_flag: "--model",         // optional
+      template_args: ["--flag"],      // optional CLI-specific args appended to the template
+      timeout_mins: 10               // optional per-reviewer timeout
+    }
+  ],
+  max_plan_review_iterations: "auto" // or a positive integer
+};
+```
+
+When no `reviewers` are configured, the normal Phase 1 decomposition flow is
+unchanged. The same configured reviewer list is reused for every review
+iteration; callers do not configure per-round reviewer lists. Every configured
+reviewer CLI must have health-check coverage because `scripts/preflight.js`
+checks reviewer CLIs alongside the worker and orchestrator CLIs.
+
+`max_plan_review_iterations: "auto"` means run at least one review iteration
+when reviewers exist, then have the main caller explicitly decide after each
+reconciliation whether another pass is worthwhile. A positive integer means run
+exactly that many iterations. The runner never self-continues indefinitely.
+
+## Plan review artifacts
+
+Plan review artifacts live under `coord/plan-reviews/` and are owned by the
+interactive main caller plus `scripts/review-plan.js`. Reviewers are read-only:
+their feedback informs the final decomposition but does not directly mutate
+`coord/context.json` or `coord/DECISIONS.md`.
+
+Draft plans are versioned:
+
+```json
+{
+  "project": "string",
+  "user_requirements": ["string"],
+  "constraints": ["string"],
+  "shared_foundation_assumptions": ["string"],
+  "known_risks": ["string"],
+  "tasks": {
+    "agent-name": {
+      "description": "string",
+      "allowed_paths": ["string"],
+      "forbidden_paths": ["string"],
+      "read_first": ["string"],
+      "validation_command": "string[] | string | null",
+      "sequencing_notes": ["string"]
+    }
+  }
+}
+```
+
+The runner stores each latest draft as
+`coord/plan-reviews/draft-plan-v<N>.json`. Review iterations are stored under
+`coord/plan-reviews/iteration-<N>/`.
+
+Each reviewer stream is written live to `<reviewer>.md`. When valid JSON can be
+extracted and it satisfies the required shape, the parsed response is stored as
+`<reviewer>.json`:
+
+```json
+{
+  "iteration": 1,
+  "reviewer": "architecture",
+  "summary": "string",
+  "blockers": ["string"],
+  "overlaps": ["string"],
+  "missing_foundation_work": ["string"],
+  "sequencing_risks": ["string"],
+  "validation_gaps": ["string"],
+  "suggested_changes": ["string"]
+}
+```
+
+Invalid JSON or missing required fields is a reviewer failure, not a blocker for
+the whole workflow unless every reviewer in the iteration fails.
+
+After each iteration, the main caller writes
+`coord/plan-reviews/iteration-<N>/reconciliation.json`:
+
+```json
+{
+  "iteration": 1,
+  "accepted_feedback": [
+    {
+      "reviewer": "architecture",
+      "item": "string",
+      "rationale": "string",
+      "draft_plan_change": "string"
+    }
+  ],
+  "rejected_feedback": [
+    {
+      "reviewer": "architecture",
+      "item": "string",
+      "rationale": "string"
+    }
+  ],
+  "next_iteration": {
+    "run": false,
+    "rationale": "string"
+  }
+}
+```
+
+Later iterations must receive the updated `draft-plan-v<N>.json` and the prior
+`reconciliation.json`; they must not review a stale initial draft. Implementation
+workers launch only after the final chosen/configured review iteration has been
+reconciled and the final `coord/context.json` task map is written.
+
 ## Worker-prompt placeholder grammar
 
 `launch-all.js` machine-substitutes the placeholders in

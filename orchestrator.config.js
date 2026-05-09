@@ -18,6 +18,24 @@ module.exports = {
   // use a different CLI/model from the workers.
   // orchestrator_cli: "claude",
 
+  // Optional Phase 1.5 plan reviewers. When configured, the caller can run
+  // scripts/review-plan.js after drafting an initial decomposition and before
+  // writing the final coord/context.json task map. Reviewers are read-only plan
+  // critics: they do not spawn worker agents, create worktrees, or edit repo files.
+  // Every reviewer CLI must also have matching cli_templates.<cli> and
+  // cli_health_checks.<cli> entries.
+  // reviewers: [
+  //   {
+  //     name: "architecture",
+  //     cli: "claude",
+  //     model: "claude-sonnet-4-6", // optional; appends --model <id> by default
+  //     // model_flag: "--model",    // optional if the CLI uses a different flag
+  //     // template_args: ["--some-cli-specific-flag"],
+  //     review_focus: "ownership boundaries, shared foundation work, and sequencing risks",
+  //   },
+  // ],
+  // max_plan_review_iterations: "auto", // or a positive integer
+
   // Command templates for supported CLIs.
   // Use {prompt_file} as a placeholder for the generated prompt text file.
   // By centralizing these here you can adapt if a tool changes its CLI flags, and

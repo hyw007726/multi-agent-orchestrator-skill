@@ -6,7 +6,7 @@
  * 10-minute liveness timeout per agent.
  *
  * Usage:
- *   node scripts/preflight.js                   # checks default_cli + orchestrator_cli (with auth)
+ *   node scripts/preflight.js                   # checks default_cli + orchestrator_cli + reviewer CLIs (with auth)
  *   node scripts/preflight.js --skip-auth       # binary-only check, no API calls (CI / offline)
  *   node scripts/preflight.js --cli kilo --cli aider
  *   node scripts/preflight.js --timeout 15000   # per-CLI timeout in ms (default 10000)
@@ -28,9 +28,10 @@ function runPreflight() {
   const args = parseArgs();
   const config = loadConfig();
 
+  const reviewerClis = Array.isArray(config.reviewers) ? config.reviewers.map((reviewer) => reviewer.cli) : [];
   const clis = args.clis.length > 0
     ? uniqueClis(args.clis)
-    : uniqueClis([config.default_cli, config.orchestrator_cli]);
+    : uniqueClis([config.default_cli, config.orchestrator_cli, ...reviewerClis]);
 
   console.log(formatModelHeadsUp(config, { checkedClis: clis }));
   console.log("");

@@ -58,6 +58,10 @@ function summarizeCliModel(cli, template) {
 function formatModelHeadsUp(config, options = {}) {
   const workerClis = unique(options.workerClis || [config.default_cli]);
   const orchestratorCli = options.orchestratorCli || config.orchestrator_cli;
+  const reviewers = Array.isArray(options.reviewers)
+    ? options.reviewers
+    : (Array.isArray(config.reviewers) ? config.reviewers : []);
+  const reviewerClis = unique(reviewers.map((reviewer) => reviewer.cli));
   const checkedClis = unique(options.checkedClis || []);
 
   const lines = ["Model heads-up:"];
@@ -74,7 +78,18 @@ function formatModelHeadsUp(config, options = {}) {
     lines.push(...formatCliLines(orchestratorCli, config));
   }
 
-  const extraClis = checkedClis.filter((cli) => !workerClis.includes(cli) && cli !== orchestratorCli);
+  if (reviewers.length > 0) {
+    lines.push("  Plan reviewer CLI(s):");
+    for (const reviewer of reviewers) {
+      lines.push(...formatReviewerLines(reviewer, config));
+    }
+  }
+
+  const extraClis = checkedClis.filter((cli) => (
+    !workerClis.includes(cli) &&
+    cli !== orchestratorCli &&
+    !reviewerClis.includes(cli)
+  ));
   if (extraClis.length > 0) {
     lines.push("  Additional checked CLI(s):");
     for (const cli of extraClis) {
@@ -89,6 +104,23 @@ function formatCliLines(cli, config) {
   const templates = config.cli_templates || {};
   const summary = summarizeCliModel(cli, templates[cli]);
   const lines = [`    - ${cli}: ${summary.message}`];
+  if (summary.warning) lines.push(`      Warning: ${summary.warning}`);
+  return lines;
+}
+
+function formatReviewerLines(reviewer, config) {
+  const templates = config.cli_templates || {};
+  const summary = summarizeCliModel(reviewer.cli, templates[reviewer.cli]);
+  const details = [];
+  if (reviewer.model) {
+    details.push(`reviewer override ${reviewer.model} via ${reviewer.model_flag || "--model"}`);
+  }
+  if (Array.isArray(reviewer.template_args) && reviewer.template_args.length > 0) {
+    details.push(`template args ${reviewer.template_args.join(" ")}`);
+  }
+  const suffix = details.length > 0 ? `; ${details.join("; ")}` : "";
+  const focus = reviewer.review_focus ? ` - ${reviewer.review_focus}` : "";
+  const lines = [`    - ${reviewer.name} (${reviewer.cli}): ${summary.message}${suffix}${focus}`];
   if (summary.warning) lines.push(`      Warning: ${summary.warning}`);
   return lines;
 }

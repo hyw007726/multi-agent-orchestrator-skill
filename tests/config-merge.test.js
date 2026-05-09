@@ -28,6 +28,8 @@ describe('config merging', () => {
     assert.strictEqual(config.poll_max_ms, 15000);
     assert.strictEqual(config.launch_dashboard, 'auto');
     assert.strictEqual(config.launch_review_terminal, false);
+    assert.deepStrictEqual(config.reviewers, []);
+    assert.strictEqual(config.max_plan_review_iterations, 'auto');
 
     // Verify cli_templates defaults are present for all known CLIs.
     assert.ok(config.cli_templates, 'cli_templates should exist');
@@ -248,6 +250,96 @@ describe('config merging', () => {
     }
 
     assert.strictEqual(config.launch_dashboard, 'auto');
+  });
+
+  it('parses reviewer config and numeric plan review iterations', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+    let config;
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  max_plan_review_iterations: 2,',
+        '  reviewers: [',
+        '    {',
+        '      name: "architecture",',
+        '      cli: "reviewfake",',
+        '      model: "review-model",',
+        '      model_flag: "--model-id",',
+        '      template_args: ["--json"],',
+        '      timeout_mins: 0.25,',
+        '      review_focus: "ownership boundaries",',
+        '    },',
+        '  ],',
+        '  cli_templates: {',
+        '    reviewfake: { cmd: "node", args: ["reviewer.js", { prompt_file: true }] },',
+        '  },',
+        '  cli_health_checks: {',
+        '    reviewfake: "node --version",',
+        '  },',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
+      config = loadConfig(tmpDir);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    assert.strictEqual(config.max_plan_review_iterations, 2);
+    assert.deepStrictEqual(config.reviewers, [
+      {
+        name: 'architecture',
+        cli: 'reviewfake',
+        model: 'review-model',
+        model_flag: '--model-id',
+        template_args: ['--json'],
+        timeout_mins: 0.25,
+        review_focus: 'ownership boundaries',
+      },
+    ]);
+  });
+
+  it('rejects reviewer CLIs without templates or health checks', () => {
+    const tmpMissingTemplate = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+    const tmpMissingHealth = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+    try {
+      fs.writeFileSync(path.join(tmpMissingTemplate, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  reviewers: [{ name: "reviewer", cli: "notempl", review_focus: "boundaries" }],',
+        '  cli_health_checks: { notempl: "node --version" },',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      fs.writeFileSync(path.join(tmpMissingHealth, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  reviewers: [{ name: "reviewer", cli: "nohealth", review_focus: "boundaries" }],',
+        '  cli_templates: { nohealth: { cmd: "node", args: ["reviewer.js", { prompt_file: true }] } },',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
+      assert.throws(() => loadConfig(tmpMissingTemplate), /cli_templates\.notempl/);
+      assert.throws(() => loadConfig(tmpMissingHealth), /cli_health_checks\.nohealth/);
+    } finally {
+      fs.rmSync(tmpMissingTemplate, { recursive: true, force: true });
+      fs.rmSync(tmpMissingHealth, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects invalid max_plan_review_iterations values', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  max_plan_review_iterations: 0,',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
+      assert.throws(() => loadConfig(tmpDir), /max_plan_review_iterations/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 

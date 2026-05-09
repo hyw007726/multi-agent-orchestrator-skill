@@ -144,6 +144,55 @@ describe('preflight CLI', () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it('includes configured plan reviewer CLIs in default checks and heads-up output', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-reviewers-'));
+    try {
+      const healthPath = writeScript(tmp, 'health.js', [
+        'process.stdout.write(process.argv[2] + "-health\\n");',
+      ]);
+      const cliPath = writeScript(tmp, 'cli.js', [
+        'process.stdout.write("auth-ok\\n");',
+      ]);
+
+      writeConfig(tmp, [
+        'module.exports = {',
+        '  default_cli: "mainfake",',
+        '  orchestrator_cli: "mainfake",',
+        '  reviewers: [',
+        '    {',
+        '      name: "architecture",',
+        '      cli: "reviewfake",',
+        '      model: "review-model",',
+        '      template_args: ["--json"],',
+        '      review_focus: "shared foundations",',
+        '    },',
+        '  ],',
+        '  cli_templates: {',
+        `    mainfake: { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(cliPath)}, { prompt_file: true }] },`,
+        `    reviewfake: { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(cliPath)}, { prompt_file: true }] },`,
+        '  },',
+        '  cli_health_checks: {',
+        `    mainfake: ${JSON.stringify(`${shellQuote(process.execPath)} ${shellQuote(healthPath)} mainfake`)},`,
+        `    reviewfake: ${JSON.stringify(`${shellQuote(process.execPath)} ${shellQuote(healthPath)} reviewfake`)},`,
+        '  },',
+        '};',
+      ]);
+
+      const result = runPreflight(tmp, ['--skip-auth', '--timeout', '1000']);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.match(result.stdout, /Plan reviewer CLI\(s\):/);
+      assert.match(result.stdout, /architecture \(reviewfake\):/);
+      assert.match(result.stdout, /reviewer override review-model via --model/);
+      assert.match(result.stdout, /template args --json/);
+      assert.match(result.stdout, /Preflight: checking 2 CLI\(s\) .*mainfake, reviewfake/);
+      assert.match(result.stdout, /reviewfake \(install\): reviewfake-health/);
+      assert.match(result.stdout, /reviewfake \(template\): argv mode/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 function runPreflight(cwd, args) {

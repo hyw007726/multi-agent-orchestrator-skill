@@ -38,6 +38,8 @@ const DEFAULTS = {
   poll_max_ms: 15000,
   launch_dashboard: "auto",
   launch_review_terminal: false,
+  reviewers: [],
+  max_plan_review_iterations: "auto",
 };
 
 function defaultConfig() {
@@ -45,6 +47,7 @@ function defaultConfig() {
     ...DEFAULTS,
     cli_templates: { ...DEFAULT_CLI_TEMPLATES },
     cli_health_checks: { ...DEFAULT_HEALTH_CHECKS },
+    reviewers: [],
   };
   config.orchestrator_cli = config.default_cli;
   return config;
@@ -85,8 +88,102 @@ function loadConfig(cwd = process.cwd()) {
     merged.launch_dashboard = parsed.launch_dashboard;
   }
   if (typeof parsed.launch_review_terminal === "boolean") merged.launch_review_terminal = parsed.launch_review_terminal;
+  merged.max_plan_review_iterations = normalizeMaxPlanReviewIterations(parsed.max_plan_review_iterations);
+  merged.reviewers = normalizeReviewers(parsed.reviewers, merged);
 
   return merged;
 }
 
-module.exports = { loadConfig };
+function normalizeMaxPlanReviewIterations(value) {
+  if (value === undefined) return "auto";
+  if (value === "auto") return "auto";
+  if (Number.isInteger(value) && value > 0) return value;
+  throw new Error('max_plan_review_iterations must be "auto" or a positive integer.');
+}
+
+function normalizeReviewers(value, config) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("reviewers must be an array when configured.");
+  }
+
+  const seen = new Set();
+  return value.map((entry, index) => {
+    if (!isPlainObject(entry)) {
+      throw new Error(`reviewers[${index}] must be an object.`);
+    }
+
+    const name = normalizeNonEmptyString(entry.name, `reviewers[${index}].name`);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+      throw new Error(`reviewers[${index}].name must start with a letter or number and contain only letters, numbers, dot, underscore, or dash.`);
+    }
+    if (seen.has(name)) {
+      throw new Error(`reviewers[${index}].name duplicates reviewer '${name}'.`);
+    }
+    seen.add(name);
+
+    const cli = normalizeNonEmptyString(entry.cli, `reviewers[${index}].cli`);
+    if (config.cli_templates[cli] === undefined) {
+      throw new Error(`reviewers[${index}].cli '${cli}' has no matching cli_templates.${cli} entry.`);
+    }
+    if (config.cli_health_checks[cli] === undefined) {
+      throw new Error(`reviewers[${index}].cli '${cli}' has no matching cli_health_checks.${cli} entry.`);
+    }
+
+    const reviewFocus = normalizeNonEmptyString(entry.review_focus, `reviewers[${index}].review_focus`);
+    const reviewer = {
+      name,
+      cli,
+      review_focus: reviewFocus,
+    };
+
+    if (entry.model !== undefined) {
+      reviewer.model = normalizeNonEmptyString(entry.model, `reviewers[${index}].model`);
+    }
+    if (entry.model_flag !== undefined) {
+      reviewer.model_flag = normalizeNonEmptyString(entry.model_flag, `reviewers[${index}].model_flag`);
+    }
+    if (entry.template_args !== undefined) {
+      reviewer.template_args = normalizeStringArray(entry.template_args, `reviewers[${index}].template_args`);
+    } else if (entry.extra_args !== undefined) {
+      reviewer.template_args = normalizeStringArray(entry.extra_args, `reviewers[${index}].extra_args`);
+    }
+    if (entry.timeout_mins !== undefined) {
+      if (!Number.isFinite(entry.timeout_mins) || entry.timeout_mins <= 0) {
+        throw new Error(`reviewers[${index}].timeout_mins must be a positive number.`);
+      }
+      reviewer.timeout_mins = entry.timeout_mins;
+    }
+
+    return reviewer;
+  });
+}
+
+function normalizeNonEmptyString(value, label) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${label} must be a non-empty string.`);
+  }
+  return value.trim();
+}
+
+function normalizeStringArray(value, label) {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array of strings.`);
+  }
+  return value.map((item, index) => {
+    if (typeof item !== "string" || item.trim() === "") {
+      throw new Error(`${label}[${index}] must be a non-empty string.`);
+    }
+    return item;
+  });
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+module.exports = {
+  loadConfig,
+  normalizeMaxPlanReviewIterations,
+  normalizeReviewers,
+};
