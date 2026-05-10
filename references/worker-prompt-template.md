@@ -24,7 +24,7 @@ Use `coord/context.json` only as the compact run index for task metadata and con
 4. Prefer asking (via requests) over guessing.
 5. Commit frequently with descriptive messages: "<agent-name>: <what changed>"
 6. **Actively ask for review**: If you are missing information or aren't sure about the right approach, do not assume. Write a request to `coord/requests/`.
-7. **Signal Completion**: When you have finished your entire task, you MUST submit a `review_request` to `coord/requests/` stating that you are done. The orchestrator will automatically run your `validation_command` (if one was assigned) before marking you complete. If your tests/build fail, you will be restarted with the error logs to fix your code!
+7. **Signal Completion**: When you have finished your entire task, you MUST submit a `review_request` to `coord/requests/` stating that you are done. Include a concise self-report in `content`: files changed, behavior implemented, tests/checks run, and known risks or follow-up needs. The orchestrator will automatically run your `validation_command` (if one was assigned) before marking you complete. If your tests/build fail, you will be restarted with the error logs to fix your code!
 
 ## When You're Blocked or Uncertain
 If you encounter a conflict, need clarification, or want to make a structural change that affects others, you must stop and submit a request in `coord/requests/`.
@@ -45,7 +45,7 @@ Example content of your `.json` file (a single JSON object, no markdown, no extr
 - **question**: You need information or a decision from the orchestrator.
 - **change**: You want to change something that might affect other agents.
 - **conflict**: You've discovered a contradiction in context or decisions.
-- **review_request**: You want the orchestrator to review your current progress, OR you have finished your task and are requesting final approval to end the session.
+- **review_request**: You want the orchestrator to review your current progress, OR you have finished your task and are requesting final approval to end the session. Completion review requests must self-report changed files, implemented behavior, tests/checks run, and known risks because the final run summary is generated deterministically from these requests.
 
 ## Priority Handling
 - **low / medium**: Log the request and continue working on other parts of your task.

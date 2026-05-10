@@ -71,9 +71,10 @@ describe('MVP smoke test', () => {
 
       const summary = fs.readFileSync(path.join(project.root, 'coord', 'review-summary.txt'), 'utf8');
       assert.ok(
-        summary.includes('Smoke summary: fake review completed.'),
-        'review-summary.txt should contain the expected summary'
+        summary.includes('Fake worker agent-one has completed its smoke test task'),
+        'review-summary.txt should contain the worker self-report'
       );
+      assert.ok(summary.includes('No final AI summary call was run'));
 
       const log = fs.readFileSync(path.join(project.root, 'coord', 'orchestrator.log'), 'utf8');
       assert.ok(log.includes('Dashboard auto-launch disabled'));

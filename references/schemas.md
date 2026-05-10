@@ -101,12 +101,14 @@ exactly that many iterations. The runner never self-continues indefinitely.
 ## Plan review artifacts
 
 Plan review artifacts live under `coord/plan-reviews/` and are owned by the
-interactive main caller plus `scripts/draft-plan.js`, `scripts/review-plan.js`,
-and `scripts/materialize-plan.js`. The draft planner and reviewers are
-read-only: their output informs the final decomposition but does not directly
-mutate `coord/context.json` or `coord/DECISIONS.md`. The materializer is an
-explicit caller-approved conversion step: it reads an approved draft plan and
-writes the final `context.json` plus `DECISIONS.md`.
+interactive main caller plus `scripts/prepare-run.js`, optional
+`scripts/draft-plan.js`, `scripts/review-plan.js`, and
+`scripts/materialize-plan.js`. The caller normally authors the draft plan.
+Optional draft helpers and reviewers are read-only: their output informs the
+final decomposition but does not directly mutate `coord/context.json` or
+`coord/DECISIONS.md`. The materializer is an explicit caller-approved
+conversion step: it reads an approved draft plan and writes the final
+`context.json`, `DECISIONS.md`, and `CALLER_CONTEXT.md`.
 
 Draft plans are versioned:
 
@@ -146,6 +148,12 @@ Draft plans are versioned:
 The runner stores each latest draft as
 `coord/plan-reviews/draft-plan-v<N>.json`. Review iterations are stored under
 `coord/plan-reviews/iteration-<N>/`.
+
+`scripts/prepare-run.js` writes `draft-plan-v1.json` as a caller-authored
+template with TODO placeholders plus `draft-plan-v1.instructions.md`. Those
+placeholders must be replaced before approval; `scripts/materialize-plan.js`
+uses the same draft validator as `scripts/draft-plan.js` and rejects remaining
+TODO values.
 
 Each reviewer stream is written live to `<reviewer>.md`. When valid JSON can be
 extracted and it satisfies the required shape, the parsed response is stored as
@@ -280,7 +288,8 @@ approval boundary.
 Default mode:
 - runs `scripts/preflight.js`;
 - runs `scripts/bootstrap.js` when `coord/context.json` does not already exist;
-- runs `scripts/draft-plan.js`;
+- writes a caller-authored `draft-plan-v1.json` template plus
+  `draft-plan-v1.instructions.md`;
 - stops and prints commands for optional `review-plan.js` and approved
   materialization.
 

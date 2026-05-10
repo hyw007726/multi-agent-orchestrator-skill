@@ -2,7 +2,7 @@
 
 Run several coding agents on one repository without letting them collide.
 
-Multi-Agent Orchestrator is an Agent Skill and dependency-free Node.js runtime for splitting large coding tasks into parallel headless workers. It creates isolated git worktrees, gives every worker a scoped prompt and file boundary, supervises progress, restarts stuck agents, runs validation commands, and writes a final review summary so your interactive session can merge the results.
+Multi-Agent Orchestrator is an Agent Skill and dependency-free Node.js runtime for splitting large coding tasks into parallel headless workers. It creates isolated git worktrees, gives every worker a scoped prompt and file boundary, supervises progress, restarts stuck agents, runs validation commands, and writes a deterministic final handoff summary so your interactive session can merge the results.
 
 Use it from Codex, Gemini CLI, Claude Code, or any local coding agent that can read `SKILL.md` and run shell commands.
 
@@ -16,7 +16,7 @@ Use it from Codex, Gemini CLI, Claude Code, or any local coding agent that can r
 - Supervises liveness, progress, validation, restarts, and worker questions.
 - Supports optional worker progress heartbeats and converts repeated no-diff stalls into escalating arbitration requests instead of launching a separate review model call.
 - Provides a live terminal dashboard.
-- Produces `coord/review-summary.txt` for final human/agent integration.
+- Produces a deterministic `coord/review-summary.txt` from worker self-reports for final human/agent integration.
 - Supports Kilo Code, Aider, Claude Code, Codex, Gemini CLI, OpenCode, and custom CLIs.
 
 ## When To Use It
@@ -117,7 +117,7 @@ The caller session will:
 
 1. choose an execution topology: `direct`, `single_worker`, `parallel`, or `phased`;
 2. handle shared foundation files first;
-3. draft the topology-aware decomposition with the caller or `scripts/draft-plan.js`, then run optional read-only plan reviewers if configured;
+3. draft the topology-aware decomposition in the caller session, then run optional read-only plan reviewers if configured;
 4. create or update compact `coord/context.json` plus durable `coord/DECISIONS.md`;
 5. split the remaining work into non-overlapping agent tasks;
 6. launch the workers and the background supervision loop.
@@ -137,7 +137,7 @@ node /path/to/multi-agent-orchestrator/scripts/bootstrap.js \
   --project "Build the requested feature" \
   --coord ./coord
 
-# Optional: ask the configured planner CLI for a read-only initial decomposition.
+# Optional: ask the configured orchestrator CLI for a read-only draft helper.
 node /path/to/multi-agent-orchestrator/scripts/draft-plan.js \
   --task "Build the requested feature" \
   --project "Build the requested feature" \
@@ -177,7 +177,7 @@ node /path/to/multi-agent-orchestrator/scripts/prepare-run.js \
   --coord ./coord
 ```
 
-This runs preflight, bootstraps `coord/` when needed, asks the configured planner CLI for `coord/plan-reviews/draft-plan-v1.json`, and then stops for caller review. After reviewing or editing the draft, materialize it with:
+This runs preflight, bootstraps `coord/` when needed, writes `coord/plan-reviews/draft-plan-v1.json` as a caller-authored template, writes `draft-plan-v1.instructions.md`, and then stops. The caller session must fill in and review the draft before approval. After editing the draft, materialize it with:
 
 ```bash
 node /path/to/multi-agent-orchestrator/scripts/prepare-run.js \
@@ -192,11 +192,11 @@ The approval step writes `context.json`, `DECISIONS.md`, and `CALLER_CONTEXT.md`
 
 1. The interactive caller session acts as architect. It chooses the execution topology, decomposes the task, resolves shared foundations, assigns file ownership, records durable decisions, and gives each worker a `read_first` file/path list.
 2. `scripts/bootstrap.js` initializes `coord/`, the state directory shared by the caller, workers, and background loop.
-3. `scripts/draft-plan.js` can ask the configured planner CLI for `coord/plan-reviews/draft-plan-v1.json`; callers can also write this artifact manually.
+3. The caller writes `coord/plan-reviews/draft-plan-v1.json`; `prepare-run.js` can scaffold a TODO template, and `scripts/draft-plan.js` remains an optional helper that uses `orchestrator_cli`.
 4. `scripts/materialize-plan.js` converts an approved draft into compact `coord/context.json`, durable `coord/DECISIONS.md`, and human-readable `coord/CALLER_CONTEXT.md`.
 5. `scripts/launch-all.js` validates context, creates one git worktree per agent, renders prompts from `references/worker-prompt-template.md`, spawns workers, and starts the background loop.
 6. `scripts/orchestrator-loop.js` supervises workers. It arbitrates questions, reads optional progress heartbeats, converts progress timeouts into synthetic arbitration requests, detects hung workers, restarts within limits, and runs validation commands.
-7. When all workers finish, the loop writes `coord/review-summary.txt`.
+7. When all workers finish, the loop writes a deterministic `coord/review-summary.txt` from `agents.json` and worker `review_request` self-reports.
 8. The interactive caller session reviews diffs, runs final checks, merges approved work, and removes completed worktrees.
 
 ## Runtime Files
@@ -210,7 +210,7 @@ The approval step writes `context.json`, `DECISIONS.md`, and `CALLER_CONTEXT.md`
 | `coord/decisions.jsonl` | Arbitration and restart decisions. |
 | `coord/progress/<agent>.json` | Optional worker-written heartbeat with phase, summary, latest action, and blocker context. |
 | `coord/plan-reviews/` | Optional Phase 1.5 draft plans, reviewer streams, parsed reviewer JSON, and caller reconciliations. |
-| `coord/review-summary.txt` | Final handoff summary after workers complete. |
+| `coord/review-summary.txt` | Deterministic final handoff summary after workers complete. Built from worker review requests; no final AI summary call is made. |
 | `.agents/worktrees/<agent>` | Worker git worktrees for most CLIs. |
 | `.kilocode/worktrees/<agent>` | Worker git worktrees for Kilo Code. |
 
@@ -222,7 +222,6 @@ The most important settings are:
 
 - `default_cli`: worker CLI for coding tasks and cheap monitor calls.
 - `orchestrator_cli`: optional CLI for request arbitration. If omitted, it follows `default_cli`.
-- `planner_cli`: optional CLI for `scripts/draft-plan.js` initial decomposition. If omitted, it follows `orchestrator_cli`.
 - `cli_templates`: command templates for supported or custom CLIs.
 - `cli_health_checks`: lightweight install checks used by preflight.
 - `reviewers`: optional read-only plan reviewer CLI agents for Phase 1.5.
@@ -240,9 +239,6 @@ module.exports = {
 
   // Optional: use a different CLI/model for arbitration.
   // orchestrator_cli: "claude",
-
-  // Optional: use a different CLI/model for initial read-only draft planning.
-  // planner_cli: "claude",
 
   // Optional: read-only plan reviewers run before final task decomposition.
   // reviewers: [
@@ -293,7 +289,7 @@ Manual parallel agent runs break down when workers need shared context, durable 
 - durable decision logs;
 - liveness and progress supervision;
 - validation-driven restarts;
-- a final review summary for the integrating agent.
+- a deterministic final handoff summary for the integrating agent.
 
 ## Development
 

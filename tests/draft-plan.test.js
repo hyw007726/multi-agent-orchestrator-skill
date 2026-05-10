@@ -22,7 +22,7 @@ const {
 } = require('../scripts/draft-plan');
 
 describe('draft-plan runner', () => {
-  it('invokes the configured planner CLI and writes canonical draft artifacts', () => {
+  it('invokes the configured orchestrator CLI as an optional draft helper and writes canonical artifacts', () => {
     let project;
     try {
       project = createTempProject('draft-plan-success-');
@@ -86,7 +86,7 @@ describe('draft-plan runner', () => {
       ]);
 
       assert.strictEqual(result.status, 0, result.stderr);
-      assert.match(result.stdout, /Draft planner: invoking plannerfake/);
+      assert.match(result.stdout, /Draft helper: invoking orchestratorfake/);
       assert.match(result.stdout, /Canonical draft plan: coord\/plan-reviews\/draft-plan-v1\.json/);
       assert.match(result.stdout, /review-plan\.js --iteration 1/);
 
@@ -123,7 +123,7 @@ describe('draft-plan runner', () => {
       ]);
 
       assert.notStrictEqual(result.status, 0);
-      assert.match(result.stderr, /Planner JSON failed draft-plan validation/);
+      assert.match(result.stderr, /Draft helper JSON failed draft-plan validation/);
       assert.match(result.stderr, /user_requirements must be an array/);
       assert.match(result.stderr, /parallel topology must include at least two worker tasks/);
       assert.ok(fs.existsSync(path.join(project.root, 'coord', 'plan-reviews', 'draft-plan-v1.raw.md')));
@@ -241,6 +241,12 @@ describe('draft-plan runner', () => {
     assert.match(errors, /validation_command must not be an empty array/);
     assert.match(errors, /agent-not-object must be an object/);
 
+    const todoTemplate = validPlan({
+      mode: 'single_worker',
+      tasks: { one: validTask({ description: 'TODO: fill this in' }) },
+    });
+    assert.match(validateDraftPlan(todoTemplate).errors.join('\n'), /TODO placeholders/);
+
     assert.match(
       validateDraftPlan({ ...validPlan({ mode: 'parallel', tasks: {} }), tasks: [] }).errors.join('\n'),
       /tasks must be an object/
@@ -327,17 +333,14 @@ function writePlannerConfig(projectRoot, plannerPath) {
     'module.exports = {',
     '  default_cli: "workerfake",',
     '  orchestrator_cli: "orchestratorfake",',
-    '  planner_cli: "plannerfake",',
     '  launch_dashboard: false,',
     '  cli_templates: {',
     `    workerfake: { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(plannerPath)}, { prompt_file: true }] },`,
     `    orchestratorfake: { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(plannerPath)}, { prompt_file: true }] },`,
-    `    plannerfake: { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(plannerPath)}, { prompt_file: true }] },`,
     '  },',
     '  cli_health_checks: {',
     '    workerfake: "node --version",',
     '    orchestratorfake: "node --version",',
-    '    plannerfake: "node --version",',
     '  },',
     '};',
   ].join('\n') + '\n', 'utf-8');

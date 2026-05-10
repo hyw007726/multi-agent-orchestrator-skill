@@ -46,7 +46,7 @@ describe('prepare-run guided starter pipeline', () => {
       assert.match(result.stdout, /Prepare-run draft stage/);
       assert.match(result.stdout, /\[step\] Preflight configured CLIs/);
       assert.match(result.stdout, /\[step\] Bootstrap coordination files/);
-      assert.match(result.stdout, /\[step\] Draft initial decomposition/);
+      assert.match(result.stdout, /\[step\] Create caller-authored draft template/);
       assert.match(result.stdout, /Prepare-run stopped for caller approval/);
       assert.match(result.stdout, /Optional plan review:/);
       assert.match(result.stdout, /prepare-run\.js --approve-draft/);
@@ -61,7 +61,9 @@ describe('prepare-run guided starter pipeline', () => {
 
       const draft = readJson(path.join(project.root, 'coord', 'plan-reviews', 'draft-plan-v1.json'));
       assert.strictEqual(draft.project, 'Prepare run project');
-      assert.strictEqual(draft.candidate_execution_topology.execution_mode, 'single_worker');
+      assert.match(draft.candidate_execution_topology.execution_mode, /^TODO:/);
+      assert.strictEqual(draft._source.task, 'Add starter automation safely');
+      assert.ok(fs.existsSync(path.join(project.root, 'coord', 'plan-reviews', 'draft-plan-v1.instructions.md')));
       assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees')));
       assert.ok(!fs.existsSync(path.join(project.root, '.kilocode', 'worktrees')));
     } finally {
@@ -85,6 +87,13 @@ describe('prepare-run guided starter pipeline', () => {
         '1000',
       ]);
       assert.strictEqual(draftResult.status, 0, draftResult.stderr);
+      writeApprovedDraft(project.root, {
+        project: 'Prepare approval project',
+        agentName: 'agent-prepare',
+        description: 'Implement the fake prepare-run task.',
+        allowedPaths: ['src/**', 'tests/**'],
+        validationCommand: ['node', '--test'],
+      });
 
       const approvalResult = runPrepare(project.root, [
         '--approve-draft',
@@ -133,6 +142,13 @@ describe('prepare-run guided starter pipeline', () => {
         '1000',
       ]);
       assert.strictEqual(draftResult.status, 0, draftResult.stderr);
+      writeApprovedDraft(project.root, {
+        project: 'Prepare launch project',
+        agentName: 'agent-one',
+        description: 'Create worker-output.txt and request review.',
+        allowedPaths: ['worker-output.txt'],
+        validationCommand: ['test', '-f', 'worker-output.txt'],
+      });
 
       const approvalResult = runPrepare(project.root, [
         '--approve-draft',
@@ -160,7 +176,7 @@ describe('prepare-run guided starter pipeline', () => {
       await waitFor(() => {
         if (!fs.existsSync(summaryPath)) return false;
         const summary = fs.readFileSync(summaryPath, 'utf-8');
-        return summary.includes('Prepare-run e2e summary complete.') ? summary : false;
+        return summary.includes('agent-one created worker-output.txt and is ready for validation.') ? summary : false;
       }, { timeoutMs: 20000, intervalMs: 250 });
 
       cleanupLoopLock(project.root, loopPid);
@@ -275,7 +291,6 @@ function writePrepareConfig(projectRoot, cliPath) {
     'module.exports = {',
     '  default_cli: "preparefake",',
     '  orchestrator_cli: "preparefake",',
-    '  planner_cli: "preparefake",',
     '  launch_dashboard: false,',
     '  cli_templates: {',
     `    preparefake: { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(cliPath)}, { prompt_file: true }] },`,
@@ -298,37 +313,43 @@ function writePrepareCli(projectRoot) {
     '  process.stdout.write("OK\\n");',
     '  process.exit(0);',
     '}',
-    'if (!prompt.includes("read-only initial decomposition planner")) process.exit(7);',
-    'process.stdout.write(JSON.stringify({',
-    '  project: prompt.includes("Prepare approval project") ? "Prepare approval project" : "Prepare run project",',
-    '  user_requirements: ["Guided prepare-run flow"],',
-    '  constraints: ["Stop for caller approval before launch"],',
-    '  candidate_execution_topology: {',
-    '    execution_mode: "single_worker",',
-    '    reason: "The fake task is substantial but sequential.",',
-    '    rejected_alternatives: [',
-    '      { execution_mode: "direct", reason: "Needs generated coordination artifacts." },',
-    '      { execution_mode: "parallel", reason: "No independent fake boundaries." }',
-    '    ],',
-    '    dependency_notes: ["No shared foundation required."],',
-    '    shared_foundation_notes: ["Bootstrap created coordination files."],',
-    '    mode_specific_decomposition: ["One worker handles the fake implementation."]',
-    '  },',
-    '  shared_foundation_assumptions: ["No package or lockfile changes."],',
-    '  known_risks: ["The caller must review before launching."],',
-    '  tasks: {',
-    '    "agent-prepare": {',
-    '      description: "Implement the fake prepare-run task.",',
-    '      allowed_paths: ["src/**", "tests/**"],',
-    '      forbidden_paths: ["coord/", "package.json"],',
-    '      read_first: ["README.md"],',
-    '      validation_command: ["node", "--test"],',
-    '      sequencing_notes: ["Run only after caller approval."]',
-    '    }',
-    '  }',
-    '}));',
+    'process.exit(7);',
   ].join('\n') + '\n', 'utf-8');
   return file;
+}
+
+function writeApprovedDraft(projectRoot, options) {
+  const draftPath = path.join(projectRoot, 'coord', 'plan-reviews', 'draft-plan-v1.json');
+  const agentName = options.agentName;
+  const draft = {
+    project: options.project,
+    user_requirements: ['Guided prepare-run flow'],
+    constraints: ['Stop for caller approval before launch'],
+    candidate_execution_topology: {
+      execution_mode: 'single_worker',
+      reason: 'The fake task is substantial but sequential.',
+      rejected_alternatives: [
+        { execution_mode: 'direct', reason: 'Needs generated coordination artifacts.' },
+        { execution_mode: 'parallel', reason: 'No independent fake boundaries.' },
+      ],
+      dependency_notes: ['No shared foundation required.'],
+      shared_foundation_notes: ['Bootstrap created coordination files.'],
+      mode_specific_decomposition: ['One worker handles the fake implementation.'],
+    },
+    shared_foundation_assumptions: ['No package or lockfile changes.'],
+    known_risks: ['The caller must review before launching.'],
+    tasks: {
+      [agentName]: {
+        description: options.description,
+        allowed_paths: options.allowedPaths,
+        forbidden_paths: ['coord/', 'package.json'],
+        read_first: ['README.md'],
+        validation_command: options.validationCommand,
+        sequencing_notes: ['Run only after caller approval.'],
+      },
+    },
+  };
+  fs.writeFileSync(draftPath, JSON.stringify(draft, null, 2) + '\n', 'utf-8');
 }
 
 function writeEndToEndConfig(projectRoot, cliPath) {
@@ -336,7 +357,6 @@ function writeEndToEndConfig(projectRoot, cliPath) {
     'module.exports = {',
     '  default_cli: "e2efake",',
     '  orchestrator_cli: "e2efake",',
-    '  planner_cli: "e2efake",',
     '  poll_min_ms: 250,',
     '  poll_max_ms: 500,',
     '  launch_dashboard: false,',

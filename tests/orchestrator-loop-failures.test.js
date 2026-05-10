@@ -408,7 +408,9 @@ describe('orchestrator loop failure paths', () => {
 
       const requests = readJsonl(path.join(project.root, 'coord', 'requests.jsonl'));
       assert.strictEqual(requests.find((r) => r.request_id === 'req-stalled').status, 'resolved');
-      assert.match(fs.readFileSync(path.join(project.root, 'coord', 'review-summary.txt'), 'utf-8'), /Recovered summary/);
+      const summary = fs.readFileSync(path.join(project.root, 'coord', 'review-summary.txt'), 'utf-8');
+      assert.match(summary, /ALL AGENTS COMPLETED/);
+      assert.match(summary, /Please end this agent/);
     } finally {
       if (project) project.cleanup();
     }

@@ -4,8 +4,9 @@
 /**
  * Drafts the first topology-aware decomposition artifact.
  *
- * The planner is read-only: it receives the user task plus a compact repository
- * scan and must return JSON. This script writes only under coord/plan-reviews/.
+ * The optional helper is read-only: it receives the user task plus a compact
+ * repository scan and must return JSON. This script writes only under
+ * coord/plan-reviews/.
  */
 
 const fs = require("fs");
@@ -46,11 +47,11 @@ function runDraftPlan(argv = process.argv.slice(2), cwd = process.cwd()) {
     throw new Error("User task is empty.");
   }
   const config = loadConfig(cwd);
-  const plannerCli = config.planner_cli || config.orchestrator_cli || config.default_cli;
-  const template = config.cli_templates[plannerCli];
-  const templateValidation = validateCliTemplate(plannerCli, template);
+  const draftCli = config.orchestrator_cli || config.default_cli;
+  const template = config.cli_templates[draftCli];
+  const templateValidation = validateCliTemplate(draftCli, template);
   if (!templateValidation.ok) {
-    throw new Error(`cli_templates.${plannerCli} is invalid for planner_cli: ${templateValidation.message}`);
+    throw new Error(`cli_templates.${draftCli} is invalid for draft-plan helper: ${templateValidation.message}`);
   }
 
   const coordDir = resolveFrom(cwd, args.coordDir);
@@ -77,12 +78,12 @@ function runDraftPlan(argv = process.argv.slice(2), cwd = process.cwd()) {
   });
   fs.writeFileSync(promptPath, prompt, "utf-8");
 
-  console.log(formatModelHeadsUp(config, { plannerCli, workerClis: [config.default_cli] }));
+  console.log(formatModelHeadsUp(config, { workerClis: [config.default_cli], checkedClis: [draftCli] }));
   console.log("");
-  console.log(`Draft planner: invoking ${plannerCli} (${templateValidation.mode} template).`);
+  console.log(`Draft helper: invoking ${draftCli} (${templateValidation.mode} template).`);
   console.log(`Prompt: ${path.relative(cwd, promptPath)}`);
 
-  const { result, mode } = spawnCliTemplateSync(plannerCli, template, {
+  const { result, mode } = spawnCliTemplateSync(draftCli, template, {
     promptFile: promptPath,
     promptText: prompt,
     cwd: planReviewsDir,
@@ -101,22 +102,22 @@ function runDraftPlan(argv = process.argv.slice(2), cwd = process.cwd()) {
     throw new Error(formatSpawnError(result.error, args.timeoutMs));
   }
   if (result.status !== 0) {
-    throw new Error(`Planner CLI exited with code ${result.status}. Raw output: ${path.relative(cwd, rawPath)}`);
+    throw new Error(`Draft helper CLI exited with code ${result.status}. Raw output: ${path.relative(cwd, rawPath)}`);
   }
 
   const parsed = extractJsonObject(raw);
   if (!parsed) {
-    throw new Error(`Planner did not emit a parseable JSON object. Raw output: ${path.relative(cwd, rawPath)}`);
+    throw new Error(`Draft helper did not emit a parseable JSON object. Raw output: ${path.relative(cwd, rawPath)}`);
   }
 
   const validation = validateDraftPlan(parsed);
   if (!validation.ok) {
     const details = validation.errors.map((error) => `  - ${error}`).join("\n");
-    throw new Error(`Planner JSON failed draft-plan validation:\n${details}\nRaw output: ${path.relative(cwd, rawPath)}`);
+    throw new Error(`Draft helper JSON failed draft-plan validation:\n${details}\nRaw output: ${path.relative(cwd, rawPath)}`);
   }
 
   writeJsonFile(draftPlanPath, parsed);
-  console.log(`Planner output captured (${mode}); raw stream: ${path.relative(cwd, rawPath)}`);
+  console.log(`Draft helper output captured (${mode}); raw stream: ${path.relative(cwd, rawPath)}`);
   console.log(`Canonical draft plan: ${path.relative(cwd, draftPlanPath)}`);
   console.log("");
   console.log("Next steps:");
@@ -241,7 +242,33 @@ function validateDraftPlan(plan) {
     }
   }
 
+  const todoPaths = findTodoPlaceholders(plan);
+  if (todoPaths.length > 0) {
+    errors.push(`Draft plan still contains TODO placeholders: ${todoPaths.slice(0, 8).join(", ")}${todoPaths.length > 8 ? ", ..." : ""}. Replace them before approval.`);
+  }
+
   return { ok: errors.length === 0, errors };
+}
+
+function findTodoPlaceholders(value, prefix = "") {
+  const out = [];
+  visit(value, prefix || "$");
+  return out;
+
+  function visit(current, pathLabel) {
+    if (typeof current === "string") {
+      if (/^TODO:/.test(current.trim())) out.push(pathLabel);
+      return;
+    }
+    if (Array.isArray(current)) {
+      current.forEach((item, index) => visit(item, `${pathLabel}[${index}]`));
+      return;
+    }
+    if (!isPlainObject(current)) return;
+    for (const [key, item] of Object.entries(current)) {
+      visit(item, pathLabel === "$" ? key : `${pathLabel}.${key}`);
+    }
+  }
 }
 
 function validateRejectedAlternatives(value, errors) {
@@ -539,7 +566,7 @@ function toPosix(value) {
 }
 
 function formatSpawnError(error, timeoutMs) {
-  if (error.code === "ETIMEDOUT") return `Planner CLI timed out after ${timeoutMs}ms.`;
+  if (error.code === "ETIMEDOUT") return `Draft helper CLI timed out after ${timeoutMs}ms.`;
   return error.message;
 }
 
@@ -553,7 +580,7 @@ function usage() {
     "  node scripts/draft-plan.js --task <task> [--project <name>] [--coord ./coord] [--force]",
     "  node scripts/draft-plan.js --task-file <file> [--repo-scan-summary <file>] [--timeout-ms 600000]",
     "",
-    "Writes coord/plan-reviews/draft-plan-v1.json from a read-only planner CLI call.",
+    "Writes coord/plan-reviews/draft-plan-v1.json from an optional read-only draft-helper CLI call.",
   ].join("\n");
 }
 

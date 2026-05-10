@@ -18,10 +18,6 @@ module.exports = {
   // use a different CLI/model from the workers.
   // orchestrator_cli: "claude",
 
-  // Optional: the CLI used by scripts/draft-plan.js for the initial read-only
-  // decomposition draft. If omitted, planner_cli follows orchestrator_cli.
-  // planner_cli: "claude",
-
   // Optional Phase 1.5 plan reviewers. When configured, the caller can run
   // scripts/review-plan.js after drafting an initial decomposition and before
   // writing the final coord/context.json task map. Reviewers are read-only plan
@@ -43,8 +39,7 @@ module.exports = {
   // Command templates for supported CLIs.
   // Use {prompt_file} as a placeholder for the generated prompt text file.
   // By centralizing these here you can adapt if a tool changes its CLI flags, and
-  // the same template is reused for the worker spawn, the orchestrator-CLI call,
-  // and the final review-summary call.
+  // the same template is reused for the worker spawn and the orchestrator-CLI call.
   //
   // Prefer structured argv templates when the CLI accepts a prompt file or prompt
   // argument. They run with shell:false, so prompt paths and extra args are not

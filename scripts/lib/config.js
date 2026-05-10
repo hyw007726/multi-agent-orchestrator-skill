@@ -27,8 +27,6 @@ const DEFAULTS = {
   // If omitted, request arbitration uses the same CLI as workers. Projects that
   // want a stronger/different arbitrator should set orchestrator_cli explicitly.
   orchestrator_cli: null,
-  // If omitted, initial draft-plan generation uses the same CLI as request arbitration.
-  planner_cli: null,
   cli_templates: { ...DEFAULT_CLI_TEMPLATES },
   cli_health_checks: { ...DEFAULT_HEALTH_CHECKS },
   default_timeout_mins: 10,
@@ -52,7 +50,6 @@ function defaultConfig() {
     reviewers: [],
   };
   config.orchestrator_cli = config.default_cli;
-  config.planner_cli = config.orchestrator_cli;
   return config;
 }
 
@@ -68,11 +65,6 @@ function loadConfig(cwd = process.cwd()) {
   const hasExplicitOrchestratorCli = typeof parsed.orchestrator_cli === "string" && parsed.orchestrator_cli.trim() !== "";
   if (hasExplicitOrchestratorCli) merged.orchestrator_cli = parsed.orchestrator_cli;
   else merged.orchestrator_cli = merged.default_cli;
-  if (typeof parsed.planner_cli === "string" && parsed.planner_cli.trim() !== "") {
-    merged.planner_cli = parsed.planner_cli;
-  } else {
-    merged.planner_cli = merged.orchestrator_cli;
-  }
   if (parsed.cli_templates && typeof parsed.cli_templates === "object") {
     // Project-level entries override built-ins; omitted CLIs keep usable defaults.
     merged.cli_templates = { ...DEFAULT_CLI_TEMPLATES, ...parsed.cli_templates };

@@ -24,15 +24,13 @@ The runtime itself is independent of the caller. The caller only performs decomp
 
 
 > **Architectural Recommendation & Intelligence Boundaries:**
-> This skill is highly optimized for cost-efficiency without sacrificing quality. It relies on **three distinct decision-making contexts**, each driven by a configurable CLI in `orchestrator.config.js`:
+> This skill is optimized to keep architectural judgment in the interactive caller session while using configurable CLIs only where headless execution is necessary. It relies on **three distinct contexts**:
 >
-> 1. **Initial Decomposition (Interactive Session):** Your active orchestrator session acts as the primary architect. It analyzes the task, breaks it into non-overlapping boundaries, writes the `coord/context.json`, and spawns the background agents.
-> 2. **The Background Orchestrator Loop (Headless Script):** Once launched, the background loop has **no access to your chat history**. It splits its LLM work across two CLI roles:
->     - **Request arbitration** (cross-cutting decisions over pending requests, synthetic `progress_timeout` requests, plus `end_agent` / `soft_restart` / `hard_restart` actions) is invoked through the **`orchestrator_cli`**. If omitted, it follows `default_cli`, so no caller is forced to have Claude installed. Arbitration benefits from a stronger reasoning model when conflicts and architectural trade-offs are complex.
->     - **Final review summary** in Phase 5 is invoked through the **Worker CLI** (`default_cli`). This is a narrow, single-turn handoff call that stays cheap.
-> 3. **Final Integration (Interactive Session):** After the background loop completes, you return to a high-tier Orchestrator session to act as the integrator, reviewing the completed worktrees and safely merging them.
+> 1. **Initial Decomposition (Interactive Session):** Your active caller session is the primary architect. It analyzes the task, chooses the topology, writes or edits the draft plan, materializes `coord/context.json`, and launches workers only after approval.
+> 2. **The Background Orchestrator Loop (Headless Script):** Once launched, the background loop has **no access to your chat history**. It invokes **`orchestrator_cli`** only for request arbitration: pending worker questions, synthetic `progress_timeout` requests, and `end_agent` / `soft_restart` / `hard_restart` actions. If omitted, `orchestrator_cli` follows `default_cli`.
+> 3. **Final Integration (Interactive Session):** After the background loop completes, it writes a deterministic `coord/review-summary.txt` from worker self-reports. You return to the caller session to review diffs and safely merge completed worktrees.
 >
-> **Model Selection Strategy:** Use a powerful reasoning model for your interactive orchestrator sessions (Contexts 1 & 3). Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for the bulk coding and final summary call. Set `orchestrator_cli` only when request arbitration should use a different CLI/model from the workers.
+> **Model Selection Strategy:** Use a powerful reasoning model for your interactive caller sessions (Contexts 1 & 3). Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for bulk coding. Set `orchestrator_cli` only when request arbitration should use a different CLI/model from the workers.
 >
 > **How to pin a model:** Two patterns depending on the CLI.
 > - **Inline-flag CLIs** (claude, aider, gemini): model selection is part of `cli_templates`. Prefer structured argv templates and add the CLI's model flag in `args` — e.g. `{ cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] }` for Sonnet, or add `--model gpt-4o-mini` to the Aider args.
@@ -48,10 +46,9 @@ The runtime itself is independent of the caller. The caller only performs decomp
 Before beginning Phase 1, you MUST check if an `orchestrator.config.js` file exists in the project root. This file acts as the dynamic source of truth for the user's preferences.
 
 If it exists, read it to determine:
-- **`default_cli`**: The Worker CLI to use for spawning agents and for the final-summary call.
+- **`default_cli`**: The Worker CLI to use for spawning coding agents.
 - **`orchestrator_cli`**: Optional CLI used by the background loop for request arbitration. If omitted, it follows `default_cli`. Set this independently from `default_cli` only when you want arbitration to use a different CLI/model than your workers.
-- **`planner_cli`**: Optional CLI used by `scripts/draft-plan.js` for the initial read-only decomposition draft. If omitted, it follows `orchestrator_cli`.
-- **`cli_templates`**: The template definitions used to spawn worker CLIs. Prefer structured `{ cmd, args }` entries so they run with `shell:false`; keep string templates when you intentionally need shell behavior. The same templates are reused for `orchestrator_cli` calls and final-summary calls, so the system is immune to third-party tool interface changes. **This is also where you pin a model** — add the CLI's model flag (`--model <id>`, `--llm <id>`, etc.) to the template args/string and that model is used for every spawn driven by it.
+- **`cli_templates`**: The template definitions used to spawn worker CLIs and drive `orchestrator_cli` arbitration calls. Prefer structured `{ cmd, args }` entries so they run with `shell:false`; keep string templates when you intentionally need shell behavior. **This is also where you pin a model** — add the CLI's model flag (`--model <id>`, `--llm <id>`, etc.) to the template args/string and that model is used for every spawn driven by it.
 - **`reviewers`**: Optional Phase 1.5 read-only plan reviewer CLIs. Each entry has `name`, `cli`, `review_focus`, optional `model`, optional `model_flag`, optional `template_args`, and optional `timeout_mins`. Every reviewer `cli` must have matching `cli_templates.<cli>` and `cli_health_checks.<cli>` entries.
 - **`max_plan_review_iterations`**: `"auto"` by default, or a positive integer. In `"auto"` mode, run at least one review iteration when reviewers are configured, then explicitly decide after reconciliation whether another pass is worth it. Numeric mode means run exactly that many iterations.
 - **`default_timeout_mins`**: The default time before an agent is considered hanging (Liveness).
@@ -72,10 +69,6 @@ module.exports = {
   // Optional: uncomment only if request arbitration should use a different CLI
   // from the workers. If omitted, orchestrator_cli follows default_cli.
   // orchestrator_cli: "claude",
-
-  // Optional: uncomment only if initial draft planning should use a different CLI
-  // from arbitration. If omitted, planner_cli follows orchestrator_cli.
-  // planner_cli: "claude",
 
   // Optional Phase 1.5 plan reviewers. They critique the draft decomposition
   // before coord/context.json is finalized; they do not launch workers or edit.
@@ -123,7 +116,7 @@ These three steps run unconditionally on every invocation, before any task reaso
 node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.js
 ```
 
-The script checks `default_cli`, `orchestrator_cli`, `planner_cli`, and any configured plan reviewer CLIs by default. Before probing, it prints a model heads-up: pinned template models are shown by name, external-config CLIs are called out as using their own selected provider/model, and reviewer-specific `model` / `template_args` overrides are listed. It then runs two probes per CLI: a `--version` install check, then an auth probe that exercises the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection. Pass `--skip-auth` for install-only checks (CI / offline). If any check fails, abort and surface the diagnostic — typical fixes are installing the CLI, putting it on `$PATH`, signing in, or selecting a default model.
+The script checks `default_cli`, `orchestrator_cli`, and any configured plan reviewer CLIs by default. Before probing, it prints a model heads-up: pinned template models are shown by name, external-config CLIs are called out as using their own selected provider/model, and reviewer-specific `model` / `template_args` overrides are listed. It then runs two probes per CLI: a `--version` install check, then an auth probe that exercises the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection. Pass `--skip-auth` for install-only checks (CI / offline). If any check fails, abort and surface the diagnostic — typical fixes are installing the CLI, putting it on `$PATH`, signing in, or selecting a default model.
 
 ## Phase 1 — Task Evaluation, Topology Selection & Decomposition
 
@@ -160,7 +153,7 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/prepare-run.js \
   --coord ./coord
 ```
 
-Default mode runs preflight, bootstraps `coord/` when needed, drafts `coord/plan-reviews/draft-plan-v1.json`, validates the draft shape, and then stops for caller approval. It does not materialize `context.json` or launch workers until the caller has reviewed or edited the draft.
+Default mode runs preflight, bootstraps `coord/` when needed, writes a caller-authored `coord/plan-reviews/draft-plan-v1.json` template plus `draft-plan-v1.instructions.md`, and then stops. The caller session must replace every TODO placeholder, choose the topology, define worker boundaries, and review the draft before approval.
 
 After caller approval:
 
@@ -175,7 +168,7 @@ Approval mode materializes `context.json`, `DECISIONS.md`, and `CALLER_CONTEXT.m
 
 ## Phase 1.5 — Optional Plan Review
 
-If `reviewers` is configured, do not write the final `coord/context.json` task map yet. First draft the decomposition as `coord/plan-reviews/draft-plan-v1.json`. You may write this manually from the caller session, or use the read-only planner helper:
+If `reviewers` is configured, do not write the final `coord/context.json` task map yet. First draft the decomposition as `coord/plan-reviews/draft-plan-v1.json`. The caller session should normally write this draft itself. If you explicitly want an optional read-only helper, you may run:
 
 ```bash
 node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/draft-plan.js \
@@ -184,7 +177,7 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/draft-plan.js \
   --coord ./coord
 ```
 
-The planner uses `planner_cli` if configured, otherwise `orchestrator_cli`, writes `coord/plan-reviews/draft-plan-v1.prompt.md`, `coord/plan-reviews/draft-plan-v1.raw.md`, and the canonical `coord/plan-reviews/draft-plan-v1.json`, and must not launch workers or edit project files. Include the user requirements, constraints, candidate execution topology, rejected topology alternatives, topology reason, dependency notes, candidate file ownership, shared-foundation assumptions, mode-specific task decomposition, validation commands, known risks, and any sequencing dependencies.
+The optional helper uses `orchestrator_cli` (falling back to `default_cli` through normal config), writes `coord/plan-reviews/draft-plan-v1.prompt.md`, `coord/plan-reviews/draft-plan-v1.raw.md`, and the canonical `coord/plan-reviews/draft-plan-v1.json`, and must not launch workers or edit project files. The caller still owns review and approval. Include the user requirements, constraints, candidate execution topology, rejected topology alternatives, topology reason, dependency notes, candidate file ownership, shared-foundation assumptions, mode-specific task decomposition, validation commands, known risks, and any sequencing dependencies.
 
 Run one read-only review iteration:
 
@@ -334,8 +327,8 @@ The orchestrator loop doesn't just watch for crashes; it monitors for **actual c
 ## Phase 5 — Review and Integration
 
 When all worker agents finish, the `orchestrator-loop.js` script will automatically:
-1. **Collect Diffs**: Gather git stats and diffs from all completed agent worktrees.
-2. **AI Summary**: Spawn a final **worker agent session** (using the same CLI the workers used) to generate a concise, plain-text review summary at `coord/review-summary.txt`.
+1. **Aggregate Worker Self-Reports**: Read `agents.json` and each worker's resolved `review_request` content.
+2. **Write Deterministic Summary**: Generate `coord/review-summary.txt` without making a final AI call.
 3. **Optional Popup Notification**: If `launch_review_terminal` is enabled, open a **new terminal window** displaying this summary.
 4. **Exit**: The orchestrator loop will then safely terminate.
 

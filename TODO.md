@@ -21,8 +21,8 @@ Lower model role play testing
   - Make the script emit clear next-step commands for optional plan review and final launch.
   - Ensure the generated files are explicit because the background loop cannot see the original chat.
 
-- **[DONE C3] Add planner-driven initial decomposition**
-  - Add `planner_cli` or explicitly reuse `orchestrator_cli` to draft the first decomposition from the user task and repo scan summary.
+- **[DONE C3] Add caller-owned initial decomposition with optional helper**
+  - Keep the happy path caller-authored; optionally reuse `orchestrator_cli` through `draft-plan.js` for a read-only draft helper.
   - Produce `coord/plan-reviews/draft-plan-v1.json` as the canonical draft artifact.
   - Include topology choice, rejected topology alternatives, shared foundation assumptions, candidate tasks, file ownership, and validation commands.
   - Do not let the planner launch workers or edit project files directly.
