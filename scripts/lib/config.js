@@ -1,6 +1,17 @@
 const fs = require("fs");
 const path = require("path");
 
+const CONFIG_FILENAMES = [
+  "orchestrator.config.jsonc",
+  "orchestrator.config.json",
+  "orchestrator.config.js",
+];
+
+const LOCAL_CONFIG_FILENAMES = [
+  "orchestrator.config.local.jsonc",
+  "orchestrator.config.local.json",
+];
+
 // Default `--version`-style probes per CLI. Overridable via cli_health_checks in config.
 // `--version` confirms the binary is installed and runnable; it does NOT confirm auth or
 // that a default model is selected. Use the --auth flag on the preflight script for that.
@@ -54,13 +65,15 @@ function defaultConfig() {
 }
 
 function loadConfig(cwd = process.cwd()) {
-  const configPath = path.resolve(cwd, "orchestrator.config.js");
-  if (!fs.existsSync(configPath)) return defaultConfig();
+  const configPaths = findConfigPaths(cwd);
+  if (configPaths.length === 0) return defaultConfig();
 
-  const parsed = require(configPath) ?? {};
+  const parsed = mergeConfigInputs(configPaths.map((configPath) => loadProjectConfig(configPath)));
+  return normalizeConfig(parsed);
+}
 
+function normalizeConfig(parsed = {}) {
   const merged = defaultConfig();
-
   if (typeof parsed.default_cli === "string") merged.default_cli = parsed.default_cli;
   const hasExplicitOrchestratorCli = typeof parsed.orchestrator_cli === "string" && parsed.orchestrator_cli.trim() !== "";
   if (hasExplicitOrchestratorCli) merged.orchestrator_cli = parsed.orchestrator_cli;
@@ -92,6 +105,164 @@ function loadConfig(cwd = process.cwd()) {
   merged.reviewers = normalizeReviewers(parsed.reviewers, merged);
 
   return merged;
+}
+
+function mergeConfigInputs(configs) {
+  const merged = {};
+  for (const config of configs) {
+    if (!isPlainObject(config)) continue;
+
+    const cliTemplates = isPlainObject(config.cli_templates) ? config.cli_templates : undefined;
+    const cliHealthChecks = isPlainObject(config.cli_health_checks) ? config.cli_health_checks : undefined;
+    const previousCliTemplates = isPlainObject(merged.cli_templates) ? merged.cli_templates : {};
+    const previousCliHealthChecks = isPlainObject(merged.cli_health_checks) ? merged.cli_health_checks : {};
+    const { cli_templates: _cliTemplates, cli_health_checks: _cliHealthChecks, ...rest } = config;
+
+    Object.assign(merged, rest);
+    if (cliTemplates) {
+      merged.cli_templates = {
+        ...previousCliTemplates,
+        ...cliTemplates,
+      };
+    }
+    if (cliHealthChecks) {
+      merged.cli_health_checks = {
+        ...previousCliHealthChecks,
+        ...cliHealthChecks,
+      };
+    }
+  }
+  return merged;
+}
+
+function findConfigPath(cwd = process.cwd()) {
+  const root = path.resolve(cwd);
+  for (const filename of CONFIG_FILENAMES) {
+    const candidate = path.join(root, filename);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function findLocalConfigPath(cwd = process.cwd()) {
+  const root = path.resolve(cwd);
+  for (const filename of LOCAL_CONFIG_FILENAMES) {
+    const candidate = path.join(root, filename);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function findConfigPaths(cwd = process.cwd()) {
+  return [findConfigPath(cwd), findLocalConfigPath(cwd)].filter(Boolean);
+}
+
+function loadProjectConfig(configPath) {
+  const ext = path.extname(configPath);
+  if (ext === ".js" || ext === ".cjs") return require(configPath);
+  if (ext === ".json" || ext === ".jsonc") {
+    const source = fs.readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
+    return JSON.parse(stripJsonc(source));
+  }
+  throw new Error(`Unsupported config file extension for ${path.basename(configPath)}.`);
+}
+
+function stripJsonc(source) {
+  return stripTrailingCommas(stripJsonComments(source));
+}
+
+function stripJsonComments(source) {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    const next = source[i + 1];
+
+    if (inString) {
+      output += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      output += char;
+      continue;
+    }
+
+    if (char === "/" && next === "/") {
+      i += 2;
+      while (i < source.length && source[i] !== "\n" && source[i] !== "\r") i++;
+      if (i < source.length) {
+        output += source[i];
+        if (source[i] === "\r" && source[i + 1] === "\n") output += source[++i];
+      }
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      i += 2;
+      while (i < source.length) {
+        if (source[i] === "*" && source[i + 1] === "/") {
+          i++;
+          break;
+        }
+        if (source[i] === "\n" || source[i] === "\r") output += source[i];
+        i++;
+      }
+      continue;
+    }
+
+    output += char;
+  }
+
+  return output;
+}
+
+function stripTrailingCommas(source) {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+
+    if (inString) {
+      output += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      output += char;
+      continue;
+    }
+
+    if (char === ",") {
+      let j = i + 1;
+      while (j < source.length && /\s/.test(source[j])) j++;
+      if (source[j] === "}" || source[j] === "]") continue;
+    }
+
+    output += char;
+  }
+
+  return output;
 }
 
 function normalizeMaxPlanReviewIterations(value) {
@@ -183,7 +354,15 @@ function isPlainObject(value) {
 }
 
 module.exports = {
+  CONFIG_FILENAMES,
+  LOCAL_CONFIG_FILENAMES,
+  findConfigPath,
+  findConfigPaths,
+  findLocalConfigPath,
   loadConfig,
+  mergeConfigInputs,
   normalizeMaxPlanReviewIterations,
   normalizeReviewers,
+  normalizeConfig,
+  stripJsonc,
 };

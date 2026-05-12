@@ -25,6 +25,10 @@ const COMMON_FOUNDATION_PATHS = [
   ".eslintrc",
   ".eslintrc.js",
   ".gitignore",
+  "orchestrator.config.jsonc",
+  "orchestrator.config.json",
+  "orchestrator.config.local.jsonc",
+  "orchestrator.config.local.json",
   "orchestrator.config.js",
 ];
 
@@ -117,7 +121,7 @@ function validateTaskRecord(taskName, task, config, errors, warnings) {
   if (!cli) {
     errors.push(`tasks.${taskName}.cli is missing and config.default_cli is not set.`);
   } else if (!config.cli_templates || config.cli_templates[cli] === undefined) {
-    errors.push(`tasks.${taskName}.cli "${cli}" has no cli_templates.${cli} entry. Add it to orchestrator.config.js or choose a configured CLI.`);
+    errors.push(`tasks.${taskName}.cli "${cli}" has no cli_templates.${cli} entry. Add it to orchestrator.config.jsonc or choose a configured CLI.`);
   } else {
     const templateValidation = validateCliTemplate(cli, config.cli_templates[cli]);
     if (!templateValidation.ok) {

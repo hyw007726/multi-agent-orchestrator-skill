@@ -1248,7 +1248,7 @@ Apply the responsibilities and response format above to these new requests.
 }
 
 // Calls the orchestrator CLI for arbitration. Honors `orchestrator_cli` + `cli_templates`
-// in orchestrator.config.js so monitoring runs through a configurable (often cheap) model.
+// in orchestrator config so monitoring runs through a configurable (often cheap) model.
 function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
   const cli = parsedConfig.orchestrator_cli;
   const template = parsedConfig.cli_templates[cli];

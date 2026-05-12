@@ -65,7 +65,7 @@ function runBootstrap() {
         mode: "code",
         read_first: ["src/commands/index.js", "src/lib/process-helpers.js", "tests/commands/"],
         allowed_paths: ["src/commands/task-runner/**", "tests/commands/task-runner/**", "src/lib/process-helpers.js"],
-        forbidden_paths: ["package.json", "orchestrator.config.js", "coord/", "README.md"],
+        forbidden_paths: ["package.json", "orchestrator.config.jsonc", "coord/", "README.md"],
         validation_command: ["node", "--test", "tests/commands/task-runner/"],
         timeout_mins: 30,
         progress_timeout_mins: 10,

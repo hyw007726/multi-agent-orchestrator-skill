@@ -9,7 +9,7 @@ This skill defines a caller-neutral, CLI-agnostic multi-agent orchestration syst
 
 ## Prerequisites & Recommendations
 Before using this skill, ensure you have:
-1. **A Headless Worker CLI**: Installed globally. This skill uses `kilo` (Kilo Code) by default, but it can orchestrate **Aider**, **Claude Code**, **Gemini**, **Codex**, **OpenCode**, or any other CLI added to `cli_templates` in `orchestrator.config.js`. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
+1. **A Headless Worker CLI**: Installed globally. This skill uses `kilo` (Kilo Code) by default, but it can orchestrate **Aider**, **Claude Code**, **Gemini**, **Codex**, **OpenCode**, or any other CLI added to `cli_templates` in `orchestrator.config.jsonc`. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
 
 ## Caller Support
 
@@ -42,8 +42,12 @@ The runtime itself is independent of the caller. The caller only performs decomp
 >
 > **Recommended default combination:** `default_cli: kilo` + DeepSeek V4 Pro (`deepseek-v4-pro`, 1M context, cheap and fast). Because Kilo is an external-config CLI, set this up by configuring DeepSeek as a BYOK provider in Kilo and selecting `deepseek-v4-pro` in its model picker — `cli_templates.kilo` does not need to change. Then run `node <skill>/scripts/preflight.js` to confirm the chain (API key + provider + model selection) is actually exercising the API, not just confirming the binary is installed.
 
-## ⚙️ Configuration (`orchestrator.config.js`)
-Before beginning Phase 1, you MUST check if an `orchestrator.config.js` file exists in the project root. This file acts as the dynamic source of truth for the user's preferences.
+## ⚙️ Configuration (`orchestrator.config.jsonc`)
+Before beginning Phase 1, you MUST check if an `orchestrator.config.jsonc` file exists in the project root. This JSONC file acts as the shared source of truth for project/team preferences. The loader also accepts pure `orchestrator.config.json` and legacy executable `orchestrator.config.js`; if multiple shared files exist, preference order is JSONC, then JSON, then JS.
+
+After the shared config, the loader applies an optional untracked local override file: `orchestrator.config.local.jsonc` (or pure `orchestrator.config.local.json`). Use it only for personal machine-specific differences such as local CLI choice, dashboard behavior, or local wrapper commands. It can be as small as `{}` and should not duplicate shared defaults.
+
+The shipped config includes a `$schema` reference to the published `references/orchestrator-config.schema.json`. Editors that understand JSON Schema use it for autocomplete, descriptions, allowed values, and validation, so optional settings should be discovered through completion instead of commented-out duplicate config blocks.
 
 If it exists, read it to determine:
 - **`default_cli`**: The Worker CLI to use for spawning coding agents.
@@ -59,46 +63,31 @@ If it exists, read it to determine:
 - **`cli_health_checks`**: Per-CLI probe commands run by `scripts/preflight.js` to fail fast on install / auth issues. Defaults to `<cli> --version` for every supported CLI.
 - **`launch_dashboard` / `launch_review_terminal`**: Optional GUI terminal auto-launch. `launch_dashboard` defaults to `"auto"`: it opens a dashboard terminal on local macOS, skips auto-launch in CI/SSH/non-macOS, and can be forced with `true` or disabled with `false`.
 
-Example `orchestrator.config.js`:
-```js
-// Toggle options by commenting/uncommenting lines.
-module.exports = {
+Example `orchestrator.config.jsonc`:
+```jsonc
+{
+  "$schema": "https://raw.githubusercontent.com/hyw007726/multi-agent-orchestrator-skill/main/references/orchestrator-config.schema.json",
+
   // The background CLI worker to execute tasks.
-  default_cli: "kilo",
-
-  // Optional: uncomment only if request arbitration should use a different CLI
-  // from the workers. If omitted, orchestrator_cli follows default_cli.
-  // orchestrator_cli: "claude",
-
-  // Optional Phase 1.5 plan reviewers. They critique the draft decomposition
-  // before coord/context.json is finalized; they do not launch workers or edit.
-  // reviewers: [
-  //   {
-  //     name: "architecture",
-  //     cli: "claude",
-  //     model: "claude-sonnet-4-6",
-  //     review_focus: "ownership boundaries, shared foundation work, and sequencing risks",
-  //   },
-  // ],
-  // max_plan_review_iterations: "auto",
+  "default_cli": "kilo",
 
   // Command templates for supported CLIs.
-  // Prefer structured argv templates. Use { prompt_file: true } to pass the
-  // generated prompt file path as one argv item, or { prompt_text: true } to pass
+  // Prefer structured argv templates. Use { "prompt_file": true } to pass the
+  // generated prompt file path as one argv item, or { "prompt_text": true } to pass
   // the prompt contents as one argv item. String templates remain supported for
   // CLIs that genuinely need shell behavior.
-  cli_templates: {
-    kilo: 'kilo run "$(cat {prompt_file})" --auto',
-    aider: { cmd: "aider", args: ["--message-file", { prompt_file: true }, "--yes"] },
-    claude: { cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
-    gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo"] },
-    codex: { cmd: "codex", args: ["exec", "--dangerously-bypass-approvals-and-sandbox", { prompt_text: true }] },
-    opencode: { cmd: "opencode", args: ["run", { prompt_text: true }, "--yes"] },
-  },
-};
+  "cli_templates": {
+    "kilo": "kilo run \"$(cat {prompt_file})\" --auto",
+    "aider": { "cmd": "aider", "args": ["--message-file", { "prompt_file": true }, "--yes"] },
+    "claude": { "cmd": "claude", "args": ["-p", { "prompt_text": true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
+    "gemini": { "cmd": "gemini", "args": ["--prompt", { "prompt_text": true }, "--yolo"] },
+    "codex": { "cmd": "codex", "args": ["exec", "--dangerously-bypass-approvals-and-sandbox", { "prompt_text": true }] },
+    "opencode": { "cmd": "opencode", "args": ["run", { "prompt_text": true }, "--yes"] }
+  }
+}
 ```
 
-If the file does not exist, you MUST dynamically evaluate the overall size and complexity of the user's project to determine sensible default bounds (e.g., a simple script might only need a 5-minute progress timeout and 3 iterations, while a complex React app might need a 20-minute progress timeout and 10 iterations). You can also offer to create this config file for the user so they can explicitly customize their workflow bounds in the future!
+If no shared or local config file exists, you MUST dynamically evaluate the overall size and complexity of the user's project to determine sensible default bounds (e.g., a simple script might only need a 5-minute progress timeout and 3 iterations, while a complex React app might need a 20-minute progress timeout and 10 iterations). You can also offer to create the shared config file for the user so they can explicitly customize workflow bounds in the future!
 
 > **Note:** All worker CLIs are automatically launched with their respective "bypass permissions" flags (`--yes`, `--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--auto`) so they run fully autonomously in the background. The Orchestrator Loop will remember which CLI tool you spawned the agent with and will automatically use the exact same tool if it needs to respawn the agent after a rollback!
 
@@ -108,7 +97,7 @@ These three steps run unconditionally on every invocation, before any task reaso
 
 **Step 1 — No setup required:** The skill has no external dependencies — all scripts use Node.js built-in modules only. No `npm install`, no global packages, no build step. Proceed directly to Step 2.
 
-**Step 2 — Read configuration:** Read `orchestrator.config.js` from the project root (as described in the Configuration section above) to load the user's preferred CLI and default bounds.
+**Step 2 — Read configuration:** Read `orchestrator.config.jsonc` from the project root, falling back to `orchestrator.config.json` or legacy `orchestrator.config.js`, then apply optional `orchestrator.config.local.jsonc` / `orchestrator.config.local.json`, to load the user's preferred CLI and default bounds.
 
 **Step 3 — Preflight CLI health check (REQUIRED):** Verify the worker CLI and orchestrator CLI are runnable before any decomposition or spawning — an unauthenticated CLI will hang on an interactive prompt for the full liveness timeout otherwise.
 
@@ -274,6 +263,16 @@ To ensure critical architectural rules are never lost in JSON compression, write
 ### `coord/CALLER_CONTEXT.md`
 To keep `context.json` compact while still giving the headless loop enough caller context, write a human-readable `coord/CALLER_CONTEXT.md` file. This file is for compressed user intent, important chat nuance, local environment assumptions, and temporary planning rationale that should not become durable project policy. The background loop includes it in arbitration prompts and worker restart prompts. Workers are instructed to read it after `DECISIONS.md`. Do not put stable architecture contracts or file ownership rules here; those belong in `DECISIONS.md`.
 
+### Validating the materialized context
+
+Before launching, you can confirm `coord/context.json` is launchable with the shared validator:
+
+```bash
+node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/validate-context.js --coord ./coord
+```
+
+The validator checks the execution topology, per-task name safety, allowed/forbidden path shape, CLI references against `cli_templates`, and common foundation-path leaks. `scripts/materialize-plan.js`, `scripts/prepare-run.js --approve-draft`, and `scripts/launch-all.js` all call the same validator internally; running it standalone is useful after hand-edits to `context.json`.
+
 ## Phase 3 — Prompt Generation
 
 Prompts are rendered automatically by `scripts/launch-all.js` during Phase 4; the orchestrator session no longer hand-substitutes placeholders. `launch-all.js` reads `references/worker-prompt-template.md` and machine-substitutes the placeholders defined in the grammar table of `references/schemas.md` from each agent's `tasks{}` record. Ensure every agent record is fully populated before you launch.
@@ -284,7 +283,7 @@ Prompts are rendered automatically by `scripts/launch-all.js` during Phase 4; th
 node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/launch-all.js --coord ./coord
 ```
 
-`launch-all.js` reads `coord/context.json`, iterates every entry under `tasks{}`, and for each agent: creates a git worktree at `.kilocode/worktrees/<agent>` (Kilo) or `.agents/worktrees/<agent>` (other CLIs), renders the worker prompt by machine-substituting the placeholders defined in `references/schemas.md`, writes the rendered prompt to a tmp file, and shells out to `scripts/spawn-agent.js`. After every `spawn-agent` call succeeds, it backgrounds `scripts/orchestrator-loop.js` with `nohup` and exits non-blocking.
+`launch-all.js` first runs the shared `validateContext` check against `coord/context.json` and aborts with a diagnostic before any worktree is created if the context is not launchable (bad topology, missing/forbidden paths, broken CLI references, foundation-path leaks). When validation passes, it iterates every entry under `tasks{}`, and for each agent: creates a git worktree at `.kilocode/worktrees/<agent>` (Kilo) or `.agents/worktrees/<agent>` (other CLIs), renders the worker prompt by machine-substituting the placeholders defined in `references/schemas.md`, writes the rendered prompt to a tmp file, and shells out to `scripts/spawn-agent.js`. After every `spawn-agent` call succeeds, it backgrounds `scripts/orchestrator-loop.js` with `nohup` and exits non-blocking.
 
 On success it prints a one-line summary per agent (name, PID, log path), the orchestrator loop PID, and a dashboard hint. On failure it stops the loop, leaves already-spawned agents alive for inspection, and exits non-zero with a diagnostic.
 
@@ -312,7 +311,7 @@ The orchestrator loop doesn't just watch for crashes; it monitors for **actual c
 
 | Action | Effect |
 |--------|--------|
-| `end_agent` | Orchestrator loop runs the agent's `validation_command` (if configured) inside its worktree. If it **passes**, it sends SIGTERM and marks it `"completed"`. If it **fails**, the loop automatically triggers a `soft_restart`, packaging the stderr/stdout back to the agent with instructions to fix its code. |
+| `end_agent` | Orchestrator loop runs the agent's `validation_command` (if configured) inside its worktree. If it **passes**, it auto-commits any uncommitted worker changes (`git add -A` + `git commit -m "agent-<name>: <task>"`) so the final merge picks them up, sends SIGTERM, and marks the agent `"completed"`. If validation **fails**, the loop automatically triggers a `soft_restart`, packaging the stderr/stdout back to the agent with instructions to fix its code. |
 | `soft_restart` | Orchestrator loop kills the rogue process, creates a `WIP` commit to preserve uncommitted work, and respawns the agent with new `instruction`s (e.g., test failure logs or an instruction approved during progress-timeout arbitration) so it can correct its course. |
 | `hard_restart` | Orchestrator loop kills the process, captures any uncommitted+untracked work as a `recovery/<agent>/<timestamp>` git tag, then resets the worktree clean and respawns the agent. The tag preserves the wiped state so it can be inspected with `git show <tag>` or recovered later. Useful for escaping hallucination loops. |
 
@@ -323,6 +322,8 @@ The orchestrator loop doesn't just watch for crashes; it monitors for **actual c
 **Aborting:** Closing the dashboard window (SIGHUP/SIGTERM) leaves the agents running. Pressing Ctrl+C asks for confirmation, then writes `coord/abort.flag`. The loop's abort path performs a soft stop only — it kills the running agent processes and marks them `terminated`, but **does not** `git reset --hard` the worktrees. Any in-flight work is preserved and can be inspected with `git status` in each worktree.
 
 **Stalled CLI surfacing:** If the orchestrator CLI fails `orchestrator_failure_threshold` cycles in a row (default 5), the loop writes `coord/orchestrator-stalled.flag` with a diagnostic payload. The dashboard renders a red banner so you can see at a glance that arbitration is stuck (e.g., the configured `orchestrator_cli` is unauthenticated, rate-limited, or down). The flag is removed automatically as soon as a cycle succeeds.
+
+**Event log:** Every state transition the loop and `spawn-agent.js` make — spawns, completions, validation failures, restart scheduling, recovery-tag creation, heartbeat graces, abort signals — is appended as a structured JSON line to `coord/events.jsonl`. It is best-effort and append-only; failures to write are swallowed. Use it as the chronological audit trail when reconstructing what happened in a finished run.
 
 ## Phase 5 — Review and Integration
 

@@ -3,3 +3,5 @@
 coord
 .kilocode/worktrees/
 .agents/worktrees/
+orchestrator.config.local.jsonc
+orchestrator.config.local.json

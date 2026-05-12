@@ -89,7 +89,7 @@ function runPreflight() {
   function runVersionCheck(cli, config, timeoutMs) {
     const cmd = config.cli_health_checks[cli];
     if (!cmd) {
-      return { ok: false, message: `No health check configured for '${cli}'. Add it under cli_health_checks in orchestrator.config.js.` };
+      return { ok: false, message: `No health check configured for '${cli}'. Add it under cli_health_checks in orchestrator.config.jsonc.` };
     }
     return runShell(cmd, timeoutMs);
   }
@@ -107,7 +107,7 @@ function runPreflight() {
   function runAuthCheck(cli, config, timeoutMs) {
     const template = config.cli_templates[cli];
     if (!template) {
-      return { ok: false, message: `No spawn template for '${cli}' to drive an auth check. Add cli_templates.${cli} in orchestrator.config.js.` };
+      return { ok: false, message: `No spawn template for '${cli}' to drive an auth check. Add cli_templates.${cli} in orchestrator.config.jsonc.` };
     }
     const promptFile = path.join(os.tmpdir(), `preflight-${cli}-${Date.now()}.txt`);
     const promptText = "Reply with the single word: OK";

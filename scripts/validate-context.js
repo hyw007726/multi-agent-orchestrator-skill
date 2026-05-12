@@ -35,7 +35,7 @@ function runValidateContext() {
   try {
     config = loadConfig(projectRoot);
   } catch (err) {
-    console.error(`Context validation failed:\n  ERROR Failed to load orchestrator.config.js: ${err.message}`);
+    console.error(`Context validation failed:\n  ERROR Failed to load orchestrator config: ${err.message}`);
     process.exit(1);
   }
 

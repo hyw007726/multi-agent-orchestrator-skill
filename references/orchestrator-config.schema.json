@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Multi-Agent Orchestrator Configuration",
+  "description": "Configuration for the Multi-Agent Orchestrator runtime. Put shared project defaults in orchestrator.config.jsonc and personal overrides in orchestrator.config.local.jsonc.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional editor schema reference. Keep this in JSONC configs to enable autocomplete and validation."
+    },
+    "default_cli": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Default worker CLI for coding agents. Built-in choices include kilo, aider, claude, codex, gemini, and opencode; custom names are allowed when cli_templates and cli_health_checks define them.",
+      "default": "kilo"
+    },
+    "orchestrator_cli": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Optional CLI used by the background loop for request arbitration. Use null or omit it to follow default_cli.",
+      "default": null
+    },
+    "cli_templates": {
+      "type": "object",
+      "description": "Command templates used to spawn worker CLIs and invoke the orchestrator CLI. Project entries override built-ins; omitted built-in CLIs keep their defaults.",
+      "additionalProperties": {
+        "$ref": "#/$defs/cliTemplate"
+      },
+      "default": {}
+    },
+    "cli_health_checks": {
+      "type": "object",
+      "description": "Per-CLI install probes used by scripts/preflight.js. Defaults to '<cli> --version' for built-in CLIs.",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": {}
+    },
+    "reviewers": {
+      "type": "array",
+      "description": "Optional read-only plan reviewer CLIs for Phase 1.5. Reviewers critique draft decomposition before worker launch.",
+      "items": {
+        "$ref": "#/$defs/reviewer"
+      },
+      "default": []
+    },
+    "max_plan_review_iterations": {
+      "description": "Plan review iteration policy. 'auto' means run at least one reviewer pass when reviewers are configured, then let the caller decide whether another pass is worth it.",
+      "oneOf": [
+        { "const": "auto" },
+        { "type": "integer", "minimum": 1 }
+      ],
+      "default": "auto"
+    },
+    "default_timeout_mins": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Default liveness timeout in minutes. If an agent stops emitting logs for this long, the loop treats it as hung.",
+      "default": 10
+    },
+    "default_progress_timeout_mins": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Default progress timeout in minutes. If an active agent produces no code changes for this long, the loop creates a progress-timeout arbitration request.",
+      "default": 15
+    },
+    "default_max_restarts": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Maximum restart attempts per agent before it is marked errored.",
+      "default": 3
+    },
+    "orchestrator_failure_threshold": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Consecutive orchestrator-CLI failures before coord/orchestrator-stalled.flag is written.",
+      "default": 5
+    },
+    "claude_failure_threshold": {
+      "type": "integer",
+      "minimum": 1,
+      "deprecated": true,
+      "description": "Deprecated alias for orchestrator_failure_threshold.",
+      "default": 5
+    },
+    "poll_min_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Minimum adaptive polling interval in milliseconds.",
+      "default": 1000
+    },
+    "poll_max_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum adaptive polling interval in milliseconds.",
+      "default": 15000
+    },
+    "launch_dashboard": {
+      "description": "Dashboard auto-launch behavior. 'auto' opens a dashboard terminal on local macOS and skips auto-launch in CI/SSH/non-macOS environments.",
+      "oneOf": [
+        { "const": "auto" },
+        { "type": "boolean" }
+      ],
+      "default": "auto"
+    },
+    "launch_review_terminal": {
+      "type": "boolean",
+      "description": "Whether to open a terminal with the deterministic review summary after all workers finish.",
+      "default": false
+    }
+  },
+  "$defs": {
+    "cliTemplate": {
+      "description": "Either a shell string containing {prompt_file}, or a structured argv template that includes a prompt placeholder object.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\{prompt_file\\}",
+          "description": "Shell template. Use only when shell behavior is intentional; must include {prompt_file}."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cmd", "args"],
+          "properties": {
+            "cmd": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Executable name or path."
+            },
+            "args": {
+              "type": "array",
+              "description": "Argument vector. Include { \"prompt_file\": true } or { \"prompt_text\": true } exactly once where the prompt should be passed.",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["prompt_file"],
+                    "properties": {
+                      "prompt_file": { "const": true }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["prompt_text"],
+                    "properties": {
+                      "prompt_text": { "const": true }
+                    }
+                  }
+                ]
+              },
+              "contains": {
+                "type": "object",
+                "oneOf": [
+                  { "required": ["prompt_file"] },
+                  { "required": ["prompt_text"] }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "cli", "review_focus"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "description": "Stable filename-safe reviewer id."
+        },
+        "cli": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reviewer CLI name. Must have matching cli_templates.<cli> and cli_health_checks.<cli> entries."
+        },
+        "review_focus": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What this reviewer should focus on, such as ownership boundaries, sequencing risk, validation gaps, or architecture."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional reviewer-specific model id. Appended using model_flag, defaulting to --model."
+        },
+        "model_flag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional CLI flag used with model, for CLIs that do not use --model."
+        },
+        "template_args": {
+          "type": "array",
+          "description": "Optional CLI-specific args appended to the reviewer template.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "extra_args": {
+          "type": "array",
+          "description": "Deprecated alias for template_args.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "timeout_mins": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Optional per-reviewer timeout in minutes."
+        }
+      }
+    }
+  }
+}

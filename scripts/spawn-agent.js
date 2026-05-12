@@ -16,7 +16,7 @@ spawnAgent();
 function spawnAgent() {
   const config = parseArgs();
   const parsedConfig = loadConfig();
-  // Resolve --cli: explicit flag wins, otherwise fall back to `default_cli` from orchestrator.config.js.
+  // Resolve --cli: explicit flag wins, otherwise fall back to `default_cli` from orchestrator config.
   if (!config.cli) config.cli = parsedConfig.default_cli;
 
   const worktreeBase = config.cli === "kilo" ? ".kilocode/worktrees" : ".agents/worktrees";
@@ -62,7 +62,7 @@ function spawnAgent() {
       process.exit(1);
     }
   } else {
-    console.error(`Error: No cli_templates.${config.cli} configured. Add a shell string or { cmd, args } template in orchestrator.config.js.`);
+    console.error(`Error: No cli_templates.${config.cli} configured. Add a shell string or { cmd, args } template in orchestrator.config.jsonc.`);
     process.exit(1);
   }
 
@@ -141,7 +141,7 @@ function parseArgs() {
     mode: "auto",
     promptFile: "",
     coordDir: "./coord",
-    cli: "", // resolved against `default_cli` from orchestrator.config.js in spawnAgent if --cli is omitted.
+    cli: "", // resolved against `default_cli` from orchestrator config in spawnAgent if --cli is omitted.
     extraArgs: [],
     validateCmd: undefined,
     timeoutMins: undefined,

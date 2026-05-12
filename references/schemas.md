@@ -67,24 +67,24 @@ session's free-form context (`chat_context`, `requirements`, `constraints`).
 
 ## Optional plan reviewer config
 
-`orchestrator.config.js` may opt into Phase 1.5 plan reviews before the final
+`orchestrator.config.jsonc` may opt into Phase 1.5 plan reviews before the final
 `coord/context.json` task map is written.
 
-```js
-module.exports = {
-  reviewers: [
+```jsonc
+{
+  "reviewers": [
     {
-      name: "architecture",          // stable filename-safe reviewer id
-      cli: "claude",                 // must have cli_templates.<cli> and cli_health_checks.<cli>
-      review_focus: "ownership boundaries and sequencing risks",
-      model: "claude-sonnet-4-6",    // optional; appends --model <id> unless model_flag is set
-      model_flag: "--model",         // optional
-      template_args: ["--flag"],      // optional CLI-specific args appended to the template
-      timeout_mins: 10               // optional per-reviewer timeout
+      "name": "architecture",          // stable filename-safe reviewer id
+      "cli": "claude",                 // must have cli_templates.<cli> and cli_health_checks.<cli>
+      "review_focus": "ownership boundaries and sequencing risks",
+      "model": "claude-sonnet-4-6",    // optional; appends --model <id> unless model_flag is set
+      "model_flag": "--model",         // optional
+      "template_args": ["--flag"],      // optional CLI-specific args appended to the template
+      "timeout_mins": 10               // optional per-reviewer timeout
     }
   ],
-  max_plan_review_iterations: "auto" // or a positive integer
-};
+  "max_plan_review_iterations": "auto" // or a positive integer
+}
 ```
 
 When no `reviewers` are configured, the normal Phase 1 decomposition flow is
@@ -427,7 +427,7 @@ shape — every field the loop actually depends on — is:
     "started_at": "ISO 8601 timestamp",
     "last_heartbeat": "ISO 8601 timestamp — loop-owned status-transition timestamp, distinct from optional worker progress heartbeat files",
     "validate_cmd": "string | string[] | null — JSON argv array (preferred, runs with shell:false) or shell-string fallback; null disables validation",
-    "timeout_mins": "integer | null — liveness threshold (no log output); falls back to default_timeout_mins from orchestrator.config.js",
+    "timeout_mins": "integer | null — liveness threshold (no log output); falls back to default_timeout_mins from orchestrator.config.jsonc",
     "progress_timeout_mins": "integer | null — progress threshold (no code change while logs flow); falls back to default_progress_timeout_mins",
     "restart_count": "integer — bumped on every respawn (validation failure, progress-timeout arbitration, explicit soft/hard restart); once it exceeds default_max_restarts the loop marks the agent `errored` instead of respawning",
     "base_ref": "string — the Git ref (branch or tag) this agent's worktree was branched from; used for diff computation (defaults to 'main' if not recorded)",

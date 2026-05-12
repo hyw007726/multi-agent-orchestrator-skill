@@ -7,7 +7,7 @@ const path = require('node:path');
 const os = require('node:os');
 
 describe('config merging', () => {
-  it('returns defaults when no orchestrator.config.js exists', () => {
+  it('returns defaults when no supported config file exists', () => {
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
     let config;
     try {
@@ -52,6 +52,144 @@ describe('config merging', () => {
     assert.ok(config.cli_health_checks.kilo, 'kilo health check should exist');
     assert.ok(config.cli_health_checks.aider, 'aider health check should exist');
     assert.ok(config.cli_health_checks.claude, 'claude health check should exist');
+  });
+
+  it('loads JSONC config with comments and trailing commas', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+    let config;
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.jsonc'), [
+        '{',
+        '  // JSONC is the preferred data-only config format.',
+        '  "default_cli": "codex",',
+        '  "orchestrator_cli": "claude",',
+        '  "default_timeout_mins": 12,',
+        '  "cli_templates": {',
+        '    "codex": { "cmd": "codex", "args": ["exec", { "prompt_text": true }, "--model", "gpt-5.4-mini"] },',
+        '  },',
+        '  "cli_health_checks": {',
+        '    "codex": "codex --version",',
+        '  },',
+        '}',
+      ].join('\n') + '\n', 'utf-8');
+
+      const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
+      config = loadConfig(tmpDir);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    assert.strictEqual(config.default_cli, 'codex');
+    assert.strictEqual(config.orchestrator_cli, 'claude');
+    assert.strictEqual(config.default_timeout_mins, 12);
+    assert.deepStrictEqual(config.cli_templates.codex, {
+      cmd: 'codex',
+      args: ['exec', { prompt_text: true }, '--model', 'gpt-5.4-mini'],
+    });
+    assert.strictEqual(config.cli_health_checks.codex, 'codex --version');
+    assert.ok(config.cli_templates.kilo, 'omitted built-in templates should still be present');
+  });
+
+  it('keeps the shipped JSONC config and schema parseable', () => {
+    const repoRoot = path.join(__dirname, '..');
+    const { stripJsonc } = require(path.join(repoRoot, 'scripts', 'lib', 'config'));
+    const configPath = path.join(repoRoot, 'orchestrator.config.jsonc');
+    const config = JSON.parse(stripJsonc(fs.readFileSync(configPath, 'utf-8')));
+    const schemaPath = path.join(repoRoot, 'references', 'orchestrator-config.schema.json');
+    const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf-8'));
+
+    assert.strictEqual(config.$schema, 'https://raw.githubusercontent.com/hyw007726/multi-agent-orchestrator-skill/main/references/orchestrator-config.schema.json');
+    assert.strictEqual(schema.title, 'Multi-Agent Orchestrator Configuration');
+    assert.ok(schema.properties.default_cli);
+    assert.ok(schema.properties.cli_templates);
+  });
+
+  it('prefers JSONC over legacy JavaScript config when both exist', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+    let config;
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.jsonc'), '{ "default_cli": "gemini" }\n', 'utf-8');
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.js'), 'module.exports = { default_cli: "aider" };\n', 'utf-8');
+
+      const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
+      config = loadConfig(tmpDir);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    assert.strictEqual(config.default_cli, 'gemini');
+    assert.strictEqual(config.orchestrator_cli, 'gemini');
+  });
+
+  it('layers local JSONC overrides on top of the shared project config', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+    let config;
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.jsonc'), [
+        '{',
+        '  "default_cli": "codex",',
+        '  "orchestrator_cli": "claude",',
+        '  "default_timeout_mins": 12,',
+        '  "cli_templates": {',
+        '    "codex": { "cmd": "codex", "args": ["exec", { "prompt_text": true }] }',
+        '  },',
+        '  "cli_health_checks": {',
+        '    "codex": "codex --version"',
+        '  }',
+        '}',
+      ].join('\n') + '\n', 'utf-8');
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.local.jsonc'), [
+        '{',
+        '  // Personal overrides only.',
+        '  "default_cli": "aider",',
+        '  "launch_dashboard": false,',
+        '  "cli_templates": {',
+        '    "aider": { "cmd": "aider", "args": ["--message-file", { "prompt_file": true }, "--yes", "--model", "local-model"] },',
+        '  },',
+        '}',
+      ].join('\n') + '\n', 'utf-8');
+
+      const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
+      config = loadConfig(tmpDir);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    assert.strictEqual(config.default_cli, 'aider');
+    assert.strictEqual(config.orchestrator_cli, 'claude');
+    assert.strictEqual(config.default_timeout_mins, 12);
+    assert.strictEqual(config.launch_dashboard, false);
+    assert.deepStrictEqual(config.cli_templates.codex, {
+      cmd: 'codex',
+      args: ['exec', { prompt_text: true }],
+    });
+    assert.deepStrictEqual(config.cli_templates.aider, {
+      cmd: 'aider',
+      args: ['--message-file', { prompt_file: true }, '--yes', '--model', 'local-model'],
+    });
+    assert.strictEqual(config.cli_health_checks.codex, 'codex --version');
+  });
+
+  it('allows local config alone and lets null orchestrator_cli follow the final worker CLI', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+    let config;
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.local.json'), [
+        '{',
+        '  "default_cli": "gemini",',
+        '  "orchestrator_cli": null',
+        '}',
+      ].join('\n') + '\n', 'utf-8');
+
+      const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
+      config = loadConfig(tmpDir);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    assert.strictEqual(config.default_cli, 'gemini');
+    assert.strictEqual(config.orchestrator_cli, 'gemini');
+    assert.strictEqual(config.default_timeout_mins, 10);
   });
 
   it('overrides scalar fields from orchestrator.config.js', () => {

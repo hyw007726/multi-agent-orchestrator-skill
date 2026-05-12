@@ -207,7 +207,8 @@ The approval step writes `context.json`, `DECISIONS.md`, and `CALLER_CONTEXT.md`
 | `coord/DECISIONS.md` | Human-readable source of truth for durable requirements, architecture, APIs, ownership, and constraints. |
 | `coord/CALLER_CONTEXT.md` | Human-readable caller-session context: user intent, chat nuance, environment assumptions, and non-durable rationale. Included in arbitration and worker restart prompts. |
 | `coord/agents.json` | Current worker state. |
-| `coord/decisions.jsonl` | Arbitration and restart decisions. |
+| `coord/decisions.json` / `coord/decisions.jsonl` | Bounded recent window (latest 30) of approved request resolutions plus the append-only audit log. |
+| `coord/events.jsonl` | Append-only structured event log written by the loop and `spawn-agent.js` (spawns, restarts, recovery tags, heartbeat graces, aborts). |
 | `coord/progress/<agent>.json` | Optional worker-written heartbeat with phase, summary, latest action, and blocker context. |
 | `coord/plan-reviews/` | Optional Phase 1.5 draft plans, reviewer streams, parsed reviewer JSON, and caller reconciliations. |
 | `coord/review-summary.txt` | Deterministic final handoff summary after workers complete. Built from worker review requests; no final AI summary call is made. |
@@ -216,7 +217,27 @@ The approval step writes `context.json`, `DECISIONS.md`, and `CALLER_CONTEXT.md`
 
 ## Configuration
 
-The runtime reads `orchestrator.config.js` from the target project root. If no file exists, it uses built-in defaults.
+The runtime reads `orchestrator.config.jsonc` from the target project root. JSONC is JSON with comments, so configuration stays data-only while still being readable. Pure `orchestrator.config.json` and legacy `orchestrator.config.js` are also accepted; if multiple shared files exist, the loader prefers JSONC, then JSON, then JS.
+
+The shipped config includes a `$schema` reference to the published `references/orchestrator-config.schema.json`. Editors such as VS Code and Cursor use it for autocomplete, descriptions, allowed values, and validation, so users can discover optional settings without scanning commented-out configuration blocks.
+
+For personal machine-specific overrides, create `orchestrator.config.local.jsonc` only when needed. It is gitignored, loaded after the shared config, and should contain only values that differ from the shared defaults. It can be as small as:
+
+```jsonc
+{}
+```
+
+Example local override:
+
+```jsonc
+{
+  "$schema": "https://raw.githubusercontent.com/hyw007726/multi-agent-orchestrator-skill/main/references/orchestrator-config.schema.json",
+  "default_cli": "codex",
+  "launch_dashboard": false
+}
+```
+
+If no shared or local config file exists, the runtime uses built-in defaults.
 
 The most important settings are:
 
@@ -233,31 +254,17 @@ The most important settings are:
 
 Minimal override example:
 
-```js
-module.exports = {
-  default_cli: "kilo",
-
-  // Optional: use a different CLI/model for arbitration.
-  // orchestrator_cli: "claude",
-
-  // Optional: read-only plan reviewers run before final task decomposition.
-  // reviewers: [
-  //   {
-  //     name: "architecture",
-  //     cli: "claude",
-  //     model: "claude-sonnet-4-6",
-  //     review_focus: "ownership boundaries, shared foundations, and validation gaps",
-  //   },
-  // ],
-  // max_plan_review_iterations: "auto",
-
-  default_timeout_mins: 10,
-  default_progress_timeout_mins: 15,
-  default_max_restarts: 3,
-};
+```jsonc
+{
+  "$schema": "https://raw.githubusercontent.com/hyw007726/multi-agent-orchestrator-skill/main/references/orchestrator-config.schema.json",
+  "default_cli": "kilo",
+  "default_timeout_mins": 10,
+  "default_progress_timeout_mins": 15,
+  "default_max_restarts": 3
+}
 ```
 
-The repository root includes a fuller `orchestrator.config.js` with all built-in CLI templates and comments.
+The repository root includes a fuller `orchestrator.config.jsonc` with all built-in CLI templates and comments.
 
 ## Supported Worker CLIs
 
@@ -270,7 +277,7 @@ Built-in templates are provided for:
 - `gemini`
 - `opencode`
 
-Custom CLIs are supported by adding both `cli_templates.<name>` and `cli_health_checks.<name>` in `orchestrator.config.js`. The runtime does not guess a fallback command shape for custom CLIs.
+Custom CLIs are supported by adding both `cli_templates.<name>` and `cli_health_checks.<name>` in `orchestrator.config.jsonc`. The runtime does not guess a fallback command shape for custom CLIs.
 
 ## Safety Notes
 
