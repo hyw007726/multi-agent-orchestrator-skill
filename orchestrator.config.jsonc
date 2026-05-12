@@ -15,8 +15,8 @@
   // with only values that differ from this shared config. It can simply be {}.
 
   // The background CLI worker that executes coding tasks inside each agent worktree.
-  // Recommended default combination: kilo + DeepSeek V4 Pro (1M context, cheap, fast).
-  // Model selection for kilo happens inside Kilo's BYOK provider settings, not here.
+  // Pin a worker model in cli_templates when the selected CLI supports a model flag;
+  // otherwise configure the model in that CLI's own settings.
   "default_cli": "kilo",
 
   // Command templates for supported CLIs.
@@ -25,9 +25,9 @@
   // pass the prompt contents as one argv item. String templates remain supported
   // for CLIs that genuinely need shell behavior.
   //
-  // Inline-flag CLIs (claude, aider, gemini): add the CLI's model flag here.
-  // External-config CLIs (kilo, opencode, codex): model selection usually lives
-  // in that CLI's own settings/provider config.
+  // Add the CLI's model flag here when you want the runtime to pin a worker
+  // model and the selected CLI supports launch-time model selection. Unpinned
+  // templates use that CLI's own config/default model.
   "cli_templates": {
     "kilo": "kilo run \"$(cat {prompt_file})\" --auto",
     "aider": { "cmd": "aider", "args": ["--message-file", { "prompt_file": true }, "--yes"] },

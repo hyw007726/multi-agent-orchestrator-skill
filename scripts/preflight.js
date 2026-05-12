@@ -18,15 +18,20 @@ const { spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { loadConfig } = require("./lib/config");
+const { findConfigPaths, loadConfig } = require("./lib/config");
 const { spawnCliTemplateSync, validateCliTemplate } = require("./lib/cli-template");
 const { formatModelHeadsUp } = require("./lib/model-headsup");
+const {
+  formatNoConfigModelPrompt,
+  formatPreflightFailureGuidance,
+} = require("./lib/model-recommendations");
 
 runPreflight();
 
 function runPreflight() {
   const args = parseArgs();
   const config = loadConfig();
+  const configPaths = findConfigPaths();
 
   const reviewerClis = Array.isArray(config.reviewers) ? config.reviewers.map((reviewer) => reviewer.cli) : [];
   const clis = args.clis.length > 0
@@ -34,19 +39,30 @@ function runPreflight() {
     : uniqueClis([config.default_cli, config.orchestrator_cli, ...reviewerClis]);
 
   console.log(formatModelHeadsUp(config, { checkedClis: clis }));
+  if (configPaths.length === 0) {
+    console.log("");
+    console.log(formatNoConfigModelPrompt(config));
+  }
   console.log("");
   console.log(`Preflight: checking ${clis.length} CLI(s) — ${clis.join(", ")} (${args.withAuth ? "install + auth" : "install only"})\n`);
 
   let allOk = true;
+  const failures = [];
   for (const cli of clis) {
     const versionResult = runVersionCheck(cli, config, args.timeoutMs);
     printResult(cli, "install", versionResult);
-    if (!versionResult.ok) allOk = false;
+    if (!versionResult.ok) {
+      allOk = false;
+      failures.push({ cli, phase: "install", result: versionResult });
+    }
 
     const templateResult = runTemplateValidation(cli, config);
     if (templateResult) {
       printResult(cli, "template", templateResult);
-      if (!templateResult.ok) allOk = false;
+      if (!templateResult.ok) {
+        allOk = false;
+        failures.push({ cli, phase: "template", result: templateResult });
+      }
     }
 
     if (!versionResult.ok || (templateResult && !templateResult.ok)) continue;
@@ -54,13 +70,18 @@ function runPreflight() {
     if (args.withAuth) {
       const authResult = runAuthCheck(cli, config, args.timeoutMs * 2);
       printResult(cli, "auth", authResult);
-      if (!authResult.ok) allOk = false;
+      if (!authResult.ok) {
+        allOk = false;
+        failures.push({ cli, phase: "auth", result: authResult });
+      }
     }
   }
 
   if (!allOk) {
     console.error("\nPreflight FAILED. Fix the issues above before spawning agents.");
     console.error("Common causes: CLI not installed, not on $PATH, missing API key, no default model selected.");
+    const guidance = formatPreflightFailureGuidance(failures, config);
+    if (guidance) console.error(`\n${guidance}`);
     process.exit(1);
   }
   console.log("\nPreflight passed.");

@@ -127,6 +127,9 @@ function validateTaskRecord(taskName, task, config, errors, warnings) {
     if (!templateValidation.ok) {
       errors.push(`tasks.${taskName}.cli "${cli}" has an invalid template: ${templateValidation.message}`);
     }
+    if (!config.cli_health_checks || config.cli_health_checks[cli] === undefined) {
+      errors.push(`tasks.${taskName}.cli "${cli}" has no cli_health_checks.${cli} entry. Add a health check so preflight can verify this worker CLI or alias before launch.`);
+    }
   }
 
   validateStringArray(task.allowed_paths, `tasks.${taskName}.allowed_paths`, {

@@ -239,6 +239,61 @@ Example local override:
 
 If no shared or local config file exists, the runtime uses built-in defaults.
 
+## Worker Model Selection
+
+Keep model selection attached to the CLI mechanism that actually launches the
+worker:
+
+- CLIs that support a launch-time model flag should pin models in
+  `cli_templates.<cli>` by adding that flag, such as `--model <id>` or
+  `-m <id>`.
+- CLIs that do not support a launch-time model flag should select models in that
+  CLI's own provider/model settings. Do not add a generic `default_model` key;
+  the runtime intentionally does not define one.
+- Per-worker model differences should use CLI aliases. For example, define
+  `claude-sonnet-worker` and `claude-fast-worker` as separate
+  `cli_templates` / `cli_health_checks` entries, then assign
+  `tasks.<name>.cli` to the desired alias.
+
+The preflight output includes a model heads-up and provider-aware fallback
+guidance. Current second-tier worker recommendations are advisory and should be
+refreshed over time:
+
+- Claude: `claude-sonnet-4-6`
+- Codex/OpenAI: `gpt-5.1-codex-mini` or `gpt-5-mini` when the CLI exposes
+  general OpenAI models instead of Codex-specific models
+- Gemini: `gemini-2.5-flash`
+
+Example inline-flag aliases:
+
+```jsonc
+{
+  "default_cli": "claude-sonnet-worker",
+  "cli_templates": {
+    "claude-sonnet-worker": {
+      "cmd": "claude",
+      "args": ["-p", { "prompt_text": true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"]
+    },
+    "gemini-flash-worker": {
+      "cmd": "gemini",
+      "args": ["--prompt", { "prompt_text": true }, "--yolo", "--model", "gemini-2.5-flash"]
+    },
+    "codex-mini-worker": {
+      "cmd": "codex",
+      "args": ["exec", "--model", "gpt-5.1-codex-mini", "--dangerously-bypass-approvals-and-sandbox", { "prompt_text": true }]
+    }
+  },
+  "cli_health_checks": {
+    "claude-sonnet-worker": "claude --version",
+    "gemini-flash-worker": "gemini --version",
+    "codex-mini-worker": "codex --version"
+  }
+}
+```
+
+When a CLI is left unpinned, preflight reports that the exact model is selected
+by the CLI's own config/default and is not visible to the orchestrator.
+
 The most important settings are:
 
 - `default_cli`: worker CLI for coding tasks and cheap monitor calls.

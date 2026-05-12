@@ -194,6 +194,34 @@ describe('preflight CLI', () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it('prints provider-aware model fallback guidance on failure', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-model-guidance-'));
+    try {
+      writeConfig(tmp, [
+        'module.exports = {',
+        '  default_cli: "claude-worker",',
+        '  orchestrator_cli: "claude-worker",',
+        '  cli_templates: {',
+        '    "claude-worker": { cmd: "claude", args: ["-p", { prompt_text: true }] },',
+        '  },',
+        '  cli_health_checks: {',
+        '    "claude-worker": "node -e \\"process.exit(7)\\"",',
+        '  },',
+        '};',
+      ]);
+
+      const result = runPreflight(tmp, ['--skip-auth', '--timeout', '1000']);
+
+      assert.notStrictEqual(result.status, 0);
+      assert.match(result.stderr, /Model fallback guidance:/);
+      assert.match(result.stderr, /claude-worker \(install\): recommended same-provider worker model is claude-sonnet-4-6/);
+      assert.match(result.stderr, /cli_templates\.claude-worker/);
+      assert.match(result.stderr, /did not change any model or config automatically/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 function runPreflight(cwd, args) {

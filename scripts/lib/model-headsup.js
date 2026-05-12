@@ -1,15 +1,21 @@
 "use strict";
 
+const {
+  formatConfigTarget,
+  recommendationForCli,
+} = require("./model-recommendations");
+
 const MODEL_FLAGS = new Set(["--model", "--llm", "--model-id", "--model_id", "-m"]);
-const EXTERNAL_CONFIG_CLIS = new Set(["kilo", "codex", "opencode"]);
 
 function summarizeCliModel(cli, template) {
   const pinned = extractModelFromTemplate(template);
+  const recommendation = recommendationForCli(cli, template, { model: pinned?.model });
   if (pinned) {
     return {
       cli,
       known: true,
       model: pinned.model,
+      recommendation,
       source: `cli_templates.${cli} ${pinned.flag}`,
       message: `model ${pinned.model} (from cli_templates.${cli} ${pinned.flag})`,
     };
@@ -20,6 +26,7 @@ function summarizeCliModel(cli, template) {
       cli,
       known: false,
       model: null,
+      recommendation,
       source: "missing cli template",
       message: `no cli_templates.${cli} configured; runtime cannot invoke this CLI until a template is added`,
     };
@@ -30,19 +37,10 @@ function summarizeCliModel(cli, template) {
       cli,
       known: false,
       model: null,
+      recommendation,
       source: "Claude CLI default/current session",
       message: "model is not pinned; Claude CLI may use its current/default model",
-      warning: "Add --model <id> to cli_templates.claude for predictable worker cost.",
-    };
-  }
-
-  if (EXTERNAL_CONFIG_CLIS.has(cli)) {
-    return {
-      cli,
-      known: false,
-      model: null,
-      source: `${cli} CLI config/provider`,
-      message: `model selected by ${cli}'s own config/provider; exact model not visible to orchestrator`,
+      warning: `Add --model ${recommendation?.model || "<id>"} to cli_templates.${cli} for predictable worker cost.`,
     };
   }
 
@@ -50,6 +48,7 @@ function summarizeCliModel(cli, template) {
     cli,
     known: false,
     model: null,
+    recommendation,
     source: `${cli} CLI config/default`,
     message: `model selected by ${cli}'s CLI config/default; exact model not visible unless pinned in cli_templates.${cli}`,
   };
@@ -102,15 +101,22 @@ function formatModelHeadsUp(config, options = {}) {
 
 function formatCliLines(cli, config) {
   const templates = config.cli_templates || {};
-  const summary = summarizeCliModel(cli, templates[cli]);
+  const template = templates[cli];
+  const summary = summarizeCliModel(cli, template);
   const lines = [`    - ${cli}: ${summary.message}`];
   if (summary.warning) lines.push(`      Warning: ${summary.warning}`);
+  if (!summary.known && summary.recommendation) {
+    const recommendation = summary.recommendation;
+    lines.push(`      Recommended worker tier: ${recommendation.model}${recommendation.alternate ? ` (alternate: ${recommendation.alternate})` : ""} - ${recommendation.reason}`);
+    lines.push(`      Config: ${formatConfigTarget(cli, template, recommendation)}`);
+  }
   return lines;
 }
 
 function formatReviewerLines(reviewer, config) {
   const templates = config.cli_templates || {};
-  const summary = summarizeCliModel(reviewer.cli, templates[reviewer.cli]);
+  const template = templates[reviewer.cli];
+  const summary = summarizeCliModel(reviewer.cli, template);
   const details = [];
   if (reviewer.model) {
     details.push(`reviewer override ${reviewer.model} via ${reviewer.model_flag || "--model"}`);
@@ -122,6 +128,11 @@ function formatReviewerLines(reviewer, config) {
   const focus = reviewer.review_focus ? ` - ${reviewer.review_focus}` : "";
   const lines = [`    - ${reviewer.name} (${reviewer.cli}): ${summary.message}${suffix}${focus}`];
   if (summary.warning) lines.push(`      Warning: ${summary.warning}`);
+  if (!summary.known && summary.recommendation) {
+    const recommendation = summary.recommendation;
+    lines.push(`      Recommended worker tier: ${recommendation.model}${recommendation.alternate ? ` (alternate: ${recommendation.alternate})` : ""} - ${recommendation.reason}`);
+    lines.push(`      Config: ${formatConfigTarget(reviewer.cli, template, recommendation)}`);
+  }
   return lines;
 }
 

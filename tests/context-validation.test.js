@@ -141,6 +141,48 @@ describe('context validation', () => {
       if (project) project.cleanup();
     }
   });
+
+  it('rejects worker CLI aliases without health checks', () => {
+    let project;
+    try {
+      project = createTempProject('context-validation-health-alias-');
+      const configPath = path.join(project.root, 'orchestrator.config.js');
+      fs.writeFileSync(configPath, [
+        'module.exports = {',
+        '  default_cli: "fake-alias",',
+        '  orchestrator_cli: "fake-alias",',
+        '  cli_templates: {',
+        `    "fake-alias": { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(fakeCliPath)}, { prompt_file: true }] },`,
+        '  },',
+        '};',
+      ].join('\n') + '\n');
+      bootstrapProject(project.root, 'Health alias validation project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.execution_topology = {
+        execution_mode: 'single_worker',
+        reason: 'Alias needs preflight coverage.',
+        dependency_notes: [],
+      };
+      context.tasks = {
+        'agent-alias': {
+          description: 'Use a CLI alias.',
+          cli: 'fake-alias',
+          allowed_paths: ['src/**'],
+          validation_command: null,
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2) + '\n');
+
+      const result = runValidateContext(project.root);
+
+      assert.notStrictEqual(result.status, 0);
+      assert.match(result.stderr, /cli "fake-alias" has no cli_health_checks\.fake-alias entry/);
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
 });
 
 function runValidateContext(cwd) {

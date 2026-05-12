@@ -25,7 +25,7 @@ encode anything the headless background loop won't otherwise know.
   "tasks": {
     "agent-name": {
       "description": "string — what this agent is allowed to build",
-      "cli": "string — which worker CLI to spawn (kilo | aider | claude | codex | gemini | opencode); falls back to default_cli when omitted",
+      "cli": "string — which worker CLI or configured CLI alias to spawn (kilo | aider | claude | codex | gemini | opencode | custom alias); falls back to default_cli when omitted",
       "mode": "string | omitted — kilo-specific mode (code | architect | debug | ask); ignored by other CLIs",
       "read_first": ["string — files or paths this worker should inspect before broad search; prompt-only guidance"],
       "relevant_files": ["string — legacy alias for read_first; prefer read_first in new context files"],
@@ -92,6 +92,11 @@ unchanged. The same configured reviewer list is reused for every review
 iteration; callers do not configure per-round reviewer lists. Every configured
 reviewer CLI must have health-check coverage because `scripts/preflight.js`
 checks reviewer CLIs alongside the worker and orchestrator CLIs.
+
+Worker task CLIs follow the same rule: every built-in CLI or custom alias used
+by `tasks.<name>.cli` must have both `cli_templates.<cli>` and
+`cli_health_checks.<cli>`. Use aliases, not `tasks.<name>.model`, when different
+workers need different model choices.
 
 `max_plan_review_iterations: "auto"` means run at least one review iteration
 when reviewers exist, then have the main caller explicitly decide after each
@@ -420,7 +425,7 @@ shape — every field the loop actually depends on — is:
     "task": "string — current task description (rewritten on every restart with the new instruction)",
     "status": "running | completed | terminated | errored | exited",
     "worktree": "string — absolute path to the agent's git worktree (`.kilocode/worktrees/<name>` for kilo, `.agents/worktrees/<name>` otherwise)",
-    "cli": "string — which worker CLI was used (kilo | aider | claude | codex | gemini | opencode); the loop reads this to pick the respawn template and to validate the PID's cmdline before signalling",
+    "cli": "string — which worker CLI or configured CLI alias was used; the loop reads this to pick the respawn template and to validate the PID's cmdline before signalling",
     "template_mode": "string — argv | shell | builtin; records how the CLI template was executed for debugging shell/quoting behavior",
     "kilo_mode": "string — kilo-specific mode (code | architect | debug | ask); ignored by non-kilo CLIs but persisted for round-tripping through respawn",
     "pid": "integer — the process ID of the spawned worker CLI; on POSIX this is also the detached process group id the loop signals during stops/restarts",
