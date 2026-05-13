@@ -70,6 +70,14 @@ function spawnAgent() {
   // as the group id. The loop's safeKill helper signals that group so wrapper
   // shells and child CLIs are stopped together.
   child.unref();
+  const spawnedAt = new Date().toISOString();
+  writeSpawnMarker(out, {
+    agent: config.agent,
+    pid: child.pid,
+    cli: config.cli,
+    templateMode,
+    spawnedAt,
+  });
 
   console.log(`Spawned agent '${config.agent}' in background (PID: ${child.pid})`);
   console.log(`Template mode: ${templateMode}`);
@@ -84,15 +92,17 @@ function spawnAgent() {
       : {};
     const next = {
       ...existing,
-      task: existing.task ?? "Initial prompt",
+      task: taskDescriptionForRecord(config.taskDescription, existing.task),
       status: "running",
       worktree,
       cli: config.cli,
       template_mode: templateMode,
       kilo_mode: config.mode,
       pid: child.pid,
-      started_at: existing.started_at ?? new Date().toISOString(),
-      last_heartbeat: new Date().toISOString(),
+      started_at: existing.started_at ?? spawnedAt,
+      current_started_at: spawnedAt,
+      last_spawned_at: spawnedAt,
+      last_heartbeat: spawnedAt,
       validate_cmd: firstDefined(config.validateCmd, existing.validate_cmd),
       timeout_mins: firstDefined(config.timeoutMins, existing.timeout_mins),
       progress_timeout_mins: firstDefined(config.progressTimeoutMins, existing.progress_timeout_mins),
@@ -107,7 +117,7 @@ function spawnAgent() {
   appendEvent(config.coordDir, "agent_spawned", {
     agent: config.agent,
     pid: child.pid,
-    data: { cli: config.cli, mode: config.mode, template_mode: templateMode, worktree },
+    data: { cli: config.cli, mode: config.mode, template_mode: templateMode, worktree, current_started_at: spawnedAt },
   });
 
   // Single-use helper — creates the coord/ symlink inside the worktree so workers can
@@ -134,6 +144,22 @@ function firstDefined(...values) {
   return values.find((value) => value !== undefined);
 }
 
+function taskDescriptionForRecord(taskDescription, existingTask) {
+  if (typeof taskDescription === "string" && taskDescription.trim() !== "") {
+    return taskDescription;
+  }
+  return existingTask ?? "Initial prompt";
+}
+
+function writeSpawnMarker(fd, { agent, pid, cli, templateMode, spawnedAt }) {
+  const line = `[${spawnedAt}] Spawned agent '${agent}' (PID: ${pid}, CLI: ${cli}, template: ${templateMode})\n`;
+  fs.writeSync(fd, line);
+  const now = new Date(spawnedAt);
+  try {
+    fs.futimesSync(fd, now, now);
+  } catch {}
+}
+
 function parseArgs() {
   const args = process.argv.slice(2);
   const config = {
@@ -147,6 +173,7 @@ function parseArgs() {
     timeoutMins: undefined,
     progressTimeoutMins: undefined,
     baseRef: undefined,
+    taskDescription: undefined,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -164,6 +191,7 @@ function parseArgs() {
       case "--timeout":          config.timeoutMins        = parseInt(args[++i], 10); break;
       case "--progress-timeout": config.progressTimeoutMins = parseInt(args[++i], 10); break;
       case "--base-ref":         config.baseRef              = args[++i]; break;
+      case "--task-description": config.taskDescription      = args[++i]; break;
     }
   }
 

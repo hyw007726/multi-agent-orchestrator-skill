@@ -328,22 +328,24 @@ prompt and can ask via `coord/requests/` for clarification.
 
 Human-curated contract for durable requirements, architecture, API, data-model,
 file ownership, and structural decisions. The starter/orchestrator session
-updates this file when an approved runtime decision should become shared project
-policy. The background loop includes this file in arbitration prompts but does
-not automatically rewrite it.
+updates this file when a runtime disposition should become shared project policy.
+The background loop includes this file in arbitration prompts but does not
+automatically rewrite it.
 
 ## decisions.json
 
-Bounded recent window of approved request resolutions. The orchestrator loop
-uses this file in arbitration prompts and the dashboard reads it for recent
-decision display. It is intentionally capped to the latest 30 entries; use
-`decisions.jsonl` for full audit history.
+Bounded recent window of final request dispositions, including both approvals
+and rejections. The orchestrator loop uses this file in arbitration prompts,
+the dashboard reads it for recent decision display, and high-priority workers
+watch it to unblock after a final disposition. It is intentionally capped to
+the latest 30 entries; use `decisions.jsonl` for full audit history.
 
 ```json
 [
   {
     "request_id": "string",
-    "decision": "string — what was decided",
+    "disposition": "approved | rejected",
+    "decision": "string — what was approved, or Request rejected",
     "reason": "string — why",
     "resolved_at": "ISO 8601 timestamp"
   }
@@ -352,12 +354,12 @@ decision display. It is intentionally capped to the latest 30 entries; use
 
 ## decisions.jsonl
 
-Append-only audit log of every approved request resolution, one JSON object per
-line. This file is not pruned and is the place to look for older approved
-decisions that have fallen out of `decisions.json`.
+Append-only audit log of every final request disposition, one JSON object per
+line. This file is not pruned and is the place to look for older request
+dispositions that have fallen out of `decisions.json`.
 
 ```json
-{"request_id":"string","decision":"string — what was decided","reason":"string — why","resolved_at":"ISO 8601 timestamp"}
+{"request_id":"string","disposition":"approved | rejected","decision":"string — what was approved, or Request rejected","reason":"string — why","resolved_at":"ISO 8601 timestamp"}
 ```
 
 ## requests/
@@ -429,7 +431,9 @@ shape — every field the loop actually depends on — is:
     "template_mode": "string — argv | shell | builtin; records how the CLI template was executed for debugging shell/quoting behavior",
     "kilo_mode": "string — kilo-specific mode (code | architect | debug | ask); ignored by non-kilo CLIs but persisted for round-tripping through respawn",
     "pid": "integer — the process ID of the spawned worker CLI; on POSIX this is also the detached process group id the loop signals during stops/restarts",
-    "started_at": "ISO 8601 timestamp",
+    "started_at": "ISO 8601 timestamp — lifecycle start for this logical agent, preserved across restarts",
+    "current_started_at": "ISO 8601 timestamp — start time of the currently running process; refreshed on every spawn/respawn and used as the liveness fallback before log output exists",
+    "last_spawned_at": "ISO 8601 timestamp — alias of the latest spawn time for dashboards and diagnostics",
     "last_heartbeat": "ISO 8601 timestamp — loop-owned status-transition timestamp, distinct from optional worker progress heartbeat files",
     "validate_cmd": "string | string[] | null — JSON argv array (preferred, runs with shell:false) or shell-string fallback; null disables validation",
     "timeout_mins": "integer | null — liveness threshold (no log output); falls back to default_timeout_mins from orchestrator.config.jsonc",

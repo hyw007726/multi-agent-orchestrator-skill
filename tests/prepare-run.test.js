@@ -229,6 +229,23 @@ describe('prepare-run guided starter pipeline', () => {
       assert.strictEqual(result.status, 0, result.stderr);
       assert.match(result.stdout, /\[skip\] Bootstrap/);
       assert.strictEqual(readJson(path.join(project.root, 'coord', 'context.json')).project, 'Existing project');
+
+      const forced = runPrepare(project.root, [
+        '--project',
+        'Forced project name overwrites context',
+        '--task',
+        'Draft only',
+        '--timeout-ms',
+        '1000',
+        '--force',
+      ]);
+
+      assert.strictEqual(forced.status, 0, forced.stderr);
+      assert.match(forced.stdout, /\[step\] Bootstrap coordination files/);
+      assert.strictEqual(
+        readJson(path.join(project.root, 'coord', 'context.json')).project,
+        'Forced project name overwrites context'
+      );
     } finally {
       if (project) project.cleanup();
     }

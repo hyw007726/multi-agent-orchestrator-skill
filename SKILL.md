@@ -221,6 +221,8 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/bootstrap.js \
   --coord ./coord
 ```
 
+`bootstrap.js` refuses to overwrite existing coordination state by default. Use `--force` only when intentionally discarding the current `coord/` run state.
+
 ### `coord/context.json`
 Because the orchestrator loop runs after your interactive caller session is done, it has **zero access** to your original chat history. **You must heavily compress all user preferences, architectural nuances, and conversational context into a structured `chat_context` object.** Keep `context.json` compact: it is serialized into arbitration prompts. Do not paste long specs, transcripts, file contents, or diffs here.
 
@@ -260,7 +262,7 @@ You should also include the final execution topology and the tasks you generated
 ```
 
 ### `coord/DECISIONS.md`
-To ensure critical architectural rules are never lost in JSON compression, write a human-readable `coord/DECISIONS.md` file. This file is the curated source of truth for durable requirements, shared API contracts, data models, file ownership, and structural decisions made in Phase 1. The background loop includes `DECISIONS.md` in arbitration prompts, preserves approved request resolutions in `coord/decisions.jsonl`, and keeps only the latest 30 in `coord/decisions.json`; it does not automatically rewrite `DECISIONS.md`. If a runtime approval should become durable project policy, update `DECISIONS.md` from the orchestrator session.
+To ensure critical architectural rules are never lost in JSON compression, write a human-readable `coord/DECISIONS.md` file. This file is the curated source of truth for durable requirements, shared API contracts, data models, file ownership, and structural decisions made in Phase 1. The background loop includes `DECISIONS.md` in arbitration prompts, preserves approved and rejected request dispositions in `coord/decisions.jsonl`, and keeps only the latest 30 in `coord/decisions.json`; it does not automatically rewrite `DECISIONS.md`. If a runtime approval should become durable project policy, update `DECISIONS.md` from the orchestrator session.
 
 ### `coord/CALLER_CONTEXT.md`
 To keep `context.json` compact while still giving the headless loop enough caller context, write a human-readable `coord/CALLER_CONTEXT.md` file. This file is for compressed user intent, important chat nuance, local environment assumptions, and temporary planning rationale that should not become durable project policy. The background loop includes it in arbitration prompts and worker restart prompts. Workers are instructed to read it after `DECISIONS.md`. Do not put stable architecture contracts or file ownership rules here; those belong in `DECISIONS.md`.
@@ -286,6 +288,8 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/launch-all.js --coord ./coord
 ```
 
 `launch-all.js` first runs the shared `validateContext` check against `coord/context.json` and aborts with a diagnostic before any worktree is created if the context is not launchable (bad topology, missing/forbidden paths, broken CLI references, foundation-path leaks). When validation passes, it iterates every entry under `tasks{}`, and for each agent: creates a git worktree at `.kilocode/worktrees/<agent>` (Kilo) or `.agents/worktrees/<agent>` (other CLIs), renders the worker prompt by machine-substituting the placeholders defined in `references/schemas.md`, writes the rendered prompt to a tmp file, and shells out to `scripts/spawn-agent.js`. After every `spawn-agent` call succeeds, it backgrounds `scripts/orchestrator-loop.js` with `nohup` and exits non-blocking.
+
+After an abort that preserved worker worktrees, rerun launch with `--resume` (alias: `--force-existing-worktrees`). In resume mode, existing worktree paths are reused only after Git confirms the path is a registered worktree checked out on the expected agent branch; prompts are rendered again from the current `context.json`, and workers are respawned into the preserved worktrees. Without `--resume`, launch still refuses existing worktree paths.
 
 On success it prints a one-line summary per agent (name, PID, log path), the orchestrator loop PID, and a dashboard hint. On failure it stops the loop, leaves already-spawned agents alive for inspection, and exits non-zero with a diagnostic.
 
@@ -321,7 +325,7 @@ The orchestrator loop doesn't just watch for crashes; it monitors for **actual c
 
 **PID/process-group safety:** Before sending any signal the loop validates that the stored PID still matches the spawned worker CLI's command line (POSIX `ps`). If the PID has been recycled to an unrelated process, the signal is skipped. On POSIX the worker is launched as a detached process group, so stops/restarts signal the whole group rather than only the wrapper PID.
 
-**Aborting:** Closing the dashboard window (SIGHUP/SIGTERM) leaves the agents running. Pressing Ctrl+C asks for confirmation, then writes `coord/abort.flag`. The loop's abort path performs a soft stop only — it kills the running agent processes and marks them `terminated`, but **does not** `git reset --hard` the worktrees. Any in-flight work is preserved and can be inspected with `git status` in each worktree.
+**Aborting:** Closing the dashboard window (SIGHUP/SIGTERM) leaves the agents running. Pressing Ctrl+C asks for confirmation, then writes `coord/abort.flag`. The loop's abort path performs a soft stop only — it kills the running agent processes and marks them `terminated`, but **does not** `git reset --hard` the worktrees and **does not** delete `coord/`. Any in-flight work is preserved and can be inspected with `git status` in each worktree, while `coord/logs/`, `coord/events.jsonl`, requests, and decisions remain available for post-abort diagnosis. To continue from that state, inspect any preserved changes you care about, update `coord/context.json` if needed, then run `launch-all.js --coord ./coord --resume`.
 
 **Stalled CLI surfacing:** If the orchestrator CLI fails `orchestrator_failure_threshold` cycles in a row (default 5), the loop writes `coord/orchestrator-stalled.flag` with a diagnostic payload. The dashboard renders a red banner so you can see at a glance that arbitration is stuck (e.g., the configured `orchestrator_cli` is unauthenticated, rate-limited, or down). The flag is removed automatically as soon as a cycle succeeds.
 

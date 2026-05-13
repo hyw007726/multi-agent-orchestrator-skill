@@ -133,6 +133,7 @@ Run from the target project root.
 node /path/to/multi-agent-orchestrator/scripts/preflight.js
 
 # Bootstrap coord/ state for a new orchestrated run.
+# Refuses existing coordination state unless --force is passed.
 node /path/to/multi-agent-orchestrator/scripts/bootstrap.js \
   --project "Build the requested feature" \
   --coord ./coord
@@ -194,10 +195,12 @@ The approval step writes `context.json`, `DECISIONS.md`, and `CALLER_CONTEXT.md`
 2. `scripts/bootstrap.js` initializes `coord/`, the state directory shared by the caller, workers, and background loop.
 3. The caller writes `coord/plan-reviews/draft-plan-v1.json`; `prepare-run.js` can scaffold a TODO template, and `scripts/draft-plan.js` remains an optional helper that uses `orchestrator_cli`.
 4. `scripts/materialize-plan.js` converts an approved draft into compact `coord/context.json`, durable `coord/DECISIONS.md`, and human-readable `coord/CALLER_CONTEXT.md`.
-5. `scripts/launch-all.js` validates context, creates one git worktree per agent, renders prompts from `references/worker-prompt-template.md`, spawns workers, and starts the background loop.
+5. `scripts/launch-all.js` validates context, creates one git worktree per agent, renders prompts from `references/worker-prompt-template.md`, spawns workers, and starts the background loop. After an abort that preserves worker worktrees, rerun it with `--resume` to validate and reuse those worktrees while rendering fresh prompts and respawning workers.
 6. `scripts/orchestrator-loop.js` supervises workers. It arbitrates questions, reads optional progress heartbeats, converts progress timeouts into synthetic arbitration requests, detects hung workers, restarts within limits, and runs validation commands.
 7. When all workers finish, the loop writes a deterministic `coord/review-summary.txt` from `agents.json` and worker `review_request` self-reports.
 8. The interactive caller session reviews diffs, runs final checks, merges approved work, and removes completed worktrees.
+
+Abort handling is intentionally inspectable: a confirmed dashboard abort stops running worker processes and marks them `terminated`, but it preserves both worker worktrees and `coord/` logs, events, requests, and decisions for diagnosis. To continue from that state, run `launch-all.js --coord ./coord --resume`; existing worktrees are reused only when Git reports that the path is registered and checked out on the expected agent branch.
 
 ## Runtime Files
 
@@ -207,7 +210,7 @@ The approval step writes `context.json`, `DECISIONS.md`, and `CALLER_CONTEXT.md`
 | `coord/DECISIONS.md` | Human-readable source of truth for durable requirements, architecture, APIs, ownership, and constraints. |
 | `coord/CALLER_CONTEXT.md` | Human-readable caller-session context: user intent, chat nuance, environment assumptions, and non-durable rationale. Included in arbitration and worker restart prompts. |
 | `coord/agents.json` | Current worker state. |
-| `coord/decisions.json` / `coord/decisions.jsonl` | Bounded recent window (latest 30) of approved request resolutions plus the append-only audit log. |
+| `coord/decisions.json` / `coord/decisions.jsonl` | Bounded recent window (latest 30) of final request dispositions, including approvals and rejections, plus the append-only audit log. |
 | `coord/events.jsonl` | Append-only structured event log written by the loop and `spawn-agent.js` (spawns, restarts, recovery tags, heartbeat graces, aborts). |
 | `coord/progress/<agent>.json` | Optional worker-written heartbeat with phase, summary, latest action, and blocker context. |
 | `coord/plan-reviews/` | Optional Phase 1.5 draft plans, reviewer streams, parsed reviewer JSON, and caller reconciliations. |

@@ -80,7 +80,8 @@ function renderAgents() {
     console.table(
       agentNames.map((name) => {
         const a = agents[name];
-        let info = a.task.slice(0, 40) + (a.task.length > 40 ? "..." : "");
+        const taskText = String(a.task || "Initial prompt");
+        let info = taskText.slice(0, 40) + (taskText.length > 40 ? "..." : "");
         try {
           const logPath = path.join(coordDir, "logs", `${name}.log`);
           if (fs.existsSync(logPath)) {
@@ -104,6 +105,8 @@ function renderAgents() {
           CLI: a.cli || "kilo",
           PID: a.pid,
           Restarts: a.restart_count ?? 0,
+          Started: formatTimestamp(a.started_at),
+          Spawned: formatTimestamp(a.current_started_at || a.last_spawned_at || a.started_at),
           Info: info,
         };
       }),
@@ -111,6 +114,13 @@ function renderAgents() {
   } catch {
     console.log("Waiting for agents.json...");
   }
+}
+
+function formatTimestamp(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().replace("T", " ").slice(0, 19);
 }
 
 function renderPendingRequests() {

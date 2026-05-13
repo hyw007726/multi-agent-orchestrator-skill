@@ -35,6 +35,7 @@ describe('worker prompt rendering', () => {
     assert.ok(prompt.includes('src/index.js, tests/index.test.js'));
     assert.ok(prompt.includes('Use `coord/context.json` only as the compact run index'));
     assert.ok(prompt.includes('coord/CALLER_CONTEXT.md'));
+    assert.ok(prompt.includes('approved and rejected request dispositions'));
   });
 
   it('keeps worker-specific data out of the stable worker prompt prefix', () => {

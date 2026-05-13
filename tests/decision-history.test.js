@@ -142,4 +142,94 @@ describe('decision history', () => {
       }
     }
   });
+
+  it('records rejected high-priority requests in worker-visible decision history', () => {
+    let project;
+    try {
+      project = createTempProject('decision-rejection-');
+
+      const rejectCliPath = path.join(project.root, 'reject-cli.js');
+      fs.writeFileSync(rejectCliPath, [
+        '#!/usr/bin/env node',
+        "'use strict';",
+        'const fs = require("fs");',
+        'const args = process.argv.slice(2);',
+        'if (args[0] === "--version") { console.log("reject-cli 1.0"); process.exit(0); }',
+        'const prompt = fs.readFileSync(args[0], "utf-8");',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  console.log(JSON.stringify({',
+        '    approved: [],',
+        '    rejected: [{ request_id: "agent-history-high-reject", reason: "Rejected by regression test." }],',
+        '    actions: []',
+        '  }));',
+        '  process.exit(0);',
+        '}',
+        'process.exit(0);',
+      ].join('\n'), 'utf-8');
+
+      fs.writeFileSync(path.join(project.root, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  default_cli: "rejector",',
+        '  orchestrator_cli: "rejector",',
+        `  cli_templates: { rejector: ${JSON.stringify({ cmd: process.execPath, args: [rejectCliPath, { prompt_file: true }] })} },`,
+        '  cli_health_checks: { rejector: "node -e \\"process.exit(0)\\"" },',
+        '  poll_min_ms: 250,',
+        '  poll_max_ms: 500,',
+        '  launch_dashboard: false,',
+        '  launch_review_terminal: false,',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      bootstrapProject(project.root, 'Rejected high-priority decision history test project');
+
+      fs.writeFileSync(path.join(project.root, 'coord', 'agents.json'), JSON.stringify({
+        'agent-history': {
+          task: 'Rejected high-priority request handling',
+          status: 'completed',
+          worktree: project.root,
+          cli: 'rejector',
+        },
+      }, null, 2) + '\n', 'utf-8');
+
+      fs.writeFileSync(
+        path.join(project.root, 'coord', 'requests.jsonl'),
+        JSON.stringify({
+          request_id: 'agent-history-high-reject',
+          agent: 'agent-history',
+          type: 'question',
+          priority: 'high',
+          status: 'pending',
+          content: 'High-priority request that should be rejected.',
+          created_at: new Date().toISOString(),
+        }) + '\n',
+        'utf-8',
+      );
+
+      const loop = runLoop(project.root);
+      assert.strictEqual(loop.status, 0,
+        `orchestrator loop failed\nstdout:\n${loop.stdout}\nstderr:\n${loop.stderr}`);
+
+      const requests = readJsonl(path.join(project.root, 'coord', 'requests.jsonl'));
+      assert.strictEqual(
+        requests.find((request) => request.request_id === 'agent-history-high-reject').status,
+        'rejected',
+      );
+
+      const recent = readJson(path.join(project.root, 'coord', 'decisions.json'));
+      const recentDecision = recent.find((decision) => decision.request_id === 'agent-history-high-reject');
+      assert.ok(recentDecision, 'decisions.json should include the rejected high-priority request');
+      assert.strictEqual(recentDecision.disposition, 'rejected');
+      assert.strictEqual(recentDecision.decision, 'Request rejected');
+      assert.strictEqual(recentDecision.reason, 'Rejected by regression test.');
+
+      const audit = readJsonl(path.join(project.root, 'coord', 'decisions.jsonl'));
+      const auditDecision = audit.find((decision) => decision.request_id === 'agent-history-high-reject');
+      assert.ok(auditDecision, 'decisions.jsonl should include the rejected high-priority request');
+      assert.strictEqual(auditDecision.disposition, 'rejected');
+    } finally {
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
 });

@@ -4,6 +4,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
 
 const {
   repoRoot,
@@ -141,7 +142,11 @@ describe('launch-all smoke test', () => {
       for (const name of agentNames) {
         assert.ok(agents[name], `agents.json should contain ${name}`);
         assert.strictEqual(agents[name].status, 'completed');
+        assert.strictEqual(agents[name].task, context.tasks[name].description);
       }
+      assert.match(summary, /Fake worker alpha task/);
+      assert.match(summary, /Fake worker beta task/);
+      assert.match(summary, /Fake worker gamma task/);
     } finally {
       if (project) {
         project.cleanup();
@@ -209,10 +214,152 @@ describe('launch-all smoke test', () => {
       }
     }
   });
+
+  it('resumes preserved worktrees after an abort when --resume is explicit', { timeout: 30000 }, async () => {
+    let project;
+    try {
+      project = createTempProject('launch-all-resume-');
+
+      const cliPath = writeResumeCli(project.root);
+      writeProjectConfig(project.root, cliPath);
+      bootstrapProject(project.root, 'Launch-all resume test project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.execution_topology = {
+        execution_mode: 'single_worker',
+        reason: 'One preserved worker can be relaunched safely.',
+        dependency_notes: [],
+      };
+      context.tasks = {
+        'agent-resume': {
+          description: 'Initial resume assignment',
+          cli: 'fake',
+          allowed_paths: ['resume-spawns.jsonl'],
+          validation_command: null,
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2) + '\n');
+
+      const launchScript = path.join(repoRoot(), 'scripts', 'launch-all.js');
+      const firstLaunch = runLaunchAll(launchScript, project.root);
+      const worktree = path.join(project.root, '.agents', 'worktrees', 'agent-resume');
+      const runsPath = path.join(worktree, 'resume-spawns.jsonl');
+
+      await waitFor(() => {
+        if (!fs.existsSync(runsPath)) return false;
+        return readJsonl(runsPath).length === 1;
+      }, { timeoutMs: 10000, intervalMs: 100 });
+
+      const firstAgents = readJson(path.join(project.root, 'coord', 'agents.json'));
+      const firstPid = firstAgents['agent-resume'].pid;
+      assert.strictEqual(firstAgents['agent-resume'].status, 'running');
+
+      const firstLoopPid = parseLoopPid(firstLaunch.stdout);
+      fs.writeFileSync(path.join(project.root, 'coord', 'abort.flag'), 'stop\n', 'utf-8');
+
+      await waitFor(() => {
+        const agents = readJson(path.join(project.root, 'coord', 'agents.json'));
+        return agents['agent-resume'] && agents['agent-resume'].status === 'terminated';
+      }, { timeoutMs: 10000, intervalMs: 100 });
+      await waitFor(() => !fs.existsSync(path.join(project.root, 'coord', 'orchestrator.instance.lock')), {
+        timeoutMs: 10000,
+        intervalMs: 100,
+      });
+      if (firstLoopPid) cleanupProcess(firstLoopPid);
+
+      const updatedContext = readJson(contextPath);
+      updatedContext.tasks['agent-resume'].description = 'Refreshed resume assignment';
+      fs.writeFileSync(contextPath, JSON.stringify(updatedContext, null, 2) + '\n');
+
+      const refused = runLaunchAllRaw(launchScript, project.root);
+      assert.notStrictEqual(refused.status, 0);
+      assert.match(refused.stderr, /already exists/);
+      assert.match(refused.stderr, /--resume/);
+
+      const resumed = runLaunchAll(launchScript, project.root, ['--resume']);
+      assert.match(resumed.stdout, /Resuming existing worktree \.agents\/worktrees\/agent-resume/);
+
+      await waitFor(() => {
+        if (!fs.existsSync(runsPath)) return false;
+        const runs = readJsonl(runsPath);
+        return runs.length >= 2 && runs[runs.length - 1].assignment === 'Refreshed resume assignment';
+      }, { timeoutMs: 10000, intervalMs: 100 });
+
+      const resumedAgents = readJson(path.join(project.root, 'coord', 'agents.json'));
+      assert.strictEqual(resumedAgents['agent-resume'].status, 'running');
+      assert.notStrictEqual(resumedAgents['agent-resume'].pid, firstPid);
+      assert.strictEqual(resumedAgents['agent-resume'].task, 'Refreshed resume assignment');
+
+      const secondLoopPid = parseLoopPid(resumed.stdout);
+      fs.writeFileSync(path.join(project.root, 'coord', 'abort.flag'), 'stop\n', 'utf-8');
+      await waitFor(() => {
+        const agents = readJson(path.join(project.root, 'coord', 'agents.json'));
+        return agents['agent-resume'] && agents['agent-resume'].status === 'terminated';
+      }, { timeoutMs: 10000, intervalMs: 100 });
+      if (secondLoopPid) cleanupProcess(secondLoopPid);
+    } finally {
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
+
+  it('rejects resume when an existing worktree is on another branch', () => {
+    let project;
+    try {
+      project = createTempProject('launch-all-resume-branch-');
+
+      writeProjectConfig(project.root, fakeCliPath);
+      bootstrapProject(project.root, 'Launch-all resume branch validation project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.execution_topology = {
+        execution_mode: 'single_worker',
+        reason: 'Validate preserved worktree branch ownership.',
+        dependency_notes: [],
+      };
+      context.tasks = {
+        'agent-resume': {
+          description: 'This worker must own its matching branch.',
+          cli: 'fake',
+          allowed_paths: ['resume/**'],
+          validation_command: null,
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2) + '\n');
+
+      fs.mkdirSync(path.join(project.root, '.agents', 'worktrees'), { recursive: true });
+      const addResult = spawnSync('git', [
+        'worktree',
+        'add',
+        path.join('.agents', 'worktrees', 'agent-resume'),
+        '-b',
+        'agent-other',
+      ], {
+        cwd: project.root,
+        encoding: 'utf-8',
+      });
+      assert.strictEqual(addResult.status, 0, addResult.stderr || addResult.stdout);
+
+      const launchScript = path.join(repoRoot(), 'scripts', 'launch-all.js');
+      const result = runLaunchAllRaw(launchScript, project.root, ['--resume']);
+
+      assert.notStrictEqual(result.status, 0);
+      assert.match(result.stderr, /Cannot resume agent agent-resume/);
+      assert.match(result.stderr, /expected refs\/heads\/agent-resume/);
+      assert.ok(!fs.existsSync(path.join(project.root, 'coord', 'logs', 'agent-resume.log')));
+    } finally {
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
 });
 
-function runLaunchAll(scriptPath, cwd) {
-  const result = runLaunchAllRaw(scriptPath, cwd);
+function runLaunchAll(scriptPath, cwd, extraArgs = []) {
+  const result = runLaunchAllRaw(scriptPath, cwd, extraArgs);
   if (result.error) {
     throw new Error(
       `launch-all.js failed: ${result.error.message}`
@@ -229,11 +376,41 @@ function runLaunchAll(scriptPath, cwd) {
   return result;
 }
 
-function runLaunchAllRaw(scriptPath, cwd) {
-  const { spawnSync } = require('child_process');
-  const result = spawnSync('node', [scriptPath, '--coord', './coord'], {
+function runLaunchAllRaw(scriptPath, cwd, extraArgs = []) {
+  const result = spawnSync('node', [scriptPath, '--coord', './coord', ...extraArgs], {
     encoding: 'utf-8',
     cwd,
   });
   return result;
+}
+
+function parseLoopPid(output) {
+  const match = output.match(/Orchestrator loop backgrounded \(PID:\s*(\d+)\)/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+function writeResumeCli(projectRoot) {
+  const cliPath = path.join(projectRoot, 'resume-cli.js');
+  fs.writeFileSync(cliPath, [
+    '#!/usr/bin/env node',
+    "'use strict';",
+    'const fs = require("fs");',
+    'if (process.argv[2] === "--version") { console.log("resume-cli 1.0"); process.exit(0); }',
+    'const promptFile = process.argv[2];',
+    'const prompt = fs.readFileSync(promptFile, "utf-8");',
+    'const assignmentMatch = prompt.match(/Specific assignment: (.*)/);',
+    'const assignment = assignmentMatch ? assignmentMatch[1].trim() : "";',
+    'const agentMatch = prompt.match(/Agent name: ([^\\n]+)/);',
+    'const agent = agentMatch ? agentMatch[1].trim() : "unknown";',
+    'fs.appendFileSync("resume-spawns.jsonl", JSON.stringify({',
+    '  agent,',
+    '  assignment,',
+    '  pid: process.pid,',
+    '  at: new Date().toISOString(),',
+    '}) + "\\n", "utf-8");',
+    'const timer = setInterval(() => {}, 1000);',
+    'process.on("SIGTERM", () => { clearInterval(timer); process.exit(0); });',
+    'process.on("SIGINT", () => { clearInterval(timer); process.exit(0); });',
+  ].join('\n') + '\n');
+  return cliPath;
 }

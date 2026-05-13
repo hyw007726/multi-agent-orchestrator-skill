@@ -82,6 +82,127 @@ describe('orchestrator loop failure paths', () => {
     }
   });
 
+  it('refreshes stale log freshness when a respawned worker is initially silent', () => {
+    let project;
+    try {
+      project = createTempProject('stale-log-respawn-');
+      const cliPath = writeScript(project.root, 'stale-log-cli.js', [
+        'const fs = require("node:fs");',
+        'const path = require("node:path");',
+        'const promptFile = process.argv[2];',
+        'const prompt = promptFile ? fs.readFileSync(promptFile, "utf-8") : "";',
+        'const agentName = "agent-stale";',
+        'if (prompt.includes("reviewing the completed output")) { console.log("Stale log summary."); process.exit(0); }',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  const requests = parseRequests(prompt);',
+        '  const approved = requests.map((r) => ({ request_id: r.request_id, decision: "approved", reason: "stale log test" }));',
+        '  const actions = requests.map((r) => ({ type: "end_agent", agent: r.agent }));',
+        '  console.log(JSON.stringify({ approved, rejected: [], actions }));',
+        '  process.exit(0);',
+        '}',
+        'setTimeout(() => {',
+        '  console.log("first worker output after quiet start");',
+        '  fs.writeFileSync("stale-log-recovered.txt", "ok\\n", "utf-8");',
+        '  stageRequest({',
+        '    request_id: agentName + "-done",',
+        '    agent: agentName,',
+        '    type: "review_request",',
+        '    priority: "medium",',
+        '    status: "pending",',
+        '    content: "Recovered after a silent respawn.",',
+        '    created_at: new Date().toISOString()',
+        '  });',
+        '  setTimeout(() => process.exit(0), 50);',
+        '}, 250);',
+        'setInterval(() => {}, 10000);',
+        'process.on("SIGTERM", () => process.exit(0));',
+        'function stageRequest(request) {',
+        '  const requestsDir = path.join("coord", "requests");',
+        '  fs.mkdirSync(requestsDir, { recursive: true });',
+        '  const tmpFile = path.join(requestsDir, request.request_id + ".tmp");',
+        '  const finalFile = path.join(requestsDir, request.request_id + ".json");',
+        '  fs.writeFileSync(tmpFile, JSON.stringify(request) + "\\n", "utf-8");',
+        '  fs.renameSync(tmpFile, finalFile);',
+        '}',
+        'function parseRequests(value) {',
+        '  const start = value.indexOf("## New Requests from Agents");',
+        '  const end = value.indexOf("## Your Responsibilities");',
+        '  const section = value.slice(start, end === -1 ? undefined : end);',
+        '  const match = section.match(/\\[[\\s\\S]*\\]/);',
+        '  return match ? JSON.parse(match[0]) : [];',
+        '}',
+      ]);
+      writeProjectConfig(project.root, cliPath, 'stalefake');
+      bootstrapProject(project.root, 'Stale log respawn test project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.tasks = {
+        'agent-stale': {
+          description: 'Test stale log refresh on respawn.',
+          cli: 'stalefake',
+          allowed_paths: ['*.txt'],
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2), 'utf-8');
+
+      addKiloWorktree(project.root, 'agent-stale');
+      const worktree = path.join(project.root, '.agents', 'worktrees', 'agent-stale');
+      const agentsPath = path.join(project.root, 'coord', 'agents.json');
+      fs.writeFileSync(agentsPath, JSON.stringify({
+        'agent-stale': {
+          task: 'Existing assignment before respawn.',
+          status: 'running',
+          worktree,
+          cli: 'stalefake',
+          pid: 999999,
+          started_at: '2020-01-01T00:00:00.000Z',
+          current_started_at: '2020-01-01T00:00:00.000Z',
+          last_spawned_at: '2020-01-01T00:00:00.000Z',
+          restart_count: 1,
+        },
+      }, null, 2), 'utf-8');
+
+      const logPath = path.join(project.root, 'coord', 'logs', 'agent-stale.log');
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.writeFileSync(logPath, 'old log line\n', 'utf-8');
+      const staleDate = new Date(Date.now() - 60 * 60 * 1000);
+      fs.utimesSync(logPath, staleDate, staleDate);
+
+      const promptFile = path.join(project.root, 'worker-prompt.txt');
+      fs.writeFileSync(promptFile, 'Respawn silently before writing output.', 'utf-8');
+      const spawnResult = spawnSync(process.execPath, [
+        path.join(repoRoot(), 'scripts', 'spawn-agent.js'),
+        '--agent',
+        'agent-stale',
+        '--prompt-file',
+        promptFile,
+        '--coord',
+        './coord',
+        '--cli',
+        'stalefake',
+      ], { cwd: project.root, encoding: 'utf-8' });
+      assert.strictEqual(spawnResult.status, 0, spawnResult.stderr);
+      assert.ok(fs.statSync(logPath).mtimeMs > staleDate.getTime(),
+        'spawn-agent should refresh the existing log mtime immediately');
+
+      const agentsBeforeLoop = readJson(agentsPath);
+      agentsBeforeLoop['agent-stale'].timeout_mins = 0.01;
+      fs.writeFileSync(agentsPath, JSON.stringify(agentsBeforeLoop, null, 2), 'utf-8');
+
+      const result = runLoop(project.root);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      const agents = readJson(agentsPath);
+      assert.strictEqual(agents['agent-stale'].status, 'completed');
+      assert.notStrictEqual(agents['agent-stale'].current_started_at, agents['agent-stale'].started_at);
+      const log = fs.readFileSync(path.join(project.root, 'coord', 'orchestrator.log'), 'utf-8');
+      assert.doesNotMatch(log, /Agent agent-stale idle .* Killing/);
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
   it('converts progress timeout into a synthetic arbitration request', () => {
     let project;
     try {

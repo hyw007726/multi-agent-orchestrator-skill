@@ -245,9 +245,16 @@ describe('loop behavior', () => {
         `Untracked worktree file should still exist after abort: ${untrackedFile}`);
       assert.strictEqual(fs.readFileSync(untrackedFile, 'utf-8'), 'untracked data\n');
 
-      assert.strictEqual(fs.existsSync(path.join(project.root, 'coord')), false,
-        'coord directory should be cleaned up after an abort');
-      assert.match(loop.stdout, /Cleaning up coordination directory/);
+      const coordDir = path.join(project.root, 'coord');
+      assert.strictEqual(fs.existsSync(coordDir), true,
+        'coord directory should be preserved after an abort for inspection');
+      assert.strictEqual(fs.existsSync(path.join(coordDir, 'abort.flag')), false,
+        'abort flag should be consumed after the loop handles it');
+      assert.ok(fs.existsSync(path.join(coordDir, 'orchestrator.log')),
+        'orchestrator log should remain available after abort');
+      const agents = readJson(path.join(coordDir, 'agents.json'));
+      assert.strictEqual(agents['agent-abort'].status, 'terminated');
+      assert.match(loop.stdout, /Coordination directory preserved/);
     } finally {
       if (project) project.cleanup();
     }

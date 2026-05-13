@@ -3,13 +3,38 @@
 const fs = require("fs");
 const path = require("path");
 
+const COORD_STATE_FILES = [
+  "context.json",
+  "DECISIONS.md",
+  "CALLER_CONTEXT.md",
+  "decisions.json",
+  "decisions.jsonl",
+  "requests.jsonl",
+  "agents.json",
+];
+const COORD_STATE_DIRS = ["requests", "progress"];
+
 runBootstrap();
 
 function runBootstrap() {
   const config = parseArgs();
-  const { coordDir, project, requirements, constraints, chatContext } = config;
+  const { coordDir, project, requirements, constraints, chatContext, force } = config;
 
   if (fs.existsSync(coordDir)) {
+    const existingState = findExistingCoordState(coordDir);
+    if (existingState.length > 0 && !force) {
+      console.error(
+        [
+          `Error: ${coordDir} already contains coordination state:`,
+          ...existingState.map((entry) => `  - ${entry}`),
+          "Refusing to overwrite it. Pass --force to re-bootstrap this coord directory.",
+        ].join("\n")
+      );
+      process.exit(1);
+    }
+    if (existingState.length > 0 && force) {
+      resetExistingCoordState(coordDir);
+    }
     console.log(`Directory ${coordDir} already exists. Skipping creation.`);
   } else {
     fs.mkdirSync(coordDir, { recursive: true });
@@ -121,6 +146,7 @@ function runBootstrap() {
       requirements: [],
       constraints: [],
       chatContext: "",
+      force: false,
     };
 
     for (let i = 0; i < args.length; i++) {
@@ -130,6 +156,7 @@ function runBootstrap() {
         case "--requirements": config.requirements = args[++i].split(",").map((s) => s.trim()); break;
         case "--constraints":  config.constraints  = args[++i].split(",").map((s) => s.trim()); break;
         case "--chat-context": config.chatContext  = args[++i]; break;
+        case "--force":        config.force        = true; break;
         case "--help":
           console.log(`
 Bootstrap Multi-Agent Orchestrator coordination
@@ -140,6 +167,7 @@ Options:
   --requirements <list>      Comma-separated compact requirements; also written to DECISIONS.md
   --constraints <list>       Comma-separated compact constraints; also written to DECISIONS.md
   --chat-context <string>    Compacted summary of original conversation context; written to CALLER_CONTEXT.md
+  --force                    Overwrite existing coordination state in --coord
   --help                     Show this help message
 
 Example:
@@ -155,6 +183,34 @@ Example:
     }
 
     return config;
+  }
+}
+
+function findExistingCoordState(coordDir) {
+  const existing = [];
+
+  for (const file of COORD_STATE_FILES) {
+    if (fs.existsSync(path.join(coordDir, file))) existing.push(file);
+  }
+  for (const dir of COORD_STATE_DIRS) {
+    const dirPath = path.join(coordDir, dir);
+    if (!fs.existsSync(dirPath)) continue;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dirPath);
+    } catch (_) {
+      existing.push(`${dir}/`);
+      continue;
+    }
+    if (entries.length > 0) existing.push(`${dir}/`);
+  }
+
+  return existing;
+}
+
+function resetExistingCoordState(coordDir) {
+  for (const entry of [...COORD_STATE_FILES, ...COORD_STATE_DIRS]) {
+    fs.rmSync(path.join(coordDir, entry), { recursive: true, force: true });
   }
 }
 

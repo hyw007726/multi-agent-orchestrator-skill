@@ -4,6 +4,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
 
 const {
   createTempProject,
@@ -14,6 +15,67 @@ const {
 } = require('./helpers/temp-project');
 
 describe('bootstrap example file', () => {
+  it('refuses to overwrite existing coord state unless --force is provided', () => {
+    let project;
+    try {
+      project = createTempProject('bootstrap-existing');
+      const bootstrapScript = path.join(repoRoot(), 'scripts', 'bootstrap.js');
+      run('node', [
+        bootstrapScript,
+        '--project', 'Original project',
+        '--coord', './coord',
+      ], { cwd: project.root });
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const decisionsPath = path.join(project.root, 'coord', 'DECISIONS.md');
+      const staleRequestPath = path.join(project.root, 'coord', 'requests', 'stale.json');
+      const staleProgressPath = path.join(project.root, 'coord', 'progress', 'agent.json');
+      fs.writeFileSync(decisionsPath, '# Architectural Decisions\n\n- Preserve this manual decision.\n', 'utf-8');
+      fs.writeFileSync(staleRequestPath, '{"request_id":"stale"}\n', 'utf-8');
+      fs.writeFileSync(staleProgressPath, '{"phase":"stale"}\n', 'utf-8');
+
+      const blocked = spawnSync(process.execPath, [
+        bootstrapScript,
+        '--project', 'Overwriting project',
+        '--coord', './coord',
+      ], {
+        cwd: project.root,
+        encoding: 'utf-8',
+      });
+
+      assert.notStrictEqual(blocked.status, 0);
+      assert.match(blocked.stderr, /already contains coordination state/);
+      assert.match(blocked.stderr, /context\.json/);
+      assert.match(blocked.stderr, /DECISIONS\.md/);
+      assert.match(blocked.stderr, /requests\//);
+      assert.match(blocked.stderr, /progress\//);
+      assert.strictEqual(readJson(contextPath).project, 'Original project');
+      assert.match(fs.readFileSync(decisionsPath, 'utf-8'), /Preserve this manual decision/);
+      assert.ok(fs.existsSync(staleRequestPath));
+      assert.ok(fs.existsSync(staleProgressPath));
+
+      const forced = spawnSync(process.execPath, [
+        bootstrapScript,
+        '--project', 'Forced project',
+        '--coord', './coord',
+        '--force',
+      ], {
+        cwd: project.root,
+        encoding: 'utf-8',
+      });
+
+      assert.strictEqual(forced.status, 0, forced.stderr);
+      assert.strictEqual(readJson(contextPath).project, 'Forced project');
+      assert.doesNotMatch(fs.readFileSync(decisionsPath, 'utf-8'), /Preserve this manual decision/);
+      assert.ok(!fs.existsSync(staleRequestPath));
+      assert.ok(!fs.existsSync(staleProgressPath));
+    } finally {
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
+
   it('writes coord/context.example.json with a valid example agent entry', () => {
     let project;
     try {

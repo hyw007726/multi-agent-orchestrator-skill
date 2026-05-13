@@ -13,7 +13,7 @@ Use `coord/context.json` only as the compact run index for task metadata and con
 ## Required Startup
 1. Read `coord/DECISIONS.md` first. It is the curated human-readable contract for architecture, API, data model, and file-ownership decisions.
 2. Read `coord/CALLER_CONTEXT.md` next. It preserves user intent, chat nuance, environment assumptions, and temporary rationale that the headless loop cannot infer from `context.json`.
-3. Read `coord/decisions.json` for the latest bounded set of approved request resolutions.
+3. Read `coord/decisions.json` for the latest bounded set of approved and rejected request dispositions.
 4. Use `coord/decisions.jsonl` only when you need the full append-only audit history or your request has fallen out of the recent window.
 5. Read the files/paths listed in `Start Here` below before searching broadly.
 
@@ -49,7 +49,7 @@ Example content of your `.json` file (a single JSON object, no markdown, no extr
 
 ## Priority Handling
 - **low / medium**: Log the request and continue working on other parts of your task.
-- **high**: Log the request and STOP working. Wait for your `request_id` to appear in `decisions.json` or, if it has fallen out of the recent window, in `decisions.jsonl`. DO NOT proceed.
+- **high**: Log the request and STOP working. Wait for your `request_id` to appear in `decisions.json` or, if it has fallen out of the recent window, in `decisions.jsonl`. Follow approved decisions. If the disposition is `rejected`, do not proceed with the rejected plan; either submit a clearer follow-up request or switch only to work that is not blocked by that decision.
 
 ## Dynamic Assignment
 Agent name: {AGENT_NAME}

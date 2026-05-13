@@ -142,7 +142,7 @@ async function runLoop() {
 
         // Liveness ("Killer") timeout: no log output for `timeout_mins`.
         const logFile = path.join(config.coordDir, "logs", `${name}.log`);
-        let lastActivity = new Date(agent.started_at).getTime();
+        let lastActivity = readAgentCurrentStartMs(agent);
         if (fs.existsSync(logFile)) lastActivity = fs.statSync(logFile).mtime.getTime();
 
         const timeoutMins = agent.timeout_mins || parsedConfig.default_timeout_mins;
@@ -278,8 +278,7 @@ async function runLoop() {
   log(`Released singleton lock on ${instanceLock.markerPath}.`);
 
   if (aborted) {
-    log("Cleaning up coordination directory (worktrees preserved).");
-    try { fs.rmSync(config.coordDir, { recursive: true, force: true }); } catch {}
+    log("Coordination directory preserved for post-abort inspection (worktrees also preserved).");
   }
 
   // Single-use helper — only called from the main while loop above.
@@ -336,12 +335,12 @@ async function runLoop() {
           const worktree = snapshot.worktree;
           if (fs.existsSync(worktree)) {
             try {
-              execSync(`git add -A`, { cwd: worktree, stdio: "ignore" });
-              try {
-                const taskSummary = (snapshot.task || "completed").toString().slice(0, 200);
-                execSync(`git commit -m "agent-${action.agent}: ${taskSummary}"`, { cwd: worktree, stdio: "ignore" });
+              stageAllChanges(worktree);
+              const taskSummary = (snapshot.task || "completed").toString().slice(0, 200);
+              const commit = commitWorktree(worktree, `agent-${action.agent}: ${taskSummary}`);
+              if (commit.committed) {
                 log(`Agent ${action.agent}: auto-committed worktree state.`);
-              } catch {
+              } else {
                 log(`Agent ${action.agent}: no changes to commit (already clean).`);
               }
             } catch (err) {
@@ -472,10 +471,9 @@ async function runLoop() {
         }
       } else {
         try {
-          execSync(`git add .`, { cwd: outcome.worktree });
-          try {
-            execSync(`git commit -m "WIP: orchestrator intervention (${reason})"`, { cwd: outcome.worktree, stdio: "ignore" });
-          } catch {
+          stageAllChanges(outcome.worktree);
+          const commit = commitWorktree(outcome.worktree, `WIP: orchestrator intervention (${reason})`);
+          if (!commit.committed) {
             log(`No changes to commit for soft_restart on ${name}.`);
           }
         } catch (err) {
@@ -586,8 +584,8 @@ async function runLoop() {
     }
   }
 
-  // Marks resolved/rejected requests in requests.jsonl, appends the full audit log,
-  // and keeps decisions.json as a bounded recent window for prompts/dashboard.
+  // Marks resolved/rejected requests in requests.jsonl, appends the full disposition
+  // audit log, and keeps decisions.json as a bounded recent window for prompts/dashboard.
   // Workers never write this file directly; new staged requests are consolidated before
   // arbitration, and status updates are serialized through updateJSONL.
   function processApprovals(response, paths, log) {
@@ -595,14 +593,30 @@ async function runLoop() {
     const resolvedAt = new Date().toISOString();
     const currentRequests = readJSONL(paths.requests);
     const byId = new Map(currentRequests.map((request) => [request.request_id, request]));
+    const recorded = new Set();
 
     for (const approved of response.approved || []) {
       const req = byId.get(approved.request_id);
-      if (!req || req.status !== "pending") continue;
+      if (!req || req.status !== "pending" || recorded.has(approved.request_id)) continue;
+      recorded.add(approved.request_id);
       decisionsToAdd.push({
         request_id: approved.request_id,
+        disposition: "approved",
         decision: approved.decision,
         reason: approved.reason,
+        resolved_at: resolvedAt,
+      });
+    }
+
+    for (const rejected of response.rejected || []) {
+      const req = byId.get(rejected.request_id);
+      if (!req || req.status !== "pending" || recorded.has(rejected.request_id)) continue;
+      recorded.add(rejected.request_id);
+      decisionsToAdd.push({
+        request_id: rejected.request_id,
+        disposition: "rejected",
+        decision: "Request rejected",
+        reason: rejected.reason,
         resolved_at: resolvedAt,
       });
     }
@@ -1079,6 +1093,34 @@ function readTail(filePath, lines) {
   } catch { return ""; }
 }
 
+function readAgentCurrentStartMs(agent) {
+  const raw = agent.current_started_at || agent.last_spawned_at || agent.started_at;
+  const parsed = raw ? new Date(raw).getTime() : NaN;
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function stageAllChanges(worktree) {
+  const result = spawnSync("git", ["add", "-A"], { cwd: worktree, stdio: "ignore" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`git add -A exited with status ${result.status}`);
+}
+
+function commitWorktree(worktree, message) {
+  const result = spawnSync("git", ["commit", "-m", String(message)], {
+    cwd: worktree,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: false,
+  });
+  if (result.error) throw result.error;
+  return {
+    committed: result.status === 0,
+    status: result.status,
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+  };
+}
+
 // Captures uncommitted+untracked state in a recovery tag, then resets the worktree.
 // Returns { tag: string | null, error: string | null }.
 // If error is set the worktree was NOT touched — the caller must abort the restart.
@@ -1087,13 +1129,9 @@ function captureRecoveryAndReset(worktree, agent, log) {
     const headBefore = execSync("git rev-parse HEAD", { cwd: worktree, encoding: "utf-8" }).trim();
     let createdRecovery = false;
     try {
-      execSync("git add -A", { cwd: worktree, stdio: "ignore" });
-      try {
-        execSync(`git commit -m "RECOVERY: pre-hard-restart"`, { cwd: worktree, stdio: "ignore" });
-        createdRecovery = true;
-      } catch {
-        // nothing to commit
-      }
+      stageAllChanges(worktree);
+      const commit = commitWorktree(worktree, "RECOVERY: pre-hard-restart");
+      createdRecovery = commit.committed;
     } catch (err) {
       log(`Recovery staging failed: ${err.message}`);
     }
@@ -1408,6 +1446,10 @@ function buildFinalSummary(agents = {}, requests = []) {
     lines.push(`  Status: ${agent.status || "(unknown)"}`);
     lines.push(`  Branch: ${name}`);
     lines.push(`  Worktree: ${agent.worktree || "(unknown)"}`);
+    lines.push(`  Lifecycle started: ${agent.started_at || "(unknown)"}`);
+    if ((agent.current_started_at || agent.last_spawned_at) && (agent.current_started_at || agent.last_spawned_at) !== agent.started_at) {
+      lines.push(`  Current process started: ${agent.current_started_at || agent.last_spawned_at}`);
+    }
     lines.push(`  Task: ${truncate(agent.task || "Initial prompt", 180)}`);
     lines.push(`  Validation: ${agent.status === STATUS.COMPLETED ? "passed before completion" : "not confirmed"}`);
     lines.push(`  Worker report: ${reviewRequest ? truncate(reviewRequest.content || "(empty)", 500) : "(no review_request recorded)"}`);
@@ -1442,4 +1484,7 @@ function truncate(value, max) {
 module.exports = {
   buildOrchestratorPrompt,
   buildFinalSummary,
+  commitWorktree,
+  stageAllChanges,
+  readAgentCurrentStartMs,
 };

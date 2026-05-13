@@ -81,24 +81,36 @@ function launchAll() {
     const worktreeBase = cli === 'kilo' ? '.kilocode/worktrees' : '.agents/worktrees';
     const worktreePath = path.join(worktreeBase, agentName);
 
-    if (fs.existsSync(path.join(projectRoot, worktreePath))) {
-      console.error(`Error: Worktree ${worktreePath} already exists for agent ${agentName}.`);
-      process.exit(1);
+    const absoluteWorktreePath = path.join(projectRoot, worktreePath);
+    if (fs.existsSync(absoluteWorktreePath)) {
+      if (!args.resume) {
+        console.error(`Error: Worktree ${worktreePath} already exists for agent ${agentName}. Pass --resume to validate and reuse preserved worktrees.`);
+        rollbackIfNeeded(spawnedPids, createdWorktrees, projectRoot);
+        process.exit(1);
+      }
+
+      const resumeCheck = validateExistingWorktree(projectRoot, worktreePath, agentName);
+      if (!resumeCheck.ok) {
+        console.error(`Error: Cannot resume agent ${agentName} from ${worktreePath}: ${resumeCheck.error}`);
+        rollbackIfNeeded(spawnedPids, createdWorktrees, projectRoot);
+        process.exit(1);
+      }
+      console.log(`Resuming existing worktree ${worktreePath} for agent ${agentName}.`);
+    } else {
+      const addResult = spawnSync('git', ['worktree', 'add', worktreePath, '-b', agentName], {
+        cwd: projectRoot,
+        encoding: 'utf-8',
+      });
+
+      if (addResult.status !== 0) {
+        console.error(`Error: Failed to create worktree for ${agentName}:`);
+        console.error(addResult.stderr || addResult.stdout);
+        rollback(spawnedPids, createdWorktrees, projectRoot);
+        process.exit(1);
+      }
+
+      createdWorktrees.push({ name: agentName, path: worktreePath });
     }
-
-    const addResult = spawnSync('git', ['worktree', 'add', worktreePath, '-b', agentName], {
-      cwd: projectRoot,
-      encoding: 'utf-8',
-    });
-
-    if (addResult.status !== 0) {
-      console.error(`Error: Failed to create worktree for ${agentName}:`);
-      console.error(addResult.stderr || addResult.stdout);
-      rollback(spawnedPids, createdWorktrees, projectRoot);
-      process.exit(1);
-    }
-
-    createdWorktrees.push({ name: agentName, path: worktreePath });
 
     const vars = {
       ASSIGNED_TASK: agentRecord.description || '',
@@ -122,6 +134,7 @@ function launchAll() {
       '--cli', cli,
       '--prompt-file', promptFile,
       '--coord', args.coordDir,
+      '--task-description', agentRecord.description || '',
     ];
 
     if (agentRecord.mode) {
@@ -187,15 +200,95 @@ function launchAll() {
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const config = { coordDir: './coord' };
+  const config = { coordDir: './coord', resume: false };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--coord') config.coordDir = args[++i];
+    else if (args[i] === '--resume' || args[i] === '--force-existing-worktrees') config.resume = true;
   }
   return config;
 }
 
+function validateExistingWorktree(projectRoot, worktreePath, agentName) {
+  const absoluteWorktreePath = path.resolve(projectRoot, worktreePath);
+  let stat;
+  try {
+    stat = fs.statSync(absoluteWorktreePath);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+  if (!stat.isDirectory()) {
+    return { ok: false, error: 'path exists but is not a directory' };
+  }
+
+  const topLevel = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd: absoluteWorktreePath,
+    encoding: 'utf-8',
+  });
+  if (topLevel.status !== 0) {
+    return { ok: false, error: `path is not a usable git worktree (${(topLevel.stderr || topLevel.stdout || '').trim()})` };
+  }
+  const normalizedTopLevel = normalizeExistingPath(topLevel.stdout.trim());
+  const normalizedExpected = normalizeExistingPath(absoluteWorktreePath);
+  if (normalizedTopLevel !== normalizedExpected) {
+    return { ok: false, error: `git top-level is ${topLevel.stdout.trim()}, expected ${absoluteWorktreePath}` };
+  }
+
+  const worktrees = listGitWorktrees(projectRoot);
+  if (worktrees.error) {
+    return { ok: false, error: worktrees.error };
+  }
+  const record = worktrees.records.find((entry) => normalizeExistingPath(entry.worktree) === normalizedExpected);
+  if (!record) {
+    return { ok: false, error: 'path exists but is not registered by git worktree list' };
+  }
+
+  const expectedBranch = `refs/heads/${agentName}`;
+  if (record.branch !== expectedBranch) {
+    return { ok: false, error: `registered worktree is on ${record.branch || 'a detached HEAD'}, expected ${expectedBranch}` };
+  }
+
+  return { ok: true };
+}
+
+function listGitWorktrees(projectRoot) {
+  const result = spawnSync('git', ['worktree', 'list', '--porcelain', '-z'], {
+    cwd: projectRoot,
+    encoding: 'utf-8',
+  });
+  if (result.status !== 0) {
+    return { records: [], error: `failed to inspect git worktrees: ${(result.stderr || result.stdout || '').trim()}` };
+  }
+
+  const records = [];
+  let current = null;
+  for (const field of result.stdout.split('\0')) {
+    if (field === '') continue;
+    if (field.startsWith('worktree ')) {
+      if (current) records.push(current);
+      current = { worktree: field.slice('worktree '.length), branch: '' };
+    } else if (current && field.startsWith('branch ')) {
+      current.branch = field.slice('branch '.length);
+    }
+  }
+  if (current) records.push(current);
+  return { records, error: null };
+}
+
+function normalizeExistingPath(filePath) {
+  try {
+    return fs.realpathSync.native(filePath);
+  } catch {
+    return path.resolve(filePath);
+  }
+}
+
 // Kills all spawned agents and removes created worktrees + branches.
 // Called on partial spawn failure so the repo is left clean.
+function rollbackIfNeeded(spawnedPids, createdWorktrees, projectRoot) {
+  if (spawnedPids.length === 0 && createdWorktrees.length === 0) return;
+  rollback(spawnedPids, createdWorktrees, projectRoot);
+}
+
 function rollback(spawnedPids, createdWorktrees, projectRoot) {
   console.error('\nRolling back partial launch...');
   for (const { pid, cli, name } of spawnedPids) {

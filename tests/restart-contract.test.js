@@ -161,6 +161,7 @@ describe('restart contract preservation', () => {
 
       const initialAgents = readJson(path.join(project.root, 'coord', 'agents.json'));
       const initialStartedAt = initialAgents['agent-contract'].started_at;
+      const initialCurrentStartedAt = initialAgents['agent-contract'].current_started_at;
 
       const loop = runLoop(project.root);
       assert.strictEqual(loop.status, 0,
@@ -175,6 +176,12 @@ describe('restart contract preservation', () => {
       assert.strictEqual(agent.task, 'Continue after hard restart.');
       assert.strictEqual(agent.restart_count, 1);
       assert.strictEqual(agent.started_at, initialStartedAt);
+      assert.ok(agent.current_started_at, 'current_started_at should be recorded');
+      assert.notStrictEqual(agent.current_started_at, initialStartedAt,
+        'current process start should refresh after respawn while lifecycle start is preserved');
+      assert.notStrictEqual(agent.current_started_at, initialCurrentStartedAt,
+        'current process start should change on respawn');
+      assert.strictEqual(agent.last_spawned_at, agent.current_started_at);
       assert.deepStrictEqual(agent.validate_cmd, ['test', '-f', 'restart-success.txt']);
       assert.strictEqual(agent.timeout_mins, 7);
       assert.strictEqual(agent.progress_timeout_mins, 9);

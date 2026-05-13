@@ -72,6 +72,7 @@ function runDraftMode(args, cwd) {
     appendOptionalValue(bootstrapArgs, "--requirements", args.requirements);
     appendOptionalValue(bootstrapArgs, "--constraints", args.constraints);
     appendOptionalValue(bootstrapArgs, "--chat-context", args.chatContext);
+    if (args.force) bootstrapArgs.push("--force");
     runStep("Bootstrap coordination files", bootstrapArgs, cwd);
   }
 
