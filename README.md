@@ -324,8 +324,8 @@ RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider gemini
 ```
 
 The live harness writes provider-specific lower-model aliases for worker,
-arbitrator, and reviewer roles. The current live tests cover three isolated
-roles:
+arbitrator, and reviewer roles. The current live tests cover isolated roles and
+one all-live flow:
 
 - reviewer: runs the real `review-plan.js` path and asserts valid reviewer JSON.
 - arbitrator: stages a deterministic worker `question` request and asserts the
@@ -335,6 +335,10 @@ roles:
   fake local arbitrator for completion approval, and asserts the worker writes
   `live-worker-output.txt`, submits a `review_request`, passes validation, and
   reaches `completed`.
+- all-live: runs a live reviewer, then launches a live worker with a live
+  arbitrator. The worker must submit `agent-live-req-output-text`, wait for an
+  approved decision, write `live-worker-output.txt`, submit a final
+  `review_request`, pass validation, and reach `completed`.
 
 Default live model choices are:
 
@@ -349,6 +353,7 @@ LIVE_CODEX_MODEL=gpt-5-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.j
 LIVE_CODEX_WORKER_MODEL=gpt-5.1-codex-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
 LIVE_CODEX_ARBITRATOR_MODEL=gpt-5.1-codex-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
 LIVE_GEMINI_REVIEWER_MODEL=gemini-2.5-flash RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider gemini
+LIVE_ALL_LIVE_TIMEOUT_MS=1200000 RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider claude
 ```
 
 Set `LIVE_KEEP_ARTIFACTS=1` to preserve the temporary project and review

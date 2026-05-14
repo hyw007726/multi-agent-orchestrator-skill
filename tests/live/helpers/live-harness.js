@@ -326,6 +326,158 @@ async function runLiveWorkerSmoke(t, providerName) {
   }
 }
 
+async function runAllLiveSmoke(t, providerName) {
+  const skipReason = liveSkipReason(providerName);
+  if (skipReason) return skip(t, skipReason);
+
+  const provider = providerInfo(providerName);
+  const probe = probeProviderCli(providerName);
+  if (!probe.ok) return skip(t, probe.message);
+
+  const project = createTempProject(`live-${providerName}-all-live-`);
+  let loopPid = null;
+  let preserveArtifacts = process.env.LIVE_KEEP_ARTIFACTS === "1";
+  try {
+    const aliases = providerAliases(providerName);
+    writeAllLiveProviderConfig(project.root, providerName);
+    writeAllLiveDraft(project.root, providerName);
+
+    const reviewerTimeoutMs = liveTimeoutMs("REVIEWER", 10 * 60 * 1000);
+    const reviewResult = spawnSync(process.execPath, [
+      reviewPlanPath,
+      "--iteration",
+      "1",
+      "--draft-plan",
+      "./coord/plan-reviews/draft-plan-v1.json",
+      "--coord",
+      "./coord",
+      "--timeout-ms",
+      String(reviewerTimeoutMs),
+    ], {
+      cwd: project.root,
+      encoding: "utf-8",
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: reviewerTimeoutMs + 5000,
+    });
+    assert.strictEqual(
+      reviewResult.status,
+      0,
+      [
+        `${providerName} all-live reviewer phase failed in ${project.root}`,
+        `model: ${roleModel(providerName, "reviewer")}`,
+        `stdout:\n${reviewResult.stdout || "(empty)"}`,
+        `stderr:\n${reviewResult.stderr || "(empty)"}`,
+      ].join("\n\n")
+    );
+
+    const review = readJson(path.join(project.root, "coord", "plan-reviews", "iteration-1", `${aliases.reviewer}.json`));
+    assertValidReviewerJson(review, aliases.reviewer, 1);
+
+    writeAllLiveContext(project.root, providerName);
+
+    const launchResult = spawnSync(process.execPath, [launchAllPath, "--coord", "./coord"], {
+      cwd: project.root,
+      encoding: "utf-8",
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 30 * 1000,
+    });
+    assert.strictEqual(
+      launchResult.status,
+      0,
+      [
+        `${providerName} all-live worker launch failed in ${project.root}`,
+        `worker model: ${roleModel(providerName, "worker")}`,
+        `arbitrator model: ${roleModel(providerName, "arbitrator")}`,
+        `stdout:\n${launchResult.stdout || "(empty)"}`,
+        `stderr:\n${launchResult.stderr || "(empty)"}`,
+      ].join("\n\n")
+    );
+
+    const loopPidMatch = launchResult.stdout.match(/Orchestrator loop backgrounded \(PID:\s*(\d+)\)/);
+    loopPid = loopPidMatch ? Number(loopPidMatch[1]) : null;
+
+    const timeoutMs = liveTimeoutMs("ALL_LIVE", 15 * 60 * 1000);
+    const finalStatus = await waitFor(() => {
+      const agentsPath = path.join(project.root, "coord", "agents.json");
+      if (!fs.existsSync(agentsPath)) return false;
+      const agents = readJson(agentsPath);
+      const status = agents["agent-live-all"]?.status;
+      return ["completed", "errored", "exited", "terminated"].includes(status) ? status : false;
+    }, { timeoutMs, intervalMs: 1000 });
+
+    assert.strictEqual(
+      finalStatus,
+      "completed",
+      liveFailureMessage(project.root, providerName, "all-live worker did not complete", "agent-live-all")
+    );
+
+    const outputPath = path.join(project.root, ".agents", "worktrees", "agent-live-all", "live-worker-output.txt");
+    assert.ok(fs.existsSync(outputPath), `expected all-live worker output at ${outputPath}`);
+    assert.strictEqual(fs.readFileSync(outputPath, "utf-8").trim(), "live worker smoke ok");
+
+    const requests = readJsonl(path.join(project.root, "coord", "requests.jsonl"));
+    const gateRequest = requests.find((entry) => entry.request_id === "agent-live-req-output-text");
+    assert.ok(gateRequest, "requests.jsonl should include the forced output-text question");
+    assert.strictEqual(gateRequest.type, "question");
+    assert.strictEqual(gateRequest.status, "resolved");
+
+    const reviewRequest = requests.find((entry) =>
+      entry.agent === "agent-live-all" &&
+      entry.type === "review_request" &&
+      entry.status === "resolved"
+    );
+    assert.ok(reviewRequest, "requests.jsonl should include a resolved all-live review_request");
+    assert.ok(
+      requests.findIndex((entry) => entry.request_id === gateRequest.request_id) <
+        requests.findIndex((entry) => entry.request_id === reviewRequest.request_id),
+      "forced output-text question should be recorded before the final review_request"
+    );
+
+    const decisions = readJson(path.join(project.root, "coord", "decisions.json"));
+    const gateDecision = decisions.find((entry) => entry.request_id === "agent-live-req-output-text");
+    assert.ok(gateDecision, "decisions.json should include the forced output-text question");
+    assert.strictEqual(gateDecision.disposition, "approved");
+    assert.ok(
+      fs.statSync(outputPath).mtimeMs >= new Date(gateDecision.resolved_at).getTime(),
+      "live-worker-output.txt should be written after the output-text approval decision"
+    );
+
+    const audit = readJsonl(path.join(project.root, "coord", "decisions.jsonl"));
+    assert.ok(audit.some((entry) => entry.request_id === "agent-live-req-output-text"), "decisions.jsonl should audit the forced question");
+    assert.ok(audit.some((entry) => entry.request_id === reviewRequest.request_id), "decisions.jsonl should audit the final review request");
+
+    const summaryPath = path.join(project.root, "coord", "review-summary.txt");
+    await waitFor(() => fs.existsSync(summaryPath) ? fs.readFileSync(summaryPath, "utf-8") : false, {
+      timeoutMs: 30 * 1000,
+      intervalMs: 500,
+    });
+
+    cleanupLiveProcesses(project.root, loopPid);
+    loopPid = null;
+
+    return {
+      provider: providerName,
+      cli: provider.cli,
+      reviewer: aliases.reviewer,
+      review,
+      gateRequest,
+      gateDecision,
+      reviewRequest,
+      outputPath,
+    };
+  } catch (err) {
+    preserveArtifacts = true;
+    throw err;
+  } finally {
+    cleanupLiveProcesses(project.root, loopPid);
+    if (preserveArtifacts) {
+      console.log(`Keeping live test artifacts: ${project.root}`);
+    } else {
+      project.cleanup();
+    }
+  }
+}
+
 function writeLiveProviderConfig(projectRoot, providerName) {
   const provider = providerInfo(providerName);
   const aliases = providerAliases(providerName);
@@ -343,6 +495,46 @@ function writeLiveProviderConfig(projectRoot, providerName) {
         name: aliases.reviewer,
         cli: aliases.reviewer,
         review_focus: "Validate live lower-model reviewer output for a tiny single-worker decomposition plan.",
+      },
+    ],
+    cli_templates: {
+      [aliases.worker]: provider.template(roleModel(providerName, "worker")),
+      [aliases.arbitrator]: provider.template(roleModel(providerName, "arbitrator")),
+      [aliases.reviewer]: provider.template(roleModel(providerName, "reviewer")),
+    },
+    cli_health_checks: {
+      [aliases.worker]: provider.healthCheck,
+      [aliases.arbitrator]: provider.healthCheck,
+      [aliases.reviewer]: provider.healthCheck,
+    },
+  };
+
+  fs.writeFileSync(
+    path.join(projectRoot, "orchestrator.config.js"),
+    `module.exports = ${JSON.stringify(config, null, 2)};\n`,
+    "utf-8"
+  );
+  return config;
+}
+
+function writeAllLiveProviderConfig(projectRoot, providerName) {
+  const provider = providerInfo(providerName);
+  const aliases = providerAliases(providerName);
+  const config = {
+    default_cli: aliases.worker,
+    orchestrator_cli: aliases.arbitrator,
+    max_plan_review_iterations: 1,
+    default_timeout_mins: 10,
+    default_progress_timeout_mins: 10,
+    poll_min_ms: 250,
+    poll_max_ms: 500,
+    launch_dashboard: false,
+    launch_review_terminal: false,
+    reviewers: [
+      {
+        name: aliases.reviewer,
+        cli: aliases.reviewer,
+        review_focus: "Validate the all-live lower-model protocol test: reviewer, arbitrator, and worker all use provider CLIs.",
       },
     ],
     cli_templates: {
@@ -448,6 +640,14 @@ function writeReviewerSmokeDraft(projectRoot) {
   return draftPath;
 }
 
+function writeAllLiveDraft(projectRoot, providerName) {
+  const draftPath = path.join(projectRoot, "coord", "plan-reviews", "draft-plan-v1.json");
+  const draft = allLivePlan(providerName);
+  fs.mkdirSync(path.dirname(draftPath), { recursive: true });
+  fs.writeFileSync(draftPath, `${JSON.stringify(draft, null, 2)}\n`, "utf-8");
+  return draftPath;
+}
+
 function writeArbitratorSmokeContext(projectRoot, providerName) {
   writeCoordBase(projectRoot, {
     project: `Live ${providerName} arbitrator smoke project`,
@@ -520,7 +720,93 @@ function writeWorkerSmokeContext(projectRoot, providerName) {
   });
 }
 
-function writeCoordBase(projectRoot, context) {
+function writeAllLiveContext(projectRoot, providerName) {
+  const plan = allLivePlan(providerName);
+  writeCoordBase(projectRoot, {
+    project: plan.project,
+    chat_context: {
+      summary: "All-live lower-model test: reviewer, arbitrator, and worker use provider CLIs.",
+      forced_request_id: "agent-live-req-output-text",
+      expected_output_text: "live worker smoke ok",
+    },
+    execution_topology: plan.candidate_execution_topology,
+    requirements: plan.user_requirements,
+    constraints: plan.constraints,
+    tasks: plan.tasks,
+  }, {
+    decisions: [
+      "- This is the Stage 6 all-live lower-model smoke test.",
+      "- When `agent-live-all` submits `agent-live-req-output-text` asking to write `live-worker-output.txt` with exactly `live worker smoke ok`, approve the request.",
+      "- The worker must not write `live-worker-output.txt` before that approval exists in `coord/decisions.json` or `coord/decisions.jsonl`.",
+      "- When `agent-live-all` later submits a `review_request` after creating `live-worker-output.txt`, approve the request and include an `end_agent` action so validation can complete the run.",
+      "- The only intended worker-owned output file is `live-worker-output.txt`.",
+    ],
+    callerContext: [
+      "This all-live test intentionally forces a worker question before the file write.",
+      "The live arbitrator should approve the exact text request and later end the agent after the final review_request.",
+    ],
+  });
+}
+
+function allLivePlan(providerName) {
+  return {
+    project: `Live ${providerName} all-live smoke project`,
+    user_requirements: [
+      "Exercise lower-model reviewer, arbitrator, and worker roles in one run.",
+      "Force the worker to request approval for the exact output text before writing the file.",
+      "Complete by writing live-worker-output.txt and submitting a final review_request.",
+    ],
+    constraints: [
+      "Worker must not write live-worker-output.txt before approval for agent-live-req-output-text is recorded.",
+      "Worker may only edit live-worker-output.txt.",
+      "Arbitrator must resolve every pending request explicitly.",
+    ],
+    candidate_execution_topology: {
+      execution_mode: "single_worker",
+      reason: "One worker owns one output file; the reviewer and arbitrator are role checks, not independent implementation workers.",
+      rejected_alternatives: [
+        { execution_mode: "direct", reason: "The test must exercise worker and arbitrator roles through the live orchestration path." },
+        { execution_mode: "parallel", reason: "There is only one implementation boundary." },
+        { execution_mode: "phased", reason: "No shared foundation phase is required." },
+      ],
+      dependency_notes: ["Worker progress depends on the arbitrator decision for agent-live-req-output-text."],
+      shared_foundation_notes: ["No package or lockfile changes are needed."],
+      mode_specific_decomposition: ["One worker asks approval, waits, writes live-worker-output.txt, and requests final review."],
+    },
+    shared_foundation_assumptions: ["README.md and coord files are read-only context except for documented request staging."],
+    known_risks: ["Live model behavior may fail JSON formatting, waiting, or exact file content requirements."],
+    tasks: {
+      "agent-live-all": {
+        description: [
+          "This is an all-live protocol smoke test. Follow these steps exactly.",
+          "",
+          "Step 1: Before creating live-worker-output.txt, submit a medium-priority question request to coord/requests/ using the documented atomic tmp-to-json protocol.",
+          "The request JSON MUST have request_id \"agent-live-req-output-text\", agent \"agent-live-all\", type \"question\", priority \"medium\", status \"pending\", and content asking approval to write live-worker-output.txt with exactly: live worker smoke ok",
+          "",
+          "Step 2: After staging that request, wait until coord/decisions.json or coord/decisions.jsonl contains request_id \"agent-live-req-output-text\" with disposition \"approved\".",
+          "Do not create live-worker-output.txt before the approval is visible. Poll the decision files if needed.",
+          "If the request is rejected, do not write the file; submit a high-priority follow-up question explaining the rejection and stop.",
+          "",
+          "Step 3: After approval, create live-worker-output.txt containing exactly one line: live worker smoke ok",
+          "Do not add any other text to that file.",
+          "",
+          "Step 4: Submit a final review_request to coord/requests/ using the documented atomic tmp-to-json protocol.",
+          "The final review_request content should mention the approval request id, live-worker-output.txt, and the validation command result if you ran it.",
+          "",
+          "Step 5: After submitting the final review_request, wait for the orchestrator to end the agent.",
+        ].join("\n"),
+        cli: providerAliases(providerName).worker,
+        allowed_paths: ["live-worker-output.txt"],
+        forbidden_paths: ["coord/context.json", "coord/DECISIONS.md", "coord/CALLER_CONTEXT.md", "package.json", "README.md"],
+        read_first: ["README.md", "coord/DECISIONS.md", "coord/CALLER_CONTEXT.md", "coord/context.json"],
+        validation_command: liveWorkerValidationCommand(),
+        sequencing_notes: ["Ask for approval first; continue only after approved decision is visible."],
+      },
+    },
+  };
+}
+
+function writeCoordBase(projectRoot, context, options = {}) {
   const coordDir = path.join(projectRoot, "coord");
   fs.mkdirSync(path.join(coordDir, "requests"), { recursive: true });
   fs.mkdirSync(path.join(coordDir, "progress"), { recursive: true });
@@ -529,17 +815,23 @@ function writeCoordBase(projectRoot, context) {
     ...context,
     created_at: new Date().toISOString(),
   }, null, 2)}\n`, "utf-8");
+  const decisions = options.decisions || [
+    "- Live smoke tests must keep file ownership narrow and explicit.",
+    "- The exact worker output text is `live worker smoke ok`.",
+  ];
   fs.writeFileSync(path.join(coordDir, "DECISIONS.md"), [
     "# Decisions",
     "",
-    "- Live smoke tests must keep file ownership narrow and explicit.",
-    "- The exact worker output text is `live worker smoke ok`.",
+    ...decisions,
     "",
   ].join("\n"), "utf-8");
+  const callerContext = options.callerContext || [
+    "This is an opt-in live lower-model test. Prefer deterministic, minimal decisions.",
+  ];
   fs.writeFileSync(path.join(coordDir, "CALLER_CONTEXT.md"), [
     "# Caller Context",
     "",
-    "This is an opt-in live lower-model test. Prefer deterministic, minimal decisions.",
+    ...callerContext,
     "",
   ].join("\n"), "utf-8");
   fs.writeFileSync(path.join(coordDir, "requests.jsonl"), "", "utf-8");
@@ -678,7 +970,7 @@ function cleanupLiveProcesses(projectRoot, loopPid = null) {
   } catch {}
 }
 
-function liveFailureMessage(projectRoot, providerName, reason) {
+function liveFailureMessage(projectRoot, providerName, reason, agentName = "agent-live-worker") {
   const details = [
     `${providerName} live smoke failed: ${reason}`,
     `artifacts: ${projectRoot}`,
@@ -687,7 +979,7 @@ function liveFailureMessage(projectRoot, providerName, reason) {
   if (fs.existsSync(logPath)) {
     details.push(`orchestrator.log:\n${tailText(logPath, 120)}`);
   }
-  const workerLog = path.join(projectRoot, "coord", "logs", "agent-live-worker.log");
+  const workerLog = path.join(projectRoot, "coord", "logs", `${agentName}.log`);
   if (fs.existsSync(workerLog)) {
     details.push(`worker log:\n${tailText(workerLog, 120)}`);
   }
@@ -730,9 +1022,11 @@ module.exports = {
   probeProviderCli,
   providerAliases,
   roleModel,
+  runAllLiveSmoke,
   runLiveArbitratorSmoke,
   runLiveReviewerSmoke,
   runLiveWorkerSmoke,
+  writeAllLiveProviderConfig,
   writeLiveProviderConfig,
   writeLiveWorkerConfig,
   writeReviewerSmokeDraft,

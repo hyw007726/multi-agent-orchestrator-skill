@@ -25,17 +25,21 @@ describe("live test runner", () => {
       path.join(root, "tests/live/codex-reviewer-smoke.test.js"),
       path.join(root, "tests/live/codex-arbitrator-smoke.test.js"),
       path.join(root, "tests/live/codex-worker-smoke.test.js"),
+      path.join(root, "tests/live/codex-all-live-smoke.test.js"),
     ]);
     assert.deepStrictEqual(selectedTestFiles("all", root), [
       path.join(root, "tests/live/codex-reviewer-smoke.test.js"),
       path.join(root, "tests/live/codex-arbitrator-smoke.test.js"),
       path.join(root, "tests/live/codex-worker-smoke.test.js"),
+      path.join(root, "tests/live/codex-all-live-smoke.test.js"),
       path.join(root, "tests/live/claude-reviewer-smoke.test.js"),
       path.join(root, "tests/live/claude-arbitrator-smoke.test.js"),
       path.join(root, "tests/live/claude-worker-smoke.test.js"),
+      path.join(root, "tests/live/claude-all-live-smoke.test.js"),
       path.join(root, "tests/live/gemini-reviewer-smoke.test.js"),
       path.join(root, "tests/live/gemini-arbitrator-smoke.test.js"),
       path.join(root, "tests/live/gemini-worker-smoke.test.js"),
+      path.join(root, "tests/live/gemini-all-live-smoke.test.js"),
     ]);
   });
 

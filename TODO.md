@@ -41,7 +41,7 @@ Each item is tagged with a complexity rating:
   - Give the worker a simple task: create `live-worker-output.txt` containing exactly `live worker smoke ok`, then submit a `review_request`.
   - Assert the worker launches, writes the expected file in its worktree, validation passes, and the agent reaches `completed`.
 
-- **[C3] Stage 6 - All-live role tests**
+- **[C3] Stage 6 - All-live role tests (implemented)**
   - Add one all-live smoke test per provider using lower models for reviewer, arbitrator, and worker.
   - Force a real worker question before the simple task:
     - Worker must submit `agent-live-req-output-text` asking approval for the exact output text.

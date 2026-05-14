@@ -11,16 +11,19 @@ const LIVE_TEST_FILES = {
     "tests/live/codex-reviewer-smoke.test.js",
     "tests/live/codex-arbitrator-smoke.test.js",
     "tests/live/codex-worker-smoke.test.js",
+    "tests/live/codex-all-live-smoke.test.js",
   ],
   claude: [
     "tests/live/claude-reviewer-smoke.test.js",
     "tests/live/claude-arbitrator-smoke.test.js",
     "tests/live/claude-worker-smoke.test.js",
+    "tests/live/claude-all-live-smoke.test.js",
   ],
   gemini: [
     "tests/live/gemini-reviewer-smoke.test.js",
     "tests/live/gemini-arbitrator-smoke.test.js",
     "tests/live/gemini-worker-smoke.test.js",
+    "tests/live/gemini-all-live-smoke.test.js",
   ],
 };
 
