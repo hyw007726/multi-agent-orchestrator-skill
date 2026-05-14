@@ -297,6 +297,63 @@ Example inline-flag aliases:
 When a CLI is left unpinned, preflight reports that the exact model is selected
 by the CLI's own config/default and is not visible to the orchestrator.
 
+## Live Model Tests
+
+The default test command stays hermetic:
+
+```bash
+node scripts/run-tests.js
+```
+
+Live model tests are opt-in because they call authenticated provider CLIs, may
+use paid model calls, and can fail due to provider, network, auth, or model
+behavior. They are not included in `node scripts/run-tests.js`.
+
+Run all currently configured live tests:
+
+```bash
+RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js
+```
+
+Run one provider:
+
+```bash
+RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
+RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider claude
+RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider gemini
+```
+
+The live harness writes provider-specific lower-model aliases for worker,
+arbitrator, and reviewer roles. The current live tests cover three isolated
+roles:
+
+- reviewer: runs the real `review-plan.js` path and asserts valid reviewer JSON.
+- arbitrator: stages a deterministic worker `question` request and asserts the
+  live arbitrator resolves it through `requests.jsonl`, `decisions.json`, and
+  `decisions.jsonl`.
+- worker: launches a real lower-model worker through `launch-all.js`, uses a
+  fake local arbitrator for completion approval, and asserts the worker writes
+  `live-worker-output.txt`, submits a `review_request`, passes validation, and
+  reaches `completed`.
+
+Default live model choices are:
+
+- Codex/OpenAI: `gpt-5.1-codex-mini`
+- Claude: `claude-sonnet-4-6`
+- Gemini: `gemini-2.5-flash`
+
+Override them globally or per role:
+
+```bash
+LIVE_CODEX_MODEL=gpt-5-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
+LIVE_CODEX_WORKER_MODEL=gpt-5.1-codex-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
+LIVE_CODEX_ARBITRATOR_MODEL=gpt-5.1-codex-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
+LIVE_GEMINI_REVIEWER_MODEL=gemini-2.5-flash RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider gemini
+```
+
+Set `LIVE_KEEP_ARTIFACTS=1` to preserve the temporary project and review
+artifacts for debugging failed live runs.
+
 The most important settings are:
 
 - `default_cli`: worker CLI for coding tasks and cheap monitor calls.
