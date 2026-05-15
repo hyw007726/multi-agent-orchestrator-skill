@@ -22,8 +22,7 @@ const PROVIDERS = {
   codex: {
     envPrefix: "CODEX",
     cli: "codex",
-    defaultModel: "gpt-5.1-codex-mini",
-    alternateModel: "gpt-5-mini",
+    defaultModel: "gpt-5.4-mini",
     healthCheck: "codex --version",
     template(model) {
       return {
@@ -47,12 +46,17 @@ const PROVIDERS = {
   gemini: {
     envPrefix: "GEMINI",
     cli: "gemini",
-    defaultModel: "gemini-2.5-flash",
+    defaultModel: "gemini-2.5-flash-lite",
     healthCheck: "gemini --version",
-    template(model) {
+    template(model, options = {}) {
+      const args = ["--prompt", { prompt_text: true }, "--yolo", "--skip-trust"];
+      if (options.includeCoordDir) {
+        args.push("--include-directories", options.includeCoordDir);
+      }
+      args.push("--model", model);
       return {
         cmd: "gemini",
-        args: ["--prompt", { prompt_text: true }, "--yolo", "--model", model],
+        args,
       };
     },
   },
@@ -77,6 +81,8 @@ function runLiveReviewerSmoke(t, providerName) {
   if (!probe.ok) return skip(t, probe.message);
 
   const project = createTempProject(`live-${providerName}-reviewer-`);
+  console.log(`\n[live-harness] Reviewer smoke test workspace: ${project.root}`);
+  writeLiveSession(project.root, providerName, "reviewer");
   let preserveArtifacts = process.env.LIVE_KEEP_ARTIFACTS === "1";
   try {
     const aliases = providerAliases(providerName);
@@ -147,6 +153,8 @@ function runLiveArbitratorSmoke(t, providerName) {
   if (!probe.ok) return skip(t, probe.message);
 
   const project = createTempProject(`live-${providerName}-arbitrator-`);
+  console.log(`\n[live-harness] Arbitrator smoke test workspace: ${project.root}`);
+  writeLiveSession(project.root, providerName, "arbitrator");
   let preserveArtifacts = process.env.LIVE_KEEP_ARTIFACTS === "1";
   try {
     const aliases = providerAliases(providerName);
@@ -242,6 +250,8 @@ async function runLiveWorkerSmoke(t, providerName) {
   if (!probe.ok) return skip(t, probe.message);
 
   const project = createTempProject(`live-${providerName}-worker-`);
+  console.log(`\n[live-harness] Worker smoke test workspace: ${project.root}`);
+  writeLiveSession(project.root, providerName, "worker");
   let loopPid = null;
   let preserveArtifacts = process.env.LIVE_KEEP_ARTIFACTS === "1";
   try {
@@ -268,6 +278,7 @@ async function runLiveWorkerSmoke(t, providerName) {
 
     const loopPidMatch = launchResult.stdout.match(/Orchestrator loop backgrounded \(PID:\s*(\d+)\)/);
     loopPid = loopPidMatch ? Number(loopPidMatch[1]) : null;
+    updateLiveSession(project.root, { orchestrator_pid: loopPid });
 
     const timeoutMs = liveTimeoutMs("WORKER", 10 * 60 * 1000);
     const finalStatus = await waitFor(() => {
@@ -335,6 +346,8 @@ async function runAllLiveSmoke(t, providerName) {
   if (!probe.ok) return skip(t, probe.message);
 
   const project = createTempProject(`live-${providerName}-all-live-`);
+  console.log(`\n[live-harness] All-live protocol test workspace: ${project.root}`);
+  writeLiveSession(project.root, providerName, "all-live");
   let loopPid = null;
   let preserveArtifacts = process.env.LIVE_KEEP_ARTIFACTS === "1";
   try {
@@ -395,6 +408,7 @@ async function runAllLiveSmoke(t, providerName) {
 
     const loopPidMatch = launchResult.stdout.match(/Orchestrator loop backgrounded \(PID:\s*(\d+)\)/);
     loopPid = loopPidMatch ? Number(loopPidMatch[1]) : null;
+    updateLiveSession(project.root, { orchestrator_pid: loopPid });
 
     const timeoutMs = liveTimeoutMs("ALL_LIVE", 15 * 60 * 1000);
     const finalStatus = await waitFor(() => {
@@ -498,9 +512,9 @@ function writeLiveProviderConfig(projectRoot, providerName) {
       },
     ],
     cli_templates: {
-      [aliases.worker]: provider.template(roleModel(providerName, "worker")),
-      [aliases.arbitrator]: provider.template(roleModel(providerName, "arbitrator")),
-      [aliases.reviewer]: provider.template(roleModel(providerName, "reviewer")),
+      [aliases.worker]: liveRoleTemplate(projectRoot, providerName, "worker"),
+      [aliases.arbitrator]: liveRoleTemplate(projectRoot, providerName, "arbitrator"),
+      [aliases.reviewer]: liveRoleTemplate(projectRoot, providerName, "reviewer"),
     },
     cli_health_checks: {
       [aliases.worker]: provider.healthCheck,
@@ -538,9 +552,9 @@ function writeAllLiveProviderConfig(projectRoot, providerName) {
       },
     ],
     cli_templates: {
-      [aliases.worker]: provider.template(roleModel(providerName, "worker")),
-      [aliases.arbitrator]: provider.template(roleModel(providerName, "arbitrator")),
-      [aliases.reviewer]: provider.template(roleModel(providerName, "reviewer")),
+      [aliases.worker]: liveRoleTemplate(projectRoot, providerName, "worker"),
+      [aliases.arbitrator]: liveRoleTemplate(projectRoot, providerName, "arbitrator"),
+      [aliases.reviewer]: liveRoleTemplate(projectRoot, providerName, "reviewer"),
     },
     cli_health_checks: {
       [aliases.worker]: provider.healthCheck,
@@ -573,7 +587,7 @@ function writeLiveWorkerConfig(projectRoot, providerName) {
     launch_dashboard: false,
     launch_review_terminal: false,
     cli_templates: {
-      [aliases.worker]: provider.template(roleModel(providerName, "worker")),
+      [aliases.worker]: liveRoleTemplate(projectRoot, providerName, "worker"),
       [fakeArbitrator]: {
         cmd: process.execPath,
         args: [fakeArbitratorPath, { prompt_file: true }],
@@ -745,6 +759,15 @@ function writeAllLiveContext(projectRoot, providerName) {
       "This all-live test intentionally forces a worker question before the file write.",
       "The live arbitrator should approve the exact text request and later end the agent after the final review_request.",
     ],
+  });
+}
+
+function liveRoleTemplate(projectRoot, providerName, role) {
+  const provider = providerInfo(providerName);
+  const coordDir = path.join(projectRoot, "coord");
+  fs.mkdirSync(coordDir, { recursive: true });
+  return provider.template(roleModel(providerName, role), {
+    includeCoordDir: coordDir,
   });
 }
 
@@ -922,6 +945,65 @@ function providerAliases(providerName) {
   };
 }
 
+function writeLiveSession(projectRoot, providerName, test) {
+  const coordDir = path.join(projectRoot, "coord");
+  fs.mkdirSync(coordDir, { recursive: true });
+  const tailCommand = liveTailCommand(projectRoot, providerName, test);
+  const session = {
+    session_id: path.basename(projectRoot),
+    provider: providerName,
+    test,
+    workspace: projectRoot,
+    created_at: new Date().toISOString(),
+    models: {
+      worker: roleModel(providerName, "worker"),
+      arbitrator: roleModel(providerName, "arbitrator"),
+      reviewer: roleModel(providerName, "reviewer"),
+    },
+    inspect_command: `node ${path.join(repoRoot(), "scripts", "inspect-live-test.js")} ${projectRoot}`,
+    tail_command: tailCommand,
+  };
+  fs.writeFileSync(path.join(coordDir, "live-test-session.json"), `${JSON.stringify(session, null, 2)}\n`, "utf-8");
+  console.log(`[live-harness] Session ID: ${session.session_id}`);
+  console.log(`[live-harness] Inspect: ${session.inspect_command}`);
+  console.log(`[live-harness] Tail: ${session.tail_command}`);
+  return session;
+}
+
+function liveTailCommand(projectRoot, providerName, test) {
+  const coordDir = path.join(projectRoot, "coord");
+  const aliases = providerAliases(providerName);
+  const files = [];
+
+  if (test === "reviewer" || test === "all-live") {
+    files.push(path.join(coordDir, "plan-reviews", "iteration-1", `${aliases.reviewer}.md`));
+  }
+  if (test === "arbitrator" || test === "worker" || test === "all-live") {
+    files.push(path.join(coordDir, "orchestrator.log"));
+  }
+  if (test === "worker") {
+    files.push(path.join(coordDir, "logs", "agent-live-worker.log"));
+  }
+  if (test === "all-live") {
+    files.push(path.join(coordDir, "logs", "agent-live-all.log"));
+  }
+
+  return `tail -F ${files.map(shellQuote).join(" ")}`;
+}
+
+function updateLiveSession(projectRoot, patch) {
+  const sessionPath = path.join(projectRoot, "coord", "live-test-session.json");
+  let session = {};
+  try {
+    session = JSON.parse(fs.readFileSync(sessionPath, "utf-8"));
+  } catch (_) {}
+  fs.writeFileSync(
+    sessionPath,
+    `${JSON.stringify({ ...session, ...patch, updated_at: new Date().toISOString() }, null, 2)}\n`,
+    "utf-8"
+  );
+}
+
 function roleModel(providerName, role) {
   const provider = providerInfo(providerName);
   const prefix = provider.envPrefix;
@@ -995,6 +1077,10 @@ function tailText(file, maxLines) {
   }
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
 function assertValidReviewerJson(value, reviewerName, iteration) {
   assert.equal(value.iteration, iteration);
   assert.equal(value.reviewer, reviewerName);
@@ -1019,6 +1105,7 @@ module.exports = {
   PROVIDERS,
   assertValidReviewerJson,
   liveSkipReason,
+  liveTailCommand,
   probeProviderCli,
   providerAliases,
   roleModel,

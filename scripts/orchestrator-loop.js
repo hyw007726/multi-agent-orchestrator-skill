@@ -592,11 +592,16 @@ async function runLoop() {
     const decisionsToAdd = [];
     const resolvedAt = new Date().toISOString();
     const currentRequests = readJSONL(paths.requests);
-    const byId = new Map(currentRequests.map((request) => [request.request_id, request]));
+    const pendingById = new Map();
+    for (const request of currentRequests) {
+      if (request && request.status === "pending" && request.request_id && !pendingById.has(request.request_id)) {
+        pendingById.set(request.request_id, request);
+      }
+    }
     const recorded = new Set();
 
     for (const approved of response.approved || []) {
-      const req = byId.get(approved.request_id);
+      const req = pendingById.get(approved.request_id);
       if (!req || req.status !== "pending" || recorded.has(approved.request_id)) continue;
       recorded.add(approved.request_id);
       decisionsToAdd.push({
@@ -609,7 +614,7 @@ async function runLoop() {
     }
 
     for (const rejected of response.rejected || []) {
-      const req = byId.get(rejected.request_id);
+      const req = pendingById.get(rejected.request_id);
       if (!req || req.status !== "pending" || recorded.has(rejected.request_id)) continue;
       recorded.add(rejected.request_id);
       decisionsToAdd.push({
@@ -627,17 +632,15 @@ async function runLoop() {
 
     updateJSONL(paths.requests, (current) => {
       for (const approved of response.approved || []) {
-        const req = current.find((p) => p.request_id === approved.request_id);
-        if (req && req.status === "pending") {
-          req.status = "resolved";
-          log(`Approved Request ${approved.request_id}: ${approved.decision}`);
+        const count = markPendingRequestsById(current, approved.request_id, "resolved");
+        if (count > 0) {
+          log(`Approved Request ${approved.request_id}: ${approved.decision}${count > 1 ? ` (${count} matching pending entries)` : ""}`);
         }
       }
       for (const rejected of response.rejected || []) {
-        const req = current.find((p) => p.request_id === rejected.request_id);
-        if (req && req.status === "pending") {
-          req.status = "rejected";
-          log(`Rejected Request ${rejected.request_id}: ${rejected.reason}`);
+        const count = markPendingRequestsById(current, rejected.request_id, "rejected");
+        if (count > 0) {
+          log(`Rejected Request ${rejected.request_id}: ${rejected.reason}${count > 1 ? ` (${count} matching pending entries)` : ""}`);
         }
       }
     });
@@ -652,6 +655,17 @@ async function runLoop() {
         decisions.splice(0, archive);
       }
     });
+  }
+
+  function markPendingRequestsById(requests, requestId, status) {
+    let count = 0;
+    for (const request of requests) {
+      if (request.request_id === requestId && request.status === "pending") {
+        request.status = status;
+        count++;
+      }
+    }
+    return count;
   }
 }
 

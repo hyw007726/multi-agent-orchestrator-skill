@@ -232,4 +232,100 @@ describe('decision history', () => {
       }
     }
   });
+
+  it('resolves duplicate pending request ids idempotently', () => {
+    let project;
+    try {
+      project = createTempProject('decision-duplicate-request-');
+
+      const duplicateCliPath = path.join(project.root, 'duplicate-cli.js');
+      fs.writeFileSync(duplicateCliPath, [
+        '#!/usr/bin/env node',
+        "'use strict';",
+        'const fs = require("fs");',
+        'const args = process.argv.slice(2);',
+        'if (args[0] === "--version") { console.log("duplicate-cli 1.0"); process.exit(0); }',
+        'const prompt = fs.readFileSync(args[0], "utf-8");',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  console.log(JSON.stringify({',
+        '    approved: [{ request_id: "agent-duplicate-request", decision: "Duplicate approved.", reason: "Same request id should be idempotent." }],',
+        '    rejected: [],',
+        '    actions: []',
+        '  }));',
+        '  process.exit(0);',
+        '}',
+        'process.exit(0);',
+      ].join('\n'), 'utf-8');
+
+      fs.writeFileSync(path.join(project.root, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  default_cli: "duplicate",',
+        '  orchestrator_cli: "duplicate",',
+        `  cli_templates: { duplicate: ${JSON.stringify({ cmd: process.execPath, args: [duplicateCliPath, { prompt_file: true }] })} },`,
+        '  cli_health_checks: { duplicate: "node -e \\"process.exit(0)\\"" },',
+        '  poll_min_ms: 250,',
+        '  poll_max_ms: 500,',
+        '  launch_dashboard: false,',
+        '  launch_review_terminal: false,',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      bootstrapProject(project.root, 'Duplicate request id regression test project');
+
+      fs.writeFileSync(path.join(project.root, 'coord', 'agents.json'), JSON.stringify({
+        'agent-duplicate': {
+          task: 'Duplicate request id handling',
+          status: 'completed',
+          worktree: project.root,
+          cli: 'duplicate',
+        },
+      }, null, 2) + '\n', 'utf-8');
+
+      fs.writeFileSync(
+        path.join(project.root, 'coord', 'requests.jsonl'),
+        [
+          {
+            request_id: 'agent-duplicate-request',
+            agent: 'agent-duplicate',
+            type: 'question',
+            priority: 'medium',
+            status: 'resolved',
+            content: 'Earlier resolved copy.',
+            created_at: new Date().toISOString(),
+          },
+          {
+            request_id: 'agent-duplicate-request',
+            agent: 'agent-duplicate',
+            type: 'question',
+            priority: 'medium',
+            status: 'pending',
+            content: 'Duplicate pending copy after the staging file was consumed.',
+            created_at: new Date().toISOString(),
+          },
+        ].map((request) => JSON.stringify(request)).join('\n') + '\n',
+        'utf-8',
+      );
+
+      const loop = runLoop(project.root);
+      assert.strictEqual(loop.status, 0,
+        `orchestrator loop failed\nstdout:\n${loop.stdout}\nstderr:\n${loop.stderr}`);
+
+      const requests = readJsonl(path.join(project.root, 'coord', 'requests.jsonl'));
+      assert.deepStrictEqual(
+        requests.filter((request) => request.request_id === 'agent-duplicate-request').map((request) => request.status),
+        ['resolved', 'resolved'],
+      );
+
+      const audit = readJsonl(path.join(project.root, 'coord', 'decisions.jsonl'));
+      assert.strictEqual(
+        audit.filter((decision) => decision.request_id === 'agent-duplicate-request').length,
+        1,
+        'duplicate pending entries should produce one new decision audit entry for the cycle',
+      );
+    } finally {
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
 });

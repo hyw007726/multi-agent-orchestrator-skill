@@ -1,0 +1,81 @@
+name: Live model tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Provider to test
+        required: true
+        default: codex
+        type: choice
+        options:
+          - codex
+          - claude
+          - gemini
+      timeout_ms:
+        description: Per-test timeout in milliseconds
+        required: false
+        default: "1200000"
+      keep_artifacts:
+        description: Preserve and upload live test temp projects
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-model-tests-${{ github.ref }}-${{ inputs.provider }}
+  cancel-in-progress: false
+
+jobs:
+  live-model-tests:
+    name: ${{ inputs.provider }} live model tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUN_LIVE_MODEL_TESTS: "1"
+      LIVE_TEST_TIMEOUT_MS: ${{ inputs.timeout_ms }}
+      LIVE_KEEP_ARTIFACTS: ${{ inputs.keep_artifacts && '1' || '0' }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Show runtime versions
+        shell: bash
+        run: |
+          node --version
+          codex --version || true
+          claude --version || true
+          gemini --version || true
+
+      - name: Run provider live tests
+        run: node scripts/run-live-tests.js --provider "${{ inputs.provider }}"
+
+      - name: Collect live test artifacts
+        if: always() && inputs.keep_artifacts
+        shell: bash
+        run: |
+          mkdir -p live-test-artifacts
+          shopt -s nullglob
+          for dir in /tmp/live-*; do
+            cp -R "$dir" live-test-artifacts/
+          done
+
+      - name: Upload live test artifacts
+        if: always() && inputs.keep_artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-test-artifacts-${{ inputs.provider }}
+          path: live-test-artifacts
+          if-no-files-found: ignore

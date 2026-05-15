@@ -10,15 +10,14 @@ const SECOND_TIER_RECOMMENDATIONS = {
   openai: {
     family: "openai",
     label: "OpenAI/Codex",
-    model: "gpt-5.1-codex-mini",
-    alternate: "gpt-5-mini",
-    reason: "Codex mini is the cost-efficient coding worker tier; use GPT-5 mini when the CLI exposes general OpenAI models instead of Codex-specific models.",
+    model: "gpt-5.4-mini",
+    reason: "GPT-5.4 mini is the cost-efficient Codex-compatible worker tier below the default frontier model.",
   },
   google: {
     family: "google",
     label: "Google/Gemini",
-    model: "gemini-2.5-flash",
-    reason: "Flash is the price-performance worker tier for agentic and high-volume coding-adjacent tasks.",
+    model: "gemini-2.5-flash-lite",
+    reason: "Flash Lite is the lower-cost worker tier for agentic and high-volume coding-adjacent tasks.",
   },
 };
 

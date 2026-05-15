@@ -103,8 +103,8 @@ describe('model heads-up', () => {
     });
 
     assert.match(output, /codex-fast-worker: model selected by codex-fast-worker's CLI config\/default/);
-    assert.match(output, /Recommended worker tier: gpt-5\.1-codex-mini/);
-    assert.match(output, /Pin gpt-5\.1-codex-mini by adding or replacing the CLI model flag in cli_templates\.codex-fast-worker/);
+    assert.match(output, /Recommended worker tier: gpt-5\.4-mini/);
+    assert.match(output, /Pin gpt-5\.4-mini by adding or replacing the CLI model flag in cli_templates\.codex-fast-worker/);
     assert.match(output, /gemini-fast-worker:/);
     assert.match(output, /Recommended worker tier: gemini-2\.5-flash/);
   });

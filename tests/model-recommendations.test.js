@@ -20,15 +20,15 @@ describe('model recommendations', () => {
     }), 'google');
     assert.strictEqual(inferProviderFamily({
       cli: 'worker-fast',
-      model: 'gpt-5.1-codex-mini',
+      model: 'gpt-5.4-mini',
     }), 'openai');
     assert.strictEqual(inferProviderFamily({ cli: 'custom' }), null);
   });
 
   it('recommends provider-family second-tier worker models', () => {
     assert.strictEqual(recommendationForCli('claude', null).model, 'claude-sonnet-4-6');
-    assert.strictEqual(recommendationForCli('codex', null).model, 'gpt-5.1-codex-mini');
-    assert.strictEqual(recommendationForCli('gemini', null).model, 'gemini-2.5-flash');
+    assert.strictEqual(recommendationForCli('codex', null).model, 'gpt-5.4-mini');
+    assert.strictEqual(recommendationForCli('gemini', null).model, 'gemini-2.5-flash-lite');
   });
 
   it('formats config targets without inventing a generic default_model key', () => {
@@ -56,7 +56,7 @@ describe('model recommendations', () => {
 
     assert.match(output, /Worker model selection prompt/);
     assert.match(output, /orchestrator\.config\.local\.jsonc/);
-    assert.match(output, /gpt-5\.1-codex-mini/);
+    assert.match(output, /gpt-5\.4-mini/);
   });
 
   it('prints preflight fallback guidance as a user action', () => {

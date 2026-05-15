@@ -263,9 +263,8 @@ guidance. Current second-tier worker recommendations are advisory and should be
 refreshed over time:
 
 - Claude: `claude-sonnet-4-6`
-- Codex/OpenAI: `gpt-5.1-codex-mini` or `gpt-5-mini` when the CLI exposes
-  general OpenAI models instead of Codex-specific models
-- Gemini: `gemini-2.5-flash`
+- Codex/OpenAI: `gpt-5.4-mini`
+- Gemini: `gemini-2.5-flash-lite`
 
 Example inline-flag aliases:
 
@@ -277,18 +276,18 @@ Example inline-flag aliases:
       "cmd": "claude",
       "args": ["-p", { "prompt_text": true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"]
     },
-    "gemini-flash-worker": {
+    "gemini-flash-lite-worker": {
       "cmd": "gemini",
-      "args": ["--prompt", { "prompt_text": true }, "--yolo", "--model", "gemini-2.5-flash"]
+      "args": ["--prompt", { "prompt_text": true }, "--yolo", "--model", "gemini-2.5-flash-lite"]
     },
     "codex-mini-worker": {
       "cmd": "codex",
-      "args": ["exec", "--model", "gpt-5.1-codex-mini", "--dangerously-bypass-approvals-and-sandbox", { "prompt_text": true }]
+      "args": ["exec", "--model", "gpt-5.4-mini", "--dangerously-bypass-approvals-and-sandbox", { "prompt_text": true }]
     }
   },
   "cli_health_checks": {
     "claude-sonnet-worker": "claude --version",
-    "gemini-flash-worker": "gemini --version",
+    "gemini-flash-lite-worker": "gemini --version",
     "codex-mini-worker": "codex --version"
   }
 }
@@ -342,22 +341,76 @@ one all-live flow:
 
 Default live model choices are:
 
-- Codex/OpenAI: `gpt-5.1-codex-mini`
+- Codex/OpenAI: `gpt-5.4-mini`
 - Claude: `claude-sonnet-4-6`
-- Gemini: `gemini-2.5-flash`
+- Gemini: `gemini-2.5-flash-lite`
 
 Override them globally or per role:
 
 ```bash
-LIVE_CODEX_MODEL=gpt-5-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
-LIVE_CODEX_WORKER_MODEL=gpt-5.1-codex-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
-LIVE_CODEX_ARBITRATOR_MODEL=gpt-5.1-codex-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
-LIVE_GEMINI_REVIEWER_MODEL=gemini-2.5-flash RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider gemini
+LIVE_CODEX_MODEL=gpt-5.4-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
+LIVE_CODEX_WORKER_MODEL=gpt-5.4-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
+LIVE_CODEX_ARBITRATOR_MODEL=gpt-5.4-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
+LIVE_GEMINI_REVIEWER_MODEL=gemini-2.5-flash-lite RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider gemini
 LIVE_ALL_LIVE_TIMEOUT_MS=1200000 RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider claude
 ```
 
 Set `LIVE_KEEP_ARTIFACTS=1` to preserve the temporary project and review
 artifacts for debugging failed live runs.
+
+Every live test prints a copyable session id and inspect command:
+
+```text
+[live-harness] Session ID: live-gemini-arbitrator--DhQwch
+[live-harness] Inspect: node /path/to/multi-agent-orchestrator/scripts/inspect-live-test.js /tmp/live-gemini-arbitrator--DhQwch
+[live-harness] Tail: tail -F /tmp/live-gemini-arbitrator--DhQwch/coord/orchestrator.log
+```
+
+For a stuck run, inspect the latest provider workspace from another terminal:
+
+```bash
+node scripts/inspect-live-test.js --latest gemini
+node scripts/inspect-live-test.js --latest gemini --id-only
+```
+
+The inspector reports the live workspace, provider, test role, recorded models,
+orchestrator PID, agent PIDs, pending requests, recent decisions, relevant log
+paths, and common stuck states such as browser-auth prompts.
+
+Additional live-test environment variables:
+
+- `LIVE_TEST_TIMEOUT_MS`: default timeout for each live role test.
+- `LIVE_REVIEWER_TIMEOUT_MS`, `LIVE_ARBITRATOR_TIMEOUT_MS`,
+  `LIVE_WORKER_TIMEOUT_MS`, `LIVE_ALL_LIVE_TIMEOUT_MS`: role-specific timeout
+  overrides.
+- `LIVE_<PROVIDER>_MODEL`: provider-wide model override, where provider is
+  `CODEX`, `CLAUDE`, or `GEMINI`.
+- `LIVE_<PROVIDER>_<ROLE>_MODEL`: role-specific model override, where role is
+  `WORKER`, `ARBITRATOR`, or `REVIEWER`.
+
+Common expected live-test failures:
+
+- provider CLI is missing from `PATH`;
+- provider CLI is installed but not authenticated in the current environment;
+- requested model is unavailable, renamed, rate-limited, or not enabled for the
+  account;
+- provider or network calls time out;
+- a lower model returns invalid reviewer or arbitration JSON;
+- a live worker writes the wrong file content, skips the required request, or
+  fails to submit its final `review_request`.
+
+Live tests are intentionally outside default CI. The repository includes a
+manual GitHub Actions workflow at `.github/workflows/live-model-tests.yml` that
+can run one provider at a time through `workflow_dispatch`. The workflow sets
+`RUN_LIVE_MODEL_TESTS=1`, accepts `codex`, `claude`, or `gemini` as an input,
+and uploads preserved `/tmp/live-*` projects when artifact collection is
+enabled.
+
+The workflow does not install or log in to provider CLIs because those setup
+steps are account-specific. Use a self-hosted runner with the CLIs already
+authenticated, or add provider-specific install/auth steps and configure the
+needed secrets such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or
+`GEMINI_API_KEY`.
 
 The most important settings are:
 
