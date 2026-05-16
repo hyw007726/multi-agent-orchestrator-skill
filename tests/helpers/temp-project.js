@@ -50,9 +50,10 @@ function waitFor(predicate, { timeoutMs = 10000, intervalMs = 100 } = {}) {
   });
 }
 
-function createTempProject(prefix) {
+function createTempProject(prefix, options = {}) {
+  const tmpDir = options.tmpDir || os.tmpdir();
   const root = fs.mkdtempSync(
-    path.join(os.tmpdir(), `${prefix || "test"}-`)
+    path.join(tmpDir, `${prefix || "test"}-`)
   );
 
   run("git", ["init"], { cwd: root });

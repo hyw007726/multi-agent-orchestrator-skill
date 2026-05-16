@@ -14,6 +14,8 @@ describe("live test runner", () => {
   it("parses provider selection and help", () => {
     assert.deepStrictEqual(parseArgs([]), { provider: "all", help: false });
     assert.deepStrictEqual(parseArgs(["--provider", "codex"]), { provider: "codex", help: false });
+    assert.deepStrictEqual(parseArgs(["--provider", "kilo"]), { provider: "kilo", help: false });
+    assert.deepStrictEqual(parseArgs(["--provider", "opencode"]), { provider: "opencode", help: false });
     assert.deepStrictEqual(parseArgs(["--help"]), { provider: "all", help: true });
     assert.throws(() => parseArgs(["--provider", "unknown"]), /provider must be one of/);
     assert.throws(() => parseArgs(["--provider"]), /requires a value/);
@@ -40,6 +42,14 @@ describe("live test runner", () => {
       path.join(root, "tests/live/gemini-arbitrator-smoke.test.js"),
       path.join(root, "tests/live/gemini-worker-smoke.test.js"),
       path.join(root, "tests/live/gemini-all-live-smoke.test.js"),
+      path.join(root, "tests/live/kilo-reviewer-smoke.test.js"),
+      path.join(root, "tests/live/kilo-arbitrator-smoke.test.js"),
+      path.join(root, "tests/live/kilo-worker-smoke.test.js"),
+      path.join(root, "tests/live/kilo-all-live-smoke.test.js"),
+      path.join(root, "tests/live/opencode-reviewer-smoke.test.js"),
+      path.join(root, "tests/live/opencode-arbitrator-smoke.test.js"),
+      path.join(root, "tests/live/opencode-worker-smoke.test.js"),
+      path.join(root, "tests/live/opencode-all-live-smoke.test.js"),
     ]);
   });
 

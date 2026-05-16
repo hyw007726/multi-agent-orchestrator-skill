@@ -12,6 +12,8 @@ on:
           - codex
           - claude
           - gemini
+          - kilo
+          - opencode
       timeout_ms:
         description: Per-test timeout in milliseconds
         required: false
@@ -58,6 +60,8 @@ jobs:
           codex --version || true
           claude --version || true
           gemini --version || true
+          kilo --version || true
+          opencode --version || true
 
       - name: Run provider live tests
         run: node scripts/run-live-tests.js --provider "${{ inputs.provider }}"

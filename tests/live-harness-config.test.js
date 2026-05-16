@@ -7,7 +7,9 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  liveTempDir,
   liveTailCommand,
+  roleModel,
   writeAllLiveProviderConfig,
   writeLiveProviderConfig,
   writeLiveWorkerConfig,
@@ -56,5 +58,85 @@ describe("live harness provider config", () => {
     assert.match(arbitrator, /^tail -F /);
     assert.match(arbitrator, /orchestrator\.log/);
     assert.doesNotMatch(arbitrator, /agent-live-all\.log/);
+  });
+
+  it("uses Kilo's configured default model unless a live model override is set", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "kilo-live-config-"));
+    const previous = process.env.LIVE_KILO_MODEL;
+    try {
+      delete process.env.LIVE_KILO_MODEL;
+      const config = writeLiveProviderConfig(root, "kilo");
+      const template = config.cli_templates["kilo-live-worker"];
+
+      assert.strictEqual(roleModel("kilo", "worker"), "cli-default");
+      assert.strictEqual(template.cmd, "kilo");
+      assert.ok(template.args.includes("run"));
+      assert.ok(template.args.includes("--auto"));
+      assert.strictEqual(template.args.includes("--dangerously-skip-permissions"), false);
+      assert.strictEqual(template.args.includes("--model"), false);
+
+      process.env.LIVE_KILO_MODEL = "anthropic/claude-sonnet-4-6";
+      const pinned = writeLiveProviderConfig(path.join(root, "pinned"), "kilo");
+      const pinnedTemplate = pinned.cli_templates["kilo-live-worker"];
+      const modelIndex = pinnedTemplate.args.indexOf("--model");
+
+      assert.notStrictEqual(modelIndex, -1);
+      assert.strictEqual(pinnedTemplate.args[modelIndex + 1], "anthropic/claude-sonnet-4-6");
+    } finally {
+      if (previous === undefined) delete process.env.LIVE_KILO_MODEL;
+      else process.env.LIVE_KILO_MODEL = previous;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses OpenCode's configured default model unless a live model override is set", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-live-config-"));
+    const previous = process.env.LIVE_OPENCODE_MODEL;
+    try {
+      delete process.env.LIVE_OPENCODE_MODEL;
+      const config = writeLiveProviderConfig(root, "opencode");
+      const template = config.cli_templates["opencode-live-worker"];
+      const reviewerTemplate = config.cli_templates["opencode-live-reviewer"];
+
+      assert.strictEqual(roleModel("opencode", "worker"), "cli-default");
+      assert.strictEqual(template.cmd, process.execPath);
+      assert.match(template.args[0], /opencode-json-text\.js$/);
+      assert.ok(template.args.includes("--dangerously-skip-permissions"));
+      assert.strictEqual(template.args.includes("--model"), false);
+      assert.strictEqual(template.args.includes("--opencode-json-text-cwd"), false);
+      assert.ok(template.args.includes("--opencode-json-text-live-worker-smoke"));
+      assert.ok(reviewerTemplate.args.includes("--opencode-json-text-cwd"));
+      assert.strictEqual(reviewerTemplate.args.includes("--opencode-json-text-live-worker-smoke"), false);
+
+      process.env.LIVE_OPENCODE_MODEL = "moonshot/kimi-k2.6";
+      const pinned = writeLiveProviderConfig(path.join(root, "pinned"), "opencode");
+      const pinnedTemplate = pinned.cli_templates["opencode-live-worker"];
+      const modelIndex = pinnedTemplate.args.indexOf("--model");
+
+      assert.notStrictEqual(modelIndex, -1);
+      assert.strictEqual(pinnedTemplate.args[modelIndex + 1], "moonshot/kimi-k2.6");
+    } finally {
+      if (previous === undefined) delete process.env.LIVE_OPENCODE_MODEL;
+      else process.env.LIVE_OPENCODE_MODEL = previous;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a stable temp root for OpenCode live workspaces", () => {
+    const previous = process.env.LIVE_TEST_TMPDIR;
+    try {
+      delete process.env.LIVE_TEST_TMPDIR;
+      assert.strictEqual(liveTempDir("codex"), "");
+      if (fs.existsSync("/private/tmp")) {
+        assert.strictEqual(liveTempDir("opencode"), "/private/tmp");
+      }
+
+      process.env.LIVE_TEST_TMPDIR = "/tmp/custom-live-root";
+      assert.strictEqual(liveTempDir("opencode"), "/tmp/custom-live-root");
+      assert.strictEqual(liveTempDir("codex"), "/tmp/custom-live-root");
+    } finally {
+      if (previous === undefined) delete process.env.LIVE_TEST_TMPDIR;
+      else process.env.LIVE_TEST_TMPDIR = previous;
+    }
   });
 });

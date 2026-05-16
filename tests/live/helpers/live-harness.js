@@ -16,6 +16,7 @@ const {
 
 const launchAllPath = path.join(repoRoot(), "scripts", "launch-all.js");
 const orchestratorLoopPath = path.join(repoRoot(), "scripts", "orchestrator-loop.js");
+const openCodeJsonTextPath = path.join(repoRoot(), "scripts", "opencode-json-text.js");
 const reviewPlanPath = path.join(repoRoot(), "scripts", "review-plan.js");
 
 const PROVIDERS = {
@@ -60,6 +61,46 @@ const PROVIDERS = {
       };
     },
   },
+  kilo: {
+    envPrefix: "KILO",
+    cli: "kilo",
+    defaultModel: "cli-default",
+    healthCheck: "kilo --version",
+    template(model) {
+      const args = ["run", "--auto"];
+      if (model && model !== "cli-default") {
+        args.push("--model", model);
+      }
+      args.push({ prompt_text: true });
+      return {
+        cmd: "kilo",
+        args,
+      };
+    },
+  },
+  opencode: {
+    envPrefix: "OPENCODE",
+    cli: "opencode",
+    defaultModel: "cli-default",
+    healthCheck: "opencode --version",
+    template(model, options = {}) {
+      const args = [openCodeJsonTextPath, "--dangerously-skip-permissions"];
+      if (options.role === "reviewer" || options.role === "arbitrator") {
+        args.push("--opencode-json-text-cwd", repoRoot());
+      }
+      if (options.role === "worker") {
+        args.push("--opencode-json-text-live-worker-smoke");
+      }
+      if (model && model !== "cli-default") {
+        args.push("--model", model);
+      }
+      args.push({ prompt_text: true });
+      return {
+        cmd: process.execPath,
+        args,
+      };
+    },
+  },
 };
 
 const REQUIRED_REVIEWER_ARRAY_FIELDS = [
@@ -80,7 +121,7 @@ function runLiveReviewerSmoke(t, providerName) {
   const probe = probeProviderCli(providerName);
   if (!probe.ok) return skip(t, probe.message);
 
-  const project = createTempProject(`live-${providerName}-reviewer-`);
+  const project = createLiveProject(providerName, `live-${providerName}-reviewer-`);
   console.log(`\n[live-harness] Reviewer smoke test workspace: ${project.root}`);
   writeLiveSession(project.root, providerName, "reviewer");
   let preserveArtifacts = process.env.LIVE_KEEP_ARTIFACTS === "1";
@@ -152,7 +193,7 @@ function runLiveArbitratorSmoke(t, providerName) {
   const probe = probeProviderCli(providerName);
   if (!probe.ok) return skip(t, probe.message);
 
-  const project = createTempProject(`live-${providerName}-arbitrator-`);
+  const project = createLiveProject(providerName, `live-${providerName}-arbitrator-`);
   console.log(`\n[live-harness] Arbitrator smoke test workspace: ${project.root}`);
   writeLiveSession(project.root, providerName, "arbitrator");
   let preserveArtifacts = process.env.LIVE_KEEP_ARTIFACTS === "1";
@@ -249,7 +290,7 @@ async function runLiveWorkerSmoke(t, providerName) {
   const probe = probeProviderCli(providerName);
   if (!probe.ok) return skip(t, probe.message);
 
-  const project = createTempProject(`live-${providerName}-worker-`);
+  const project = createLiveProject(providerName, `live-${providerName}-worker-`);
   console.log(`\n[live-harness] Worker smoke test workspace: ${project.root}`);
   writeLiveSession(project.root, providerName, "worker");
   let loopPid = null;
@@ -345,7 +386,7 @@ async function runAllLiveSmoke(t, providerName) {
   const probe = probeProviderCli(providerName);
   if (!probe.ok) return skip(t, probe.message);
 
-  const project = createTempProject(`live-${providerName}-all-live-`);
+  const project = createLiveProject(providerName, `live-${providerName}-all-live-`);
   console.log(`\n[live-harness] All-live protocol test workspace: ${project.root}`);
   writeLiveSession(project.root, providerName, "all-live");
   let loopPid = null;
@@ -768,6 +809,7 @@ function liveRoleTemplate(projectRoot, providerName, role) {
   fs.mkdirSync(coordDir, { recursive: true });
   return provider.template(roleModel(providerName, role), {
     includeCoordDir: coordDir,
+    role,
   });
 }
 
@@ -1004,6 +1046,17 @@ function updateLiveSession(projectRoot, patch) {
   );
 }
 
+function createLiveProject(providerName, prefix) {
+  const tmpDir = liveTempDir(providerName);
+  return createTempProject(prefix, tmpDir ? { tmpDir } : {});
+}
+
+function liveTempDir(providerName) {
+  if (process.env.LIVE_TEST_TMPDIR) return process.env.LIVE_TEST_TMPDIR;
+  if (providerName === "opencode" && fs.existsSync("/private/tmp")) return "/private/tmp";
+  return "";
+}
+
 function roleModel(providerName, role) {
   const provider = providerInfo(providerName);
   const prefix = provider.envPrefix;
@@ -1106,6 +1159,7 @@ module.exports = {
   assertValidReviewerJson,
   liveSkipReason,
   liveTailCommand,
+  liveTempDir,
   probeProviderCli,
   providerAliases,
   roleModel,

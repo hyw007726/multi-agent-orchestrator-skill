@@ -8,8 +8,13 @@ Use it from Codex, Gemini CLI, Claude Code, or any local coding agent that can r
 
 ## What It Does
 
+This system orchestrates distinct types of AI agents running in headless, non-interactive ("YOLO") sessions to complete complex tasks:
+- **Worker Agents**: Coding agents (e.g., Kilo CLI, Aider, Claude Code) that implement specific sub-tasks in isolated git worktrees. *Recommended models: Token-efficient, fast, and highly capable of following clear instructions (e.g., DeepSeek v4 pro, etc.).*
+- **Reviewer Agents**: Optional read-only agents that critique and suggest improvements to the initial task decomposition draft before work begins. *Recommended models: Strong reasoning models with good architectural judgment (e.g., Claude Opus 4.7, etc.).*
+- **Orchestrator/Arbitrator**: An automated background loop that supervises workers, handling questions, progress stalls, test failures, and restarts. *Recommended models: Powerful reasoning models capable of resolving conflicts, evaluating progress, and making course-correction decisions (e.g., Claude Opus 4.7, etc.).*
+
+Key capabilities:
 - Splits large implementation work across multiple coding agents.
-- Runs each worker in its own git worktree.
 - Keeps durable requirements, shared architecture, contracts, and file ownership in `coord/DECISIONS.md`.
 - Stores compact run context and per-agent task boundaries in `coord/context.json`.
 - Preserves caller-session nuance and runtime assumptions in `coord/CALLER_CONTEXT.md` so the headless loop does not need the original chat.
@@ -320,11 +325,15 @@ Run one provider:
 RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
 RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider claude
 RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider gemini
+RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider kilo
+RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider opencode
 ```
 
-The live harness writes provider-specific lower-model aliases for worker,
-arbitrator, and reviewer roles. The current live tests cover isolated roles and
-one all-live flow:
+The live harness writes provider-specific aliases for worker, arbitrator, and
+reviewer roles. Codex, Claude, and Gemini pin the configured lower-model
+defaults below. Kilo and OpenCode use their own configured default model unless
+`LIVE_KILO_MODEL`, `LIVE_OPENCODE_MODEL`, or a role-specific model override is
+set. The current live tests cover isolated roles and one all-live flow:
 
 - reviewer: runs the real `review-plan.js` path and asserts valid reviewer JSON.
 - arbitrator: stages a deterministic worker `question` request and asserts the
@@ -344,6 +353,8 @@ Default live model choices are:
 - Codex/OpenAI: `gpt-5.4-mini`
 - Claude: `claude-sonnet-4-6`
 - Gemini: `gemini-2.5-flash-lite`
+- Kilo: `cli-default`
+- OpenCode: `cli-default`
 
 Override them globally or per role:
 
@@ -352,6 +363,8 @@ LIVE_CODEX_MODEL=gpt-5.4-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests
 LIVE_CODEX_WORKER_MODEL=gpt-5.4-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
 LIVE_CODEX_ARBITRATOR_MODEL=gpt-5.4-mini RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider codex
 LIVE_GEMINI_REVIEWER_MODEL=gemini-2.5-flash-lite RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider gemini
+LIVE_KILO_MODEL=anthropic/claude-sonnet-4-6 RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider kilo
+LIVE_OPENCODE_MODEL=moonshot/kimi-k2.6 RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider opencode
 LIVE_ALL_LIVE_TIMEOUT_MS=1200000 RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider claude
 ```
 
@@ -384,7 +397,7 @@ Additional live-test environment variables:
   `LIVE_WORKER_TIMEOUT_MS`, `LIVE_ALL_LIVE_TIMEOUT_MS`: role-specific timeout
   overrides.
 - `LIVE_<PROVIDER>_MODEL`: provider-wide model override, where provider is
-  `CODEX`, `CLAUDE`, or `GEMINI`.
+  `CODEX`, `CLAUDE`, `GEMINI`, `KILO`, or `OPENCODE`.
 - `LIVE_<PROVIDER>_<ROLE>_MODEL`: role-specific model override, where role is
   `WORKER`, `ARBITRATOR`, or `REVIEWER`.
 
@@ -402,9 +415,9 @@ Common expected live-test failures:
 Live tests are intentionally outside default CI. The repository includes a
 manual GitHub Actions workflow at `.github/workflows/live-model-tests.yml` that
 can run one provider at a time through `workflow_dispatch`. The workflow sets
-`RUN_LIVE_MODEL_TESTS=1`, accepts `codex`, `claude`, or `gemini` as an input,
-and uploads preserved `/tmp/live-*` projects when artifact collection is
-enabled.
+`RUN_LIVE_MODEL_TESTS=1`, accepts `codex`, `claude`, `gemini`, `kilo`, or
+`opencode` as an input, and uploads preserved `/tmp/live-*` projects when
+artifact collection is enabled.
 
 The workflow does not install or log in to provider CLIs because those setup
 steps are account-specific. Use a self-hosted runner with the CLIs already

@@ -5,7 +5,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..");
-const PROVIDERS = ["codex", "claude", "gemini"];
+const PROVIDERS = ["codex", "claude", "gemini", "kilo", "opencode"];
 const LIVE_TEST_FILES = {
   codex: [
     "tests/live/codex-reviewer-smoke.test.js",
@@ -24,6 +24,18 @@ const LIVE_TEST_FILES = {
     "tests/live/gemini-arbitrator-smoke.test.js",
     "tests/live/gemini-worker-smoke.test.js",
     "tests/live/gemini-all-live-smoke.test.js",
+  ],
+  kilo: [
+    "tests/live/kilo-reviewer-smoke.test.js",
+    "tests/live/kilo-arbitrator-smoke.test.js",
+    "tests/live/kilo-worker-smoke.test.js",
+    "tests/live/kilo-all-live-smoke.test.js",
+  ],
+  opencode: [
+    "tests/live/opencode-reviewer-smoke.test.js",
+    "tests/live/opencode-arbitrator-smoke.test.js",
+    "tests/live/opencode-worker-smoke.test.js",
+    "tests/live/opencode-all-live-smoke.test.js",
   ],
 };
 
@@ -117,7 +129,7 @@ function selectedTestFiles(provider, root = ROOT) {
 function usage() {
   return [
     "Usage:",
-    "  RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js [--provider all|codex|claude|gemini]",
+    "  RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js [--provider all|codex|claude|gemini|kilo|opencode]",
     "",
     "Runs opt-in live model tests. These tests are intentionally excluded from node scripts/run-tests.js.",
   ].join("\n");

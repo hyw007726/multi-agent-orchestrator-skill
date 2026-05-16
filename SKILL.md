@@ -84,7 +84,7 @@ Example `orchestrator.config.jsonc`:
     "claude": { "cmd": "claude", "args": ["-p", { "prompt_text": true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
     "gemini": { "cmd": "gemini", "args": ["--prompt", { "prompt_text": true }, "--yolo"] },
     "codex": { "cmd": "codex", "args": ["exec", "--dangerously-bypass-approvals-and-sandbox", { "prompt_text": true }] },
-    "opencode": { "cmd": "opencode", "args": ["run", { "prompt_text": true }, "--yes"] }
+    "opencode": { "cmd": "opencode", "args": ["run", "--dangerously-skip-permissions", { "prompt_text": true }] }
   }
 }
 ```
