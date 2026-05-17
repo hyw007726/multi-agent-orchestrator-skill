@@ -12,6 +12,9 @@ const STATUS = Object.freeze({
   TERMINATED: "terminated",
   EXITED: "exited",
   ERRORED: "errored",
+  // Parked pending human review: the worktree is intact and a human can resume
+  // the work. Distinct from ERRORED, which means the orchestrator gave up.
+  NEEDS_ATTENTION: "needs_attention",
 });
 
 const ALLOWED = new Set(Object.values(STATUS));
@@ -41,4 +44,29 @@ function transitionAgentStatus(agent, name, nextStatus, reason, log) {
   return agent;
 }
 
-module.exports = { STATUS, transitionAgentStatus };
+/**
+ * Park an agent for human review.
+ *
+ * Thin wrapper over {@link transitionAgentStatus} so the `needs_attention`
+ * flip and the `attention_*` / `next_steps` fields are written in the same
+ * `updateJSON` callback — a parked record is never observed without its reason
+ * or its recovery guidance.
+ *
+ * @param {object}   agent     - The agent entry object (from agents.json).
+ * @param {string}   name      - The agent's key name.
+ * @param {string}   reason    - Why the agent is parked (also the audit reason).
+ * @param {function} log       - Orchestrator `log` function for audit trail.
+ * @param {object}   [fields]  - { nextSteps?: string } human recovery guidance.
+ * @returns {object} The agent object.
+ */
+function parkAgentForAttention(agent, name, reason, log, fields = {}) {
+  transitionAgentStatus(agent, name, STATUS.NEEDS_ATTENTION, reason, log);
+  agent.attention_reason = reason;
+  agent.attention_at = new Date().toISOString();
+  if (fields.nextSteps !== undefined) {
+    agent.next_steps = fields.nextSteps;
+  }
+  return agent;
+}
+
+module.exports = { STATUS, transitionAgentStatus, parkAgentForAttention };
