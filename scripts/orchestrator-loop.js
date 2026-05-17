@@ -10,7 +10,8 @@ const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL, appen
 const { renderWorkerPrompt, renderWorkerRestartPrompt } = require("./lib/prompt-render");
 const { STATUS, transitionAgentStatus } = require("./lib/status");
 const { appendEvent } = require("./lib/events");
-const { cliTemplateMode, spawnCliTemplate } = require("./lib/cli-template");
+const { cliTemplateMode, cliTemplateProcessMatch, spawnCliTemplate } = require("./lib/cli-template");
+const { extractJsonObject } = require("./lib/provider-output");
 
 const RECENT_DECISION_LIMIT = 30;
 const HEARTBEAT_GRACE_PHASES = new Set(["starting", "reading", "planning", "testing", "running_tests", "building", "installing", "debugging"]);
@@ -79,13 +80,13 @@ async function runLoop() {
         updateJSON(paths.agents, (agents) => {
           for (const name in agents) {
             if (agents[name].status === "running") {
-              toKill.push({ pid: agents[name].pid, cli: agents[name].cli || "kilo", name });
+              toKill.push({ pid: agents[name].pid, expectedProcess: expectedProcessForAgent(agents[name], parsedConfig), name });
               transitionAgentStatus(agents[name], name, STATUS.TERMINATED, "abort signal", log);
             }
           }
         });
         // Kill outside the lock — the lock's job is to protect agents.json, not gate signals.
-        for (const { pid, cli, name } of toKill) safeKill({ pid, expectedCli: cli, log, coordDir: config.coordDir, agent: name });
+        for (const { pid, expectedProcess, name } of toKill) safeKill({ pid, expectedCli: expectedProcess, log, coordDir: config.coordDir, agent: name });
         log("All running agents stopped. Worktree contents preserved (run `git status` in each worktree to inspect/discard).");
         try { fs.unlinkSync(path.join(config.coordDir, "abort.flag")); } catch {}
         aborted = true;
@@ -102,7 +103,7 @@ async function runLoop() {
         const agent = snapshot[name];
 
         // Process gone? Check whether the agent requested completion first.
-        if (!isAgentProcessAlive(agent)) {
+        if (!isAgentProcessAlive(agent, parsedConfig)) {
           const agentLogFile = path.join(config.coordDir, "logs", `${name}.log`);
           const stagedRequests = readStagedRequests(paths);
           const inLog = allRequests.some(
@@ -152,7 +153,7 @@ async function runLoop() {
         const timeoutMins = agent.timeout_mins || parsedConfig.default_timeout_mins;
         if (Date.now() - lastActivity > timeoutMins * 60 * 1000) {
           log(`Agent ${name} idle (no log output) for ${timeoutMins} mins. Killing.`);
-          safeKill({ pid: agent.pid, expectedCli: agent.cli || "kilo", log, coordDir: config.coordDir, agent: name });
+          safeKill({ pid: agent.pid, expectedCli: expectedProcessForAgent(agent, parsedConfig), log, coordDir: config.coordDir, agent: name });
           updateJSON(paths.agents, (agents) => {
             if (agents[name] && agents[name].status === "running") {
               transitionAgentStatus(agents[name], name, STATUS.ERRORED, `liveness timeout - idle ${timeoutMins} mins`, log);
@@ -385,7 +386,7 @@ async function runLoop() {
             }
           }
 
-          safeKill({ pid: snapshot.pid, expectedCli: snapshot.cli || "kilo", log, coordDir: config.coordDir, agent: action.agent });
+          safeKill({ pid: snapshot.pid, expectedCli: expectedProcessForAgent(snapshot, parsedConfig), log, coordDir: config.coordDir, agent: action.agent });
           updateJSON(paths.agents, (agents) => {
             if (!agents[action.agent]) return;
             transitionAgentStatus(agents[action.agent], action.agent, STATUS.COMPLETED, "validation passed, agent ended", log);
@@ -437,7 +438,7 @@ async function runLoop() {
 
       if (!instruction) {
         transitionAgentStatus(agent, name, STATUS.TERMINATED, "no follow-up instruction", log);
-        outcomeRef.value = { kind: "terminated", pid: agent.pid, cliTool, worktree: agent.worktree };
+        outcomeRef.value = { kind: "terminated", pid: agent.pid, cliTool, processMatch: expectedProcessForAgent(agent, parsedConfig), worktree: agent.worktree };
         appendEvent(config.coordDir, "restart_aborted", { agent: name, reason: "no instruction" });
         return;
       }
@@ -447,7 +448,7 @@ async function runLoop() {
       if (nextCount > maxRestarts) {
         agent.task = `Exhausted ${maxRestarts} restart attempts (${reason}). Last instruction: ${instruction.slice(0, 200)}`;
         transitionAgentStatus(agent, name, STATUS.ERRORED, `max restarts (${maxRestarts}) exhausted`, log);
-        outcomeRef.value = { kind: "errored", pid: agent.pid, cliTool, worktree: agent.worktree };
+        outcomeRef.value = { kind: "errored", pid: agent.pid, cliTool, processMatch: expectedProcessForAgent(agent, parsedConfig), worktree: agent.worktree };
         appendEvent(config.coordDir, "restart_aborted", { agent: name, reason: `max restarts (${maxRestarts}) reached - ${reason}` });
         return;
       }
@@ -458,6 +459,7 @@ async function runLoop() {
         kind: "respawn",
         pid: agent.pid,
         cliTool,
+        processMatch: expectedProcessForAgent(agent, parsedConfig),
         worktree: agent.worktree,
         kiloMode: agent.kilo_mode,
         validateCmd: agent.validate_cmd,
@@ -472,7 +474,7 @@ async function runLoop() {
     if (outcome.kind === "missing") return false;
 
     // Side effects below the lock — none of these should re-enter updateJSON on the same file.
-    safeKill({ pid: outcome.pid, expectedCli: outcome.cliTool, log, coordDir: config.coordDir, agent: name });
+    safeKill({ pid: outcome.pid, expectedCli: outcome.processMatch || processMatchForCli(outcome.cliTool, parsedConfig), log, coordDir: config.coordDir, agent: name });
 
     if (outcome.kind === "terminated") {
       log(`Agent ${name} terminated (no follow-up instruction).`);
@@ -1227,8 +1229,20 @@ function shouldAutoLaunchDashboard(setting) {
 
 // ─── Process / git helpers ───────────────────────────────────────────────────
 
-function isAgentProcessAlive(agent) {
-  return pidMatchesCli(agent?.pid, agent?.cli || "kilo");
+function isAgentProcessAlive(agent, parsedConfig) {
+  return pidMatchesCli(agent?.pid, expectedProcessForAgent(agent, parsedConfig));
+}
+
+function expectedProcessForAgent(agent, parsedConfig) {
+  if (typeof agent?.process_match === "string" && agent.process_match.trim() !== "") {
+    return agent.process_match;
+  }
+  return processMatchForCli(agent?.cli || "kilo", parsedConfig);
+}
+
+function processMatchForCli(cli, parsedConfig) {
+  const resolvedCli = cli || "kilo";
+  return cliTemplateProcessMatch(resolvedCli, parsedConfig.cli_templates?.[resolvedCli]);
 }
 
 function killTimedOutChild(pid) {
@@ -1725,20 +1739,14 @@ async function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
       if (attempt === maxRetries) return null;
       continue;
     }
-    const match = stdout.match(/\{[\s\S]*\}/);
-    if (!match) {
+    const parsed = extractJsonObject(stdout);
+    if (!parsed) {
       log(`No JSON object in CLI output (attempt ${attempt}).`);
       if (attempt === maxRetries) return null;
       continue;
     }
-    try {
-      const parsed = JSON.parse(match[0]);
-      log(`Orchestrator CLI call succeeded.`);
-      return parsed;
-    } catch (err) {
-      log(`JSON parse failed: ${err.message}`);
-      if (attempt === maxRetries) return null;
-    }
+    log(`Orchestrator CLI call succeeded.`);
+    return parsed;
   }
   return null;
 

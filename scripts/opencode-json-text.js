@@ -18,7 +18,7 @@ function runOpenCodeJsonText(args, options = {}) {
   const spawnSyncImpl = options.spawnSyncImpl || spawnSync;
   const parsed = parseWrapperArgs(args);
   const cwd = options.cwd || parsed.cwd || findNearestGitRoot(process.cwd()) || process.cwd();
-  const opencodeArgs = parsed.liveWorkerSmoke ? condenseLastPromptArg(parsed.args, cwd) : parsed.args;
+  const opencodeArgs = parsed.liveWorkerSmoke ? condenseLiveWorkerPromptArgs(parsed.args, cwd) : parsed.args;
   const result = spawnSyncImpl("opencode", ["run", "--format", "json", ...opencodeArgs], {
     cwd,
     encoding: "utf-8",
@@ -77,6 +77,38 @@ function condenseLastPromptArg(args, cwd = "") {
     out[out.length - 1] = condenseWorkerPrompt(prompt, { cwd });
   }
   return out;
+}
+
+function condenseLiveWorkerPromptArgs(args, cwd = "") {
+  const promptFileIndex = findPromptFileValueIndex(args);
+  if (promptFileIndex !== -1) {
+    const promptFile = args[promptFileIndex];
+    if (typeof promptFile !== "string" || promptFile.trim() === "") return args;
+    try {
+      const condensedFile = condensedPromptFilePath(promptFile);
+      const condensed = condenseWorkerPrompt(fs.readFileSync(promptFile, "utf-8"), { cwd });
+      fs.writeFileSync(condensedFile, condensed, "utf-8");
+      const out = [...args];
+      out[promptFileIndex] = condensedFile;
+      return out;
+    } catch (_) {
+      return args;
+    }
+  }
+  return condenseLastPromptArg(args, cwd);
+}
+
+function findPromptFileValueIndex(args) {
+  for (let i = 0; i < args.length - 1; i++) {
+    if ((args[i] === "--file" || args[i] === "-f") && typeof args[i + 1] === "string") {
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+function condensedPromptFilePath(promptFile) {
+  return path.join(path.dirname(promptFile), `${path.basename(promptFile)}.opencode-live-smoke.md`);
 }
 
 function condenseWorkerPrompt(prompt, options = {}) {
@@ -170,6 +202,7 @@ module.exports = {
   extractTextFromJsonl,
   findNearestGitRoot,
   condenseWorkerPrompt,
+  condenseLiveWorkerPromptArgs,
   condenseLastPromptArg,
   parseWrapperArgs,
   runOpenCodeJsonText,

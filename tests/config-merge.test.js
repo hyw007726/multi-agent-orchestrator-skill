@@ -40,11 +40,26 @@ describe('config merging', () => {
     assert.ok(config.cli_templates.gemini, 'gemini template should exist');
     assert.ok(config.cli_templates.codex, 'codex template should exist');
     assert.ok(config.cli_templates.opencode, 'opencode template should exist');
-    assert.ok(config.cli_templates.kilo.includes('kilo'), 'kilo template should contain "kilo"');
+    assert.ok(templateContains(config.cli_templates.kilo, 'kilo'), 'kilo template should contain "kilo"');
     assert.strictEqual(config.cli_templates.claude.cmd, 'claude', 'claude should use argv template mode');
+    assert.deepStrictEqual(config.cli_templates.claude.stdin, { prompt_file: true });
+    assert.strictEqual(config.cli_templates.claude.args[config.cli_templates.claude.args.indexOf('--output-format') + 1], 'stream-json');
+    assert.ok(config.cli_templates.claude.args.includes('--include-partial-messages'));
+    assert.ok(config.cli_templates.claude.args.includes('--verbose'));
+    assert.strictEqual(config.cli_templates.gemini.args[config.cli_templates.gemini.args.indexOf('--prompt') + 1], '');
+    assert.strictEqual(config.cli_templates.gemini.args[config.cli_templates.gemini.args.indexOf('--output-format') + 1], 'stream-json');
+    assert.deepStrictEqual(config.cli_templates.codex.stdin, { prompt_file: true });
+    assert.deepStrictEqual(config.cli_templates.gemini.stdin, { prompt_file: true });
+    assert.ok(config.cli_templates.kilo.args.includes('--file'), 'kilo should attach the prompt file instead of shell-expanding it');
+    assert.ok(config.cli_templates.opencode.args.includes('--file'), 'opencode should attach the prompt file');
     assert.strictEqual(config.cli_templates.codex.cmd, 'codex', 'codex should use argv template mode');
     assert.ok(config.cli_templates.codex.args.includes('exec'), 'codex should use the exec subcommand');
     assert.ok(!config.cli_templates.codex.args.includes('--exec'), 'codex should not use the removed --exec flag');
+    for (const [cli, template] of Object.entries(config.cli_templates)) {
+      const serialized = JSON.stringify(template);
+      assert.doesNotMatch(serialized, /prompt_text/, `${cli} default should not pass prompt text through argv`);
+      assert.doesNotMatch(serialized, /\$\(cat \{prompt_file\}\)/, `${cli} default should not inline prompt files through shell expansion`);
+    }
 
     // Verify cli_health_checks defaults are present.
     assert.ok(config.cli_health_checks, 'cli_health_checks should exist');
@@ -357,7 +372,7 @@ describe('config merging', () => {
     assert.strictEqual(config.launch_review_terminal, false);
 
     // Templates and health checks should still have full defaults.
-    assert.ok(config.cli_templates.kilo && config.cli_templates.kilo.includes('kilo'));
+    assert.ok(templateContains(config.cli_templates.kilo, 'kilo'));
     assert.ok(config.cli_health_checks.kilo && config.cli_health_checks.kilo.includes('kilo'));
   });
 

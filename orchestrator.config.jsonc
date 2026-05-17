@@ -21,18 +21,19 @@
 
   // Command templates for supported CLIs.
   // Prefer structured argv templates. Use { "prompt_file": true } to pass the
-  // generated prompt file path as one argv item, or { "prompt_text": true } to
-  // pass the prompt contents as one argv item. String templates remain supported
-  // for CLIs that genuinely need shell behavior.
+  // generated prompt file path as one argv item, { "prompt_text": true } to pass
+  // the prompt contents as one argv item, or stdin: { "prompt_file": true } for
+  // CLIs that read prompts from stdin. String templates remain supported for
+  // CLIs that genuinely need shell behavior.
   //
   // Add the CLI's model flag here when you want the runtime to pin a worker
   // model and the selected CLI supports launch-time model selection. Unpinned
   // templates use that CLI's own config/default model.
   "cli_templates": {
-    "claude": { "cmd": "claude", "args": ["-p", { "prompt_text": true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
-    "codex": { "cmd": "codex", "args": ["exec", "--dangerously-bypass-approvals-and-sandbox", { "prompt_text": true }] },
-    "gemini": { "cmd": "gemini", "args": ["--prompt", { "prompt_text": true }, "--yolo"] },
-    "kilo": "kilo run \"$(cat {prompt_file})\" --auto",
-    "opencode": { "cmd": "opencode", "args": ["run", "--dangerously-skip-permissions", { "prompt_text": true }] }
+    "claude": { "cmd": "claude", "args": ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--model", "claude-sonnet-4-6"], "stdin": { "prompt_file": true } },
+    "codex": { "cmd": "codex", "args": ["exec", "--dangerously-bypass-approvals-and-sandbox"], "stdin": { "prompt_file": true } },
+    "gemini": { "cmd": "gemini", "args": ["--prompt", "", "--yolo", "--output-format", "stream-json"], "stdin": { "prompt_file": true } },
+    "kilo": { "cmd": "kilo", "args": ["run", "--file", { "prompt_file": true }, "Follow the instructions in the attached prompt file.", "--auto"] },
+    "opencode": { "cmd": "opencode", "args": ["run", "--dangerously-skip-permissions", "--file", { "prompt_file": true }, "Follow the instructions in the attached prompt file."] }
   }
 }

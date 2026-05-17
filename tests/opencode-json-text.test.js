@@ -8,6 +8,7 @@ const path = require("node:path");
 
 const {
   condenseLastPromptArg,
+  condenseLiveWorkerPromptArgs,
   condenseWorkerPrompt,
   extractTextFromJsonl,
   findNearestGitRoot,
@@ -92,6 +93,34 @@ describe("opencode-json-text", () => {
     assert.ok(condensed.length < 2500);
 
     assert.deepEqual(condenseLastPromptArg(["--model", "x", prompt], cwd), ["--model", "x", condensed]);
+  });
+
+  it("condenses attached live worker prompt files before invoking OpenCode", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-prompt-file-"));
+    try {
+      const promptFile = path.join(tmp, "worker-prompt.md");
+      const prompt = [
+        "Agent name: agent-live-worker",
+        "Project: Live worker smoke project",
+        "Specific assignment: Create live-worker-output.txt.",
+        "Start Here: README.md, coord/DECISIONS.md",
+        "Worktree path: .agents/worktrees/agent-live-worker",
+        "- **ALLOWED PATHS**: live-worker-output.txt",
+        "- **FORBIDDEN PATHS**: coord/, package.json",
+      ].join("\n");
+      fs.writeFileSync(promptFile, prompt, "utf-8");
+
+      const args = condenseLiveWorkerPromptArgs(["--file", promptFile, "Follow the instructions."], tmp);
+
+      assert.strictEqual(args[0], "--file");
+      assert.notStrictEqual(args[1], promptFile);
+      assert.strictEqual(args[2], "Follow the instructions.");
+      const condensed = fs.readFileSync(args[1], "utf-8");
+      assert.match(condensed, /You are agent-live-worker/);
+      assert.match(condensed, /Create live-worker-output.txt/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it("uses the nearest git root as OpenCode's working directory", () => {

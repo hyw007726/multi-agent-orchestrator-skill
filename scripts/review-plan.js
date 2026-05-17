@@ -17,6 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const { loadConfig } = require("./lib/config");
 const { spawnCliTemplate, validateCliTemplate } = require("./lib/cli-template");
+const { extractJsonObject } = require("./lib/provider-output");
 
 const REQUIRED_ARRAY_FIELDS = [
   "execution_mode_issues",
@@ -367,71 +368,6 @@ function validateReviewerResponse(value, reviewerName, iteration) {
     }
   }
   return { ok: true };
-}
-
-function extractJsonObject(text) {
-  if (typeof text !== "string" || text.trim() === "") return null;
-
-  const trimmed = text.trim();
-  const direct = tryParseObject(trimmed);
-  if (direct) return direct;
-
-  const fenceRe = /```(?:json)?\s*([\s\S]*?)```/gi;
-  let fenceMatch;
-  while ((fenceMatch = fenceRe.exec(text)) !== null) {
-    const parsed = tryParseObject(fenceMatch[1].trim());
-    if (parsed) return parsed;
-  }
-
-  for (const candidate of balancedObjectCandidates(text)) {
-    const parsed = tryParseObject(candidate);
-    if (parsed) return parsed;
-  }
-  return null;
-}
-
-function balancedObjectCandidates(text) {
-  const out = [];
-  for (let start = 0; start < text.length; start++) {
-    if (text[start] !== "{") continue;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < text.length; i++) {
-      const ch = text[i];
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-        } else if (ch === "\\") {
-          escaped = true;
-        } else if (ch === "\"") {
-          inString = false;
-        }
-        continue;
-      }
-      if (ch === "\"") {
-        inString = true;
-      } else if (ch === "{") {
-        depth++;
-      } else if (ch === "}") {
-        depth--;
-        if (depth === 0) {
-          out.push(text.slice(start, i + 1));
-          break;
-        }
-      }
-    }
-  }
-  return out;
-}
-
-function tryParseObject(text) {
-  try {
-    const parsed = JSON.parse(text);
-    return isPlainObject(parsed) ? parsed : null;
-  } catch (_) {
-    return null;
-  }
 }
 
 function parseArgs(argv) {

@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
+const { parseAgentState } = require("./lib/agent-log-parser");
 
 const coordDir = process.argv[2] === "--coord" ? process.argv[3] : "./coord";
 const agentsFile = path.join(coordDir, "agents.json");
@@ -165,24 +166,4 @@ function renderRecentDecisions() {
   } catch {
     console.log("Waiting for decisions.json...");
   }
-}
-
-// Single-use helper — only called from renderAgents above.
-function parseAgentState(lines) {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    let m;
-    if ((m = line.match(/Editing file:?\s+(.*)/i))) return `Editing: ${m[1]}`;
-    if ((m = line.match(/Tool Use:\s+(?:replace|write_file|edit)\s+.*?in\s+(.*)/i))) return `Editing: ${m[1]}`;
-    if (line.match(/Tool Use:\s+replace\s*(.*)/i)) return `Editing file`;
-    if ((m = line.match(/Tool Use:\s+read_file\s+(.*)/i))) return `Reading: ${m[1]}`;
-    if ((m = line.match(/Tool Use:\s+bash\s+(.*)/i)) || (m = line.match(/Running command:?\s+(.*)/i))) {
-      return `Running: ${m[1].substring(0, 30)}...`;
-    }
-    if ((m = line.match(/Tokens:\s+(\d+)/i))) return `Processing... (Tokens: ${m[1]})`;
-    if ((m = line.match(/Applied edit to\s+(.*)/i))) return `Saved: ${m[1]}`;
-    if (line.match(/Running tests/i)) return `Testing...`;
-  }
-  return null;
 }

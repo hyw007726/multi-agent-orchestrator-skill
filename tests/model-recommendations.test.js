@@ -41,7 +41,7 @@ describe('model recommendations', () => {
       /cli_templates\.codex-worker/
     );
     assert.match(
-      formatConfigTarget('kilo-worker', 'kilo run "$(cat {prompt_file})" --auto', recommendationForCli('kilo')),
+      formatConfigTarget('kilo-worker', { cmd: 'kilo', args: ['run', '--file', { prompt_file: true }, 'Follow the instructions in the attached prompt file.', '--auto'] }, recommendationForCli('kilo')),
       /Do not add a generic default_model key/
     );
   });

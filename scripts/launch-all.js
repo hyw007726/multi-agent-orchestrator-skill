@@ -6,6 +6,7 @@ const os = require('os');
 const { spawnSync, spawn } = require('child_process');
 const { loadConfig } = require('./lib/config');
 const { safeKill } = require('./lib/process');
+const { cliTemplateProcessMatch } = require('./lib/cli-template');
 const { renderWorkerPrompt } = require('./lib/prompt-render');
 const { formatModelHeadsUp } = require('./lib/model-headsup');
 const { validateContext, formatValidationReport } = require('./lib/context-validation');
@@ -180,7 +181,7 @@ function launchAll() {
     const templateMode = modeMatch ? modeMatch[1] : 'unknown';
 
     spawnedAgents.push({ name: agentName, pid, logPath, templateMode });
-    if (pid !== '?') spawnedPids.push({ pid: parseInt(pid, 10), cli, name: agentName });
+    if (pid !== '?') spawnedPids.push({ pid: parseInt(pid, 10), cli, processMatch: cliTemplateProcessMatch(cli, config.cli_templates[cli]), name: agentName });
     console.log(`Agent '${agentName}' spawned (PID: ${pid}, template: ${templateMode}, log: ${logPath})`);
   }
 
@@ -291,8 +292,8 @@ function rollbackIfNeeded(spawnedPids, createdWorktrees, projectRoot) {
 
 function rollback(spawnedPids, createdWorktrees, projectRoot) {
   console.error('\nRolling back partial launch...');
-  for (const { pid, cli, name } of spawnedPids) {
-    safeKill({ pid, expectedCli: cli || 'kilo', log: (msg) => console.error(`  [${name}] ${msg}`) });
+  for (const { pid, cli, processMatch, name } of spawnedPids) {
+    safeKill({ pid, expectedCli: processMatch || cli || 'kilo', log: (msg) => console.error(`  [${name}] ${msg}`) });
   }
   for (const { name, path: wtPath } of createdWorktrees) {
     try {

@@ -31,7 +31,10 @@ describe('model heads-up', () => {
   });
 
   it('reports unpinned CLIs without pretending the exact model is visible', () => {
-    const summary = summarizeCliModel('kilo', 'kilo run "$(cat {prompt_file})" --auto');
+    const summary = summarizeCliModel('kilo', {
+      cmd: 'kilo',
+      args: ['run', '--file', { prompt_file: true }, 'Follow the instructions in the attached prompt file.', '--auto'],
+    });
 
     assert.strictEqual(summary.known, false);
     assert.strictEqual(summary.model, null);
@@ -43,9 +46,9 @@ describe('model heads-up', () => {
       default_cli: 'kilo',
       orchestrator_cli: 'claude',
       cli_templates: {
-        kilo: 'kilo run "$(cat {prompt_file})" --auto',
-        codex: { cmd: 'codex', args: ['exec', { prompt_text: true }, '--model=gpt-5.4-mini'] },
-        claude: { cmd: 'claude', args: ['-p', { prompt_text: true }, '--model', 'claude-sonnet-4-6'] },
+        kilo: { cmd: 'kilo', args: ['run', '--file', { prompt_file: true }, 'Follow the instructions in the attached prompt file.', '--auto'] },
+        codex: { cmd: 'codex', args: ['exec', '--model=gpt-5.4-mini'], stdin: { prompt_file: true } },
+        claude: { cmd: 'claude', args: ['-p', '--model', 'claude-sonnet-4-6'], stdin: { prompt_file: true } },
       },
     };
 
@@ -72,8 +75,8 @@ describe('model heads-up', () => {
         },
       ],
       cli_templates: {
-        kilo: 'kilo run "$(cat {prompt_file})" --auto',
-        claude: { cmd: 'claude', args: ['-p', { prompt_text: true }, '--model', 'claude-sonnet-4-6'] },
+        kilo: { cmd: 'kilo', args: ['run', '--file', { prompt_file: true }, 'Follow the instructions in the attached prompt file.', '--auto'] },
+        claude: { cmd: 'claude', args: ['-p', '--model', 'claude-sonnet-4-6'], stdin: { prompt_file: true } },
       },
     };
 

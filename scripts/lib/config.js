@@ -54,12 +54,18 @@ const DEFAULT_HEALTH_CHECKS = {
   opencode: "opencode --version",
 };
 
+// Prompt transport audit:
+// - claude, codex, and gemini read non-interactive prompts from stdin.
+//   Gemini still needs --prompt to select headless mode; the empty value keeps
+//   the real prompt out of argv and lets stdin carry it.
+// - kilo and opencode accept prompt files via --file attachments.
+// Keep defaults off prompt_text so large prompts do not appear in argv or hit ARG_MAX.
 const DEFAULT_CLI_TEMPLATES = {
-  claude: { cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
-  codex: { cmd: "codex", args: ["exec", "--dangerously-bypass-approvals-and-sandbox", { prompt_text: true }] },
-  gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo"] },
-  kilo: 'kilo run "$(cat {prompt_file})" --auto',
-  opencode: { cmd: "opencode", args: ["run", "--dangerously-skip-permissions", { prompt_text: true }] },
+  claude: { cmd: "claude", args: ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--model", "claude-sonnet-4-6"], stdin: { prompt_file: true } },
+  codex: { cmd: "codex", args: ["exec", "--dangerously-bypass-approvals-and-sandbox"], stdin: { prompt_file: true } },
+  gemini: { cmd: "gemini", args: ["--prompt", "", "--yolo", "--output-format", "stream-json"], stdin: { prompt_file: true } },
+  kilo: { cmd: "kilo", args: ["run", "--file", { prompt_file: true }, "Follow the instructions in the attached prompt file.", "--auto"] },
+  opencode: { cmd: "opencode", args: ["run", "--dangerously-skip-permissions", "--file", { prompt_file: true }, "Follow the instructions in the attached prompt file."] },
 };
 
 const DEFAULTS = {

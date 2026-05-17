@@ -9,7 +9,7 @@ const path = require("path");
 const { loadConfig } = require("./lib/config");
 const { updateJSON } = require("./lib/locking");
 const { appendEvent } = require("./lib/events");
-const { spawnCliTemplate } = require("./lib/cli-template");
+const { cliTemplateProcessMatch, spawnCliTemplate } = require("./lib/cli-template");
 
 spawnAgent();
 
@@ -43,6 +43,7 @@ function spawnAgent() {
   const err = out;
 
   const cliTemplate = parsedConfig.cli_templates[config.cli];
+  const processMatch = cliTemplateProcessMatch(config.cli, cliTemplate);
 
   let child;
   let templateMode = "unknown";
@@ -96,6 +97,7 @@ function spawnAgent() {
       status: "running",
       worktree,
       cli: config.cli,
+      process_match: processMatch,
       template_mode: templateMode,
       kilo_mode: config.mode,
       pid: child.pid,
@@ -117,7 +119,7 @@ function spawnAgent() {
   appendEvent(config.coordDir, "agent_spawned", {
     agent: config.agent,
     pid: child.pid,
-    data: { cli: config.cli, mode: config.mode, template_mode: templateMode, worktree, current_started_at: spawnedAt },
+    data: { cli: config.cli, mode: config.mode, process_match: processMatch, template_mode: templateMode, worktree, current_started_at: spawnedAt },
   });
 
   // Single-use helper — creates the coord/ symlink inside the worktree so workers can

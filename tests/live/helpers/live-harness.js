@@ -28,7 +28,7 @@ const PROVIDERS = {
     template(model) {
       return {
         cmd: "claude",
-        args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", model],
+        args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--model", model],
       };
     },
   },
@@ -50,7 +50,7 @@ const PROVIDERS = {
     defaultModel: "gemini-2.5-flash-lite",
     healthCheck: "gemini --version",
     template(model, options = {}) {
-      const args = ["--prompt", { prompt_text: true }, "--yolo", "--skip-trust"];
+      const args = ["--prompt", "", "--yolo", "--skip-trust", "--output-format", "stream-json"];
       if (options.includeCoordDir) {
         args.push("--include-directories", options.includeCoordDir);
       }
@@ -58,6 +58,7 @@ const PROVIDERS = {
       return {
         cmd: "gemini",
         args,
+        stdin: { prompt_file: true },
       };
     },
   },
@@ -94,7 +95,7 @@ const PROVIDERS = {
       if (model && model !== "cli-default") {
         args.push("--model", model);
       }
-      args.push({ prompt_text: true });
+      args.push("--file", { prompt_file: true }, "Follow the instructions in the attached prompt file.");
       return {
         cmd: process.execPath,
         args,
@@ -610,11 +611,7 @@ function writeLiveProviderConfig(projectRoot, providerName) {
     config.mixed_combo = selectedMixedCombo();
   }
 
-  fs.writeFileSync(
-    path.join(projectRoot, "orchestrator.config.js"),
-    `module.exports = ${JSON.stringify(config, null, 2)};\n`,
-    "utf-8"
-  );
+  writeRuntimeConfig(projectRoot, config);
   return config;
 }
 
@@ -646,11 +643,7 @@ function writeAllLiveProviderConfig(projectRoot, providerName) {
     config.mixed_combo = selectedMixedCombo();
   }
 
-  fs.writeFileSync(
-    path.join(projectRoot, "orchestrator.config.js"),
-    `module.exports = ${JSON.stringify(config, null, 2)};\n`,
-    "utf-8"
-  );
+  writeRuntimeConfig(projectRoot, config);
   return config;
 }
 
@@ -687,12 +680,17 @@ function writeLiveWorkerConfig(projectRoot, providerName) {
     },
   };
 
+  writeRuntimeConfig(projectRoot, config);
+  return config;
+}
+
+function writeRuntimeConfig(projectRoot, config) {
+  const { live_roles: _liveRoles, mixed_combo: _mixedCombo, ...runtimeConfig } = config;
   fs.writeFileSync(
     path.join(projectRoot, "orchestrator.config.js"),
-    `module.exports = ${JSON.stringify(config, null, 2)};\n`,
+    `module.exports = ${JSON.stringify(runtimeConfig, null, 2)};\n`,
     "utf-8"
   );
-  return config;
 }
 
 function writeReviewerSmokeDraft(projectRoot) {

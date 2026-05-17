@@ -9,6 +9,7 @@ const { spawnSync } = require('node:child_process');
 
 const {
   buildCliTemplateInvocation,
+  cliTemplateProcessMatch,
   shellQuote,
   spawnCliTemplateSync,
   validateCliTemplate,
@@ -72,6 +73,41 @@ describe('CLI template execution', () => {
     }
   });
 
+  it('runs structured templates with prompt stdin without putting the prompt in argv', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-template-stdin-'));
+    try {
+      const scriptPath = writeStdinPromptReader(tmp);
+      const promptFile = path.join(tmp, 'prompt with spaces $(touch stdin-path-injected).txt');
+      fs.writeFileSync(promptFile, 'stdin prompt content $(touch stdin-content-injected)', 'utf-8');
+
+      const template = {
+        cmd: process.execPath,
+        args: [scriptPath, '--literal', '$(touch stdin-argv-injected)'],
+        stdin: { prompt_file: true },
+      };
+      const invocation = buildCliTemplateInvocation('stdinfake', template, { promptFile });
+      assert.strictEqual(invocation.mode, 'argv');
+      assert.deepStrictEqual(invocation.args, [scriptPath, '--literal', '$(touch stdin-argv-injected)']);
+      assert.deepStrictEqual(invocation.stdin, { kind: 'file', value: promptFile });
+
+      const { mode, result } = spawnCliTemplateSync('stdinfake', template, {
+        promptFile,
+        cwd: tmp,
+        encoding: 'utf-8',
+      });
+
+      assert.strictEqual(mode, 'argv');
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.match(result.stdout, /stdin prompt content/);
+      assert.match(result.stdout, /\$\(touch stdin-argv-injected\)/);
+      assert.ok(!fs.existsSync(path.join(tmp, 'stdin-path-injected')), 'prompt path must not trigger command substitution');
+      assert.ok(!fs.existsSync(path.join(tmp, 'stdin-content-injected')), 'prompt content must not be executed');
+      assert.ok(!fs.existsSync(path.join(tmp, 'stdin-argv-injected')), 'argv args must not trigger command substitution');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('validates structured templates and rejects interpolation inside argv strings', () => {
     const result = validateCliTemplate('bad', {
       cmd: 'fake',
@@ -80,6 +116,30 @@ describe('CLI template execution', () => {
 
     assert.strictEqual(result.ok, false);
     assert.match(result.message, /prompt_file/);
+  });
+
+  it('derives process match terms from configured CLI templates', () => {
+    assert.strictEqual(
+      cliTemplateProcessMatch('gemini-live-worker', {
+        cmd: 'gemini',
+        args: ['--prompt', '', '--yolo'],
+        stdin: { prompt_file: true },
+      }),
+      'gemini'
+    );
+
+    assert.strictEqual(
+      cliTemplateProcessMatch('opencode-live-worker', {
+        cmd: process.execPath,
+        args: ['/tmp/opencode-json-text.js', '--file', { prompt_file: true }],
+      }),
+      'opencode-json-text.js'
+    );
+
+    assert.strictEqual(
+      cliTemplateProcessMatch('shellfake', `${shellQuote(process.execPath)} worker.js {prompt_file}`),
+      path.basename(process.execPath)
+    );
   });
 
   it('preflight validates malformed templates even when auth checks are skipped', () => {
@@ -124,6 +184,22 @@ function writePromptReader(dir) {
     'const promptFile = process.argv[2];',
     'console.log(fs.readFileSync(promptFile, "utf-8"));',
     'console.log(process.argv.slice(3).join("\\n"));',
+  ].join('\n') + '\n', 'utf-8');
+  return scriptPath;
+}
+
+function writeStdinPromptReader(dir) {
+  const scriptPath = path.join(dir, 'read-stdin-prompt.js');
+  fs.writeFileSync(scriptPath, [
+    '#!/usr/bin/env node',
+    "'use strict';",
+    'let input = "";',
+    'process.stdin.setEncoding("utf-8");',
+    'process.stdin.on("data", (chunk) => { input += chunk; });',
+    'process.stdin.on("end", () => {',
+    '  console.log(input);',
+    '  console.log(process.argv.slice(2).join("\\n"));',
+    '});',
   ].join('\n') + '\n', 'utf-8');
   return scriptPath;
 }

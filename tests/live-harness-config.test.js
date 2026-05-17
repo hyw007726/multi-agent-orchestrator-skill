@@ -66,6 +66,11 @@ describe("live harness provider config", () => {
 
         for (const template of Object.values(config.cli_templates)) {
           if (template.cmd !== "gemini") continue;
+          const promptIndex = template.args.indexOf("--prompt");
+          assert.notStrictEqual(promptIndex, -1, `${name} template should select Gemini headless mode`);
+          assert.strictEqual(template.args[promptIndex + 1], "");
+          assert.deepStrictEqual(template.stdin, { prompt_file: true });
+          assert.strictEqual(JSON.stringify(template).includes("prompt_text"), false);
           const includeIndex = template.args.indexOf("--include-directories");
           assert.notStrictEqual(includeIndex, -1, `${name} template should include coord`);
           assert.strictEqual(template.args[includeIndex + 1], expectedCoord);
@@ -136,6 +141,11 @@ describe("live harness provider config", () => {
       assert.match(template.args[0], /opencode-json-text\.js$/);
       assert.ok(template.args.includes("--dangerously-skip-permissions"));
       assert.strictEqual(template.args.includes("--model"), false);
+      const fileIndex = template.args.indexOf("--file");
+      assert.notStrictEqual(fileIndex, -1);
+      assert.deepStrictEqual(template.args[fileIndex + 1], { prompt_file: true });
+      assert.ok(template.args.includes("Follow the instructions in the attached prompt file."));
+      assert.strictEqual(JSON.stringify(template).includes("prompt_text"), false);
       assert.strictEqual(template.args.includes("--opencode-json-text-cwd"), false);
       assert.ok(template.args.includes("--opencode-json-text-live-worker-smoke"));
       assert.ok(reviewerTemplate.args.includes("--opencode-json-text-cwd"));

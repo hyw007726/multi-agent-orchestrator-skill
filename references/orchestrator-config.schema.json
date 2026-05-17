@@ -119,7 +119,7 @@
   },
   "$defs": {
     "cliTemplate": {
-      "description": "Either a shell string containing {prompt_file}, or a structured argv template that includes a prompt placeholder object.",
+      "description": "Either a shell string containing {prompt_file}, or a structured argv template with exactly one prompt source in args or stdin.",
       "oneOf": [
         {
           "type": "string",
@@ -139,38 +139,48 @@
             },
             "args": {
               "type": "array",
-              "description": "Argument vector. Include { \"prompt_file\": true } or { \"prompt_text\": true } exactly once where the prompt should be passed.",
+              "description": "Argument vector. Include { \"prompt_file\": true } or { \"prompt_text\": true } where the prompt should be passed as an argv item, or set stdin to send the prompt through stdin.",
               "items": {
                 "oneOf": [
                   {
                     "type": "string"
                   },
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["prompt_file"],
-                    "properties": {
-                      "prompt_file": { "const": true }
-                    }
-                  },
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["prompt_text"],
-                    "properties": {
-                      "prompt_text": { "const": true }
-                    }
-                  }
-                ]
-              },
-              "contains": {
-                "type": "object",
-                "oneOf": [
-                  { "required": ["prompt_file"] },
-                  { "required": ["prompt_text"] }
+                  { "$ref": "#/$defs/promptPlaceholder" }
                 ]
               }
+            },
+            "stdin": {
+              "$ref": "#/$defs/promptPlaceholder",
+              "description": "Prompt source to write to the child process stdin. Prefer { \"prompt_file\": true } so large prompts are streamed from the generated prompt file."
             }
+          },
+          "anyOf": [
+            {
+              "properties": {
+                "args": {
+                  "contains": { "$ref": "#/$defs/promptPlaceholder" }
+                }
+              }
+            },
+            { "required": ["stdin"] }
+          ]
+        }
+      ]
+    },
+    "promptPlaceholder": {
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": ["prompt_file"],
+          "properties": {
+            "prompt_file": { "const": true }
+          }
+        },
+        {
+          "required": ["prompt_text"],
+          "properties": {
+            "prompt_text": { "const": true }
           }
         }
       ]

@@ -114,6 +114,41 @@ describe('plan review runner', () => {
     }
   });
 
+  it('parses reviewer JSON from provider stream-json output', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'review-plan-stream-json-'));
+    try {
+      const reviewerScript = writeScript(tmp, 'stream-reviewer.js', [
+        'const reviewer = process.argv[2];',
+        'process.stdout.write(JSON.stringify({',
+        '  type: "assistant",',
+        '  message: { content: [{ type: "text", text: JSON.stringify({',
+        '    iteration: 1, reviewer, summary: "stream ok", execution_mode_issues: [], blockers: [], overlaps: [],',
+        '    missing_foundation_work: [], sequencing_risks: [], validation_gaps: [], suggested_changes: []',
+        '  }) }] }',
+        '}) + "\\n");',
+      ]);
+      writeReviewerConfig(tmp, [
+        reviewerEntry('streamer', 'streamcli', 'stream output'),
+      ], {
+        streamcli: reviewerTemplate(reviewerScript, 'streamer'),
+      });
+      writeDraft(tmp, 1, { project: 'demo', tasks: {} });
+
+      const result = runReviewPlan(tmp, [
+        '--iteration',
+        '1',
+        '--draft-plan',
+        './coord/plan-reviews/draft-plan-v1.json',
+      ]);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      const parsed = readJson(path.join(tmp, 'coord', 'plan-reviews', 'iteration-1', 'streamer.json'));
+      assert.strictEqual(parsed.summary, 'stream ok');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('fails the iteration when every reviewer fails or times out', () => {
     const tmpInvalid = fs.mkdtempSync(path.join(os.tmpdir(), 'review-plan-all-invalid-'));
     const tmpTimeout = fs.mkdtempSync(path.join(os.tmpdir(), 'review-plan-timeout-'));

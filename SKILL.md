@@ -39,7 +39,7 @@ The runtime itself is independent of the caller. The caller only performs decomp
 >
 > **Model Selection Strategy:** Use a powerful reasoning model for your interactive caller sessions (Contexts 1 & 3). Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for bulk coding. Set `orchestrator_cli` only when request arbitration should use a different CLI/model from the workers.
 >
-> **How to pin a model:** Model selection stays attached to the CLI mechanism that actually launches the worker. If the CLI supports a launch-time model flag, pin it in `cli_templates` — e.g. `{ cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] }` for Sonnet, or add `--model gpt-5.4-mini` to Codex args. If a CLI does not support a launch-time model flag, select the model in that CLI's own settings. Unpinned templates use the CLI's current config/default.
+> **How to pin a model:** Model selection stays attached to the CLI mechanism that actually launches the worker. If the CLI supports a launch-time model flag, pin it in `cli_templates` — e.g. `{ cmd: "claude", args: ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--model", "claude-sonnet-4-6"], stdin: { prompt_file: true } }` for Sonnet, or add `--model gpt-5.4-mini` to Codex args. If a CLI does not support a launch-time model flag, select the model in that CLI's own settings. Unpinned templates use the CLI's current config/default.
 >
 > **`claude` is the one CLI where pinning is effectively required, not optional.** Other CLIs can also be pinned when they expose model flags, but when unpinned they normally read their model from independent CLI config/defaults. `claude` is different when this runtime is launched from Claude Code — without `--model`, the spawned worker can inherit the model of the parent Claude Code session running this skill (for example, an expensive high-tier orchestrator model), routing bulk worker coding to the orchestrator's model. The shipped `cli_templates.claude` already pins Sonnet 4.6 for this reason.
 >
@@ -82,15 +82,16 @@ Example `orchestrator.config.jsonc`:
 
   // Command templates for supported CLIs.
   // Prefer structured argv templates. Use { "prompt_file": true } to pass the
-  // generated prompt file path as one argv item, or { "prompt_text": true } to pass
-  // the prompt contents as one argv item. String templates remain supported for
+  // generated prompt file path as one argv item, { "prompt_text": true } to pass
+  // the prompt contents as one argv item, or stdin: { "prompt_file": true } for
+  // CLIs that read prompts from stdin. String templates remain supported for
   // CLIs that genuinely need shell behavior.
   "cli_templates": {
-    "claude": { "cmd": "claude", "args": ["-p", { "prompt_text": true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
-    "codex": { "cmd": "codex", "args": ["exec", "--dangerously-bypass-approvals-and-sandbox", { "prompt_text": true }] },
-    "gemini": { "cmd": "gemini", "args": ["--prompt", { "prompt_text": true }, "--yolo"] },
-    "kilo": "kilo run \"$(cat {prompt_file})\" --auto",
-    "opencode": { "cmd": "opencode", "args": ["run", "--dangerously-skip-permissions", { "prompt_text": true }] }
+    "claude": { "cmd": "claude", "args": ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--model", "claude-sonnet-4-6"], "stdin": { "prompt_file": true } },
+    "codex": { "cmd": "codex", "args": ["exec", "--dangerously-bypass-approvals-and-sandbox"], "stdin": { "prompt_file": true } },
+    "gemini": { "cmd": "gemini", "args": ["--prompt", "", "--yolo", "--output-format", "stream-json"], "stdin": { "prompt_file": true } },
+    "kilo": { "cmd": "kilo", "args": ["run", "--file", { "prompt_file": true }, "Follow the instructions in the attached prompt file.", "--auto"] },
+    "opencode": { "cmd": "opencode", "args": ["run", "--dangerously-skip-permissions", "--file", { "prompt_file": true }, "Follow the instructions in the attached prompt file."] }
   }
 }
 ```

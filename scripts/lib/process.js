@@ -10,6 +10,7 @@ function getProcessCommand(pid) {
   const result = spawnSync("ps", ["-p", String(normalizedPid), "-o", "command="], {
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "ignore"],
+    timeout: 1000,
   });
   if (result.status !== 0 || !result.stdout) {
     return null;

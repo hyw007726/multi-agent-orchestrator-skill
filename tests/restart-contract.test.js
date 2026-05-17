@@ -50,7 +50,7 @@ describe('restart contract preservation', () => {
         '    process.exit(1);',
         '  }',
         '  const start = prompt.indexOf("## New Requests from Agents");',
-        '  const end = prompt.indexOf("## Your Responsibilities");',
+        '  const end = prompt.indexOf("## Your Responsibilities", start + 1);',
         '  const section = prompt.slice(start, end === -1 ? undefined : end);',
         '  const match = section.match(/\\[[\\s\\S]*\\]/);',
         '  const requests = match ? JSON.parse(match[0]) : [];',
