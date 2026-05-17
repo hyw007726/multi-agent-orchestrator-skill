@@ -261,8 +261,10 @@ async function runLoop() {
         // ── All-done check ────────────────────────────────────────────────
         const agents = readJSON(paths.agents);
         const entries = Object.values(agents);
+        // needs_attention is terminal for "can the loop exit?": a parked agent
+        // is awaiting a human and the loop will never advance it on its own.
         const allDone = entries.length > 0 &&
-          entries.every((a) => a.status === "completed" || a.status === "terminated" || a.status === "errored" || a.status === "exited");
+          entries.every((a) => a.status === "completed" || a.status === "terminated" || a.status === "errored" || a.status === "exited" || a.status === STATUS.NEEDS_ATTENTION);
         if (allDone) {
           finalize(config, paths, parsedConfig, log);
           break;
@@ -1860,6 +1862,8 @@ function finalize(config, paths, parsedConfig, log) {
   const summaryOutput = buildFinalSummary(agents, requests);
   fs.writeFileSync(summaryFile, summaryOutput, "utf-8");
 
+  // Deliberately excludes needs_attention: a parked agent is awaiting a human,
+  // not failed/vanished, so it must not flip the run to the "incomplete" copy.
   const failedCount = Object.values(agents).filter((agent) => agent.status === "exited" || agent.status === "errored").length;
   if (failedCount > 0) {
     log(`Run ended incomplete (${failedCount} agents failed/vanished). Deterministic summary written to ${path.resolve(summaryFile)}.`);
@@ -1910,6 +1914,10 @@ function runSummaryTerminal(cmd, args) {
 
 function buildFinalSummary(agents = {}, requests = []) {
   const names = Object.keys(agents).sort();
+  // This filter drives task-succeeded semantics (the RUN INCOMPLETE title and
+  // the failed-agents list), not loop-can-exit semantics — so needs_attention
+  // is excluded here even though the all-done gate treats it as terminal. A
+  // parked agent is neither a success nor a failure; it is pending a human.
   const failedAgents = names.filter((name) => {
     const status = agents[name]?.status;
     return status === "exited" || status === "errored";
