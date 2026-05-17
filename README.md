@@ -62,6 +62,7 @@ Caveats:
 - Git with worktree support.
 - A target project that is already a git repository.
 - At least one supported worker CLI installed, authenticated, and configured with a default model.
+- Platform support: macOS/Linux/WSL supported; native Windows experimental.
 
 The runtime has no package dependencies. There is no `npm install`, no `node_modules`, and no build step.
 

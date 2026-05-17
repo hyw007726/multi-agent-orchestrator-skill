@@ -30,6 +30,19 @@ describe('MVP smoke test', () => {
       bootstrapProject(project.root, 'Smoke test project');
       addKiloWorktree(project.root, 'agent-one');
 
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.tasks = {
+        'agent-one': {
+          description: 'Make the worker create worker-output.txt',
+          cli: 'fake',
+          allowed_paths: ['worker-output.txt'],
+          forbidden_paths: ['coord/'],
+          validation_command: ['test', '-f', 'worker-output.txt'],
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2) + '\n', 'utf-8');
+
       const promptFile = path.join(project.root, 'worker-prompt.txt');
       fs.writeFileSync(promptFile, 'Make the worker create worker-output.txt');
 

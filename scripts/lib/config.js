@@ -40,6 +40,7 @@ const DEFAULTS = {
   cli_health_checks: { ...DEFAULT_HEALTH_CHECKS },
   default_timeout_mins: 10,
   default_progress_timeout_mins: 15,
+  orchestrator_cli_timeout_ms: 120000,
   default_max_restarts: 3,
   orchestrator_failure_threshold: 5,
   claude_failure_threshold: 5, // Deprecated alias kept for existing project configs.
@@ -86,6 +87,7 @@ function normalizeConfig(parsed = {}) {
   }
   if (typeof parsed.default_timeout_mins === "number") merged.default_timeout_mins = parsed.default_timeout_mins;
   if (typeof parsed.default_progress_timeout_mins === "number") merged.default_progress_timeout_mins = parsed.default_progress_timeout_mins;
+  if (typeof parsed.orchestrator_cli_timeout_ms === "number" && parsed.orchestrator_cli_timeout_ms > 0) merged.orchestrator_cli_timeout_ms = parsed.orchestrator_cli_timeout_ms;
   if (typeof parsed.default_max_restarts === "number") merged.default_max_restarts = parsed.default_max_restarts;
   if (typeof parsed.orchestrator_failure_threshold === "number") {
     merged.orchestrator_failure_threshold = parsed.orchestrator_failure_threshold;

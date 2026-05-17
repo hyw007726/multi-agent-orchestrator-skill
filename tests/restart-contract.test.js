@@ -133,7 +133,7 @@ describe('restart contract preservation', () => {
           cli: 'contract',
           mode: 'auto',
           read_first: ['src/index.js'],
-          allowed_paths: ['src/**'],
+          allowed_paths: ['src/**', 'restart-success.txt'],
           forbidden_paths: ['package.json'],
           validation_command: ['test', '-f', 'restart-success.txt'],
           timeout_mins: 7,

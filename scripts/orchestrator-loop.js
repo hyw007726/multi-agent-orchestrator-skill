@@ -3,17 +3,21 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execSync, spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const { loadConfig } = require("./lib/config");
 const { safeKill } = require("./lib/process");
 const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL, appendJSONL } = require("./lib/locking");
 const { renderWorkerPrompt, renderWorkerRestartPrompt } = require("./lib/prompt-render");
 const { STATUS, transitionAgentStatus } = require("./lib/status");
 const { appendEvent } = require("./lib/events");
-const { cliTemplateMode, spawnCliTemplateSync } = require("./lib/cli-template");
+const { cliTemplateMode, spawnCliTemplate } = require("./lib/cli-template");
 
 const RECENT_DECISION_LIMIT = 30;
 const HEARTBEAT_GRACE_PHASES = new Set(["starting", "reading", "planning", "testing", "running_tests", "building", "installing", "debugging"]);
+const SAFE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+const SAFE_AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const STAGED_REQUEST_TYPES = new Set(["question", "change", "conflict", "review_request"]);
+const REQUEST_PRIORITIES = new Set(["low", "medium", "high"]);
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
@@ -236,7 +240,7 @@ async function runLoop() {
 
         const worktreeStates = collectWorktreeStates(pending, agentsForPrompt);
         const prompt = buildOrchestratorPrompt(pending, context, durableDecisions, recentDecisions, worktreeStates, callerContext);
-        const response = callOrchestratorCli(prompt, parsedConfig, config.maxRetries, log);
+        const response = await callOrchestratorCli(prompt, parsedConfig, config.maxRetries, log);
 
         if (!response) {
           consecutiveCliFailures++;
@@ -249,7 +253,7 @@ async function runLoop() {
             consecutiveCliFailures = 0;
             clearStalledFlag(config.coordDir, log);
           }
-          processActions(response.actions || [], paths, parsedConfig, log);
+          processActions(response.actions || [], paths, parsedConfig, log, { response, pending });
           processApprovals(response, paths, log);
         }
       } else {
@@ -320,7 +324,7 @@ async function runLoop() {
     }
   }
 
-  function processActions(actions, paths, parsedConfig, log) {
+  function processActions(actions, paths, parsedConfig, log, arbitration = {}) {
     for (const rawAction of actions) {
       // restart_agent is a legacy alias for soft_restart.
       const action = rawAction.type === "restart_agent" ? { ...rawAction, type: "soft_restart" } : rawAction;
@@ -331,11 +335,44 @@ async function runLoop() {
 
         const validation = runValidation(snapshot, log);
         if (validation.passed) {
+          const ownership = checkCompletionOwnership(action.agent, snapshot, paths, log);
+          if (!ownership.ok) {
+            const violationText = formatOwnershipViolation(ownership);
+            log(`Completion rejected for ${action.agent}: file ownership violation. ${ownership.summary}`);
+            appendEvent(config.coordDir, "ownership_violation", {
+              agent: action.agent,
+              reason: ownership.summary,
+              data: {
+                changed_files: ownership.changedFiles,
+                forbidden_violations: ownership.forbiddenViolations,
+                outside_allowed: ownership.outsideAllowed,
+              },
+            });
+            rejectPendingRequestsForAgent(arbitration.response, arbitration.pending, action.agent, `Completion rejected: ${ownership.summary}`);
+            bumpRestartAndRespawn({
+              name: action.agent,
+              instruction: [
+                "Completion was rejected because your worktree changed files outside your assigned ownership.",
+                "",
+                violationText,
+                "",
+                "Fix this by reverting, moving, or replacing every out-of-scope change. Keep only changes covered by allowed_paths and no changes covered by forbidden_paths, then submit a new review_request.",
+              ].join("\n"),
+              reason: "file ownership violation",
+              paths,
+              parsedConfig,
+              mode: "soft",
+              skipWipCommit: true,
+              log,
+            });
+            continue;
+          }
+
           // Auto-commit any uncommitted changes so the final merge phase picks them up.
           const worktree = snapshot.worktree;
           if (fs.existsSync(worktree)) {
             try {
-              stageAllChanges(worktree);
+              stageCompletionChanges(worktree, ownership.changedFiles);
               const taskSummary = (snapshot.task || "completed").toString().slice(0, 200);
               const commit = commitWorktree(worktree, `agent-${action.agent}: ${taskSummary}`);
               if (commit.committed) {
@@ -389,7 +426,7 @@ async function runLoop() {
   // the side effects (kill, recovery/WIP-commit, subprocess respawn) OUTSIDE the lock so
   // we never hold the lock across a subprocess (which would deadlock on spawn-agent's own
   // updateJSON write).
-  function bumpRestartAndRespawn({ name, instruction, reason, paths, parsedConfig, mode, log }) {
+  function bumpRestartAndRespawn({ name, instruction, reason, paths, parsedConfig, mode, skipWipCommit = false, log }) {
     const outcomeRef = { value: { kind: "missing" } };
 
     updateJSON(paths.agents, (agents) => {
@@ -469,6 +506,8 @@ async function runLoop() {
         } else {
           log(`Hard restart: worktree was already clean.`);
         }
+      } else if (skipWipCommit) {
+        log(`Skipping soft-restart WIP commit for ${name} (${reason}); preserving dirty worktree for the worker to fix.`);
       } else {
         try {
           stageAllChanges(outcome.worktree);
@@ -666,6 +705,22 @@ async function runLoop() {
       }
     }
     return count;
+  }
+
+  function rejectPendingRequestsForAgent(response, pending, agentName, reason) {
+    if (!response || !Array.isArray(pending)) return;
+    const ids = new Set(pending
+      .filter((request) => request && request.agent === agentName && request.status === "pending" && request.request_id)
+      .map((request) => request.request_id));
+    if (ids.size === 0) return;
+
+    response.approved = (response.approved || []).filter((entry) => !ids.has(entry.request_id));
+    const rejectedIds = new Set((response.rejected || []).map((entry) => entry.request_id));
+    response.rejected = response.rejected || [];
+    for (const requestId of ids) {
+      if (rejectedIds.has(requestId)) continue;
+      response.rejected.push({ request_id: requestId, reason });
+    }
   }
 }
 
@@ -970,16 +1025,16 @@ function consolidateStagedRequests(paths) {
   const collected = [];
   const consumedFiles = [];
   const malformedFiles = [];
+  const context = stagedRequestContext(paths);
 
   for (const file of jsonFiles) {
     const filePath = path.join(requestsDir, file);
-    try {
-      const raw = fs.readFileSync(filePath, "utf-8");
-      const obj = JSON.parse(raw);
-      collected.push(obj);
+    const parsed = readAndValidateStagedRequest(filePath, file, context);
+    if (parsed.ok) {
+      collected.push(parsed.request);
       consumedFiles.push(filePath);
-    } catch {
-      malformedFiles.push(filePath);
+    } else {
+      malformedFiles.push({ filePath, error: parsed.error });
     }
   }
 
@@ -995,13 +1050,16 @@ function consolidateStagedRequests(paths) {
   if (malformedFiles.length > 0) {
     const malformedDir = path.join(requestsDir, "malformed");
     fs.mkdirSync(malformedDir, { recursive: true });
-    for (const filePath of malformedFiles) {
+    for (const { filePath, error } of malformedFiles) {
       const dest = path.join(malformedDir, path.basename(filePath));
       try {
         fs.renameSync(filePath, dest);
       } catch {
         try { fs.unlinkSync(filePath); } catch {}
       }
+      try {
+        fs.writeFileSync(`${dest}.error.txt`, `${error}\n`, "utf-8");
+      } catch {}
     }
   }
 }
@@ -1018,15 +1076,100 @@ function readStagedRequests(paths) {
   if (jsonFiles.length === 0) return [];
 
   const out = [];
+  const context = stagedRequestContext(paths);
   for (const file of jsonFiles) {
-    try {
-      const raw = fs.readFileSync(path.join(requestsDir, file), "utf-8");
-      out.push(JSON.parse(raw));
-    } catch {
-      // Malformed or partially-written files — skip in read-only scan.
-    }
+    const parsed = readAndValidateStagedRequest(path.join(requestsDir, file), file, context);
+    if (parsed.ok) out.push(parsed.request);
   }
   return out;
+}
+
+function stagedRequestContext(paths) {
+  const agents = readJSONIfExists(paths.agents);
+  const context = readJSONIfExists(paths.context);
+  const knownAgents = new Set([
+    ...Object.keys(isPlainObject(agents) ? agents : {}),
+    ...Object.keys(isPlainObject(context?.tasks) ? context.tasks : {}),
+  ]);
+  return { knownAgents };
+}
+
+function readAndValidateStagedRequest(filePath, fileName, context) {
+  let request;
+  try {
+    const raw = fs.readFileSync(filePath, "utf-8");
+    request = JSON.parse(raw);
+  } catch (err) {
+    return { ok: false, error: `Invalid JSON: ${err.message}` };
+  }
+
+  const validation = validateStagedRequest(request, fileName, context);
+  if (!validation.ok) return validation;
+  return { ok: true, request };
+}
+
+function validateStagedRequest(request, fileName, context = {}) {
+  if (!isPlainObject(request)) {
+    return { ok: false, error: "Staged request must be a JSON object." };
+  }
+
+  const errors = [];
+  if (!isSafeRequestId(request.request_id)) errors.push("request_id must be a safe non-empty id (letters, numbers, dot, underscore, colon, or dash; max 200 chars).");
+  if (!isSafeAgentName(request.agent)) errors.push("agent must be a safe non-empty agent name.");
+  if (!STAGED_REQUEST_TYPES.has(request.type)) errors.push(`type must be one of: ${Array.from(STAGED_REQUEST_TYPES).join(", ")}.`);
+  if (!REQUEST_PRIORITIES.has(request.priority)) errors.push("priority must be low, medium, or high.");
+  if (request.status !== "pending") errors.push('status must be "pending" for staged worker requests.');
+  if (typeof request.content !== "string" || request.content.trim() === "") errors.push("content must be a non-empty string.");
+  if (!isIsoTimestamp(request.created_at)) errors.push("created_at must be an ISO 8601 timestamp string.");
+
+  const knownAgents = context.knownAgents instanceof Set ? context.knownAgents : new Set();
+  if (knownAgents.size > 0 && isSafeAgentName(request.agent) && !knownAgents.has(request.agent)) {
+    errors.push(`agent "${request.agent}" is not present in agents.json or context.json tasks.`);
+  }
+
+  const matchingFileAgent = inferAgentFromStagedFile(fileName, knownAgents);
+  if (matchingFileAgent && request.agent !== matchingFileAgent) {
+    errors.push(`agent "${request.agent}" does not match staging filename context "${matchingFileAgent}".`);
+  }
+
+  if (errors.length > 0) return { ok: false, error: errors.join(" ") };
+  return { ok: true };
+}
+
+function inferAgentFromStagedFile(fileName, knownAgents) {
+  if (!(knownAgents instanceof Set) || knownAgents.size === 0) return "";
+  const base = path.basename(fileName, ".json");
+  const matches = Array.from(knownAgents)
+    .filter((agent) => base === agent || base.startsWith(`${agent}-`))
+    .sort((a, b) => b.length - a.length);
+  return matches[0] || "";
+}
+
+function isSafeRequestId(value) {
+  return typeof value === "string" && SAFE_REQUEST_ID.test(value);
+}
+
+function isSafeAgentName(value) {
+  return typeof value === "string" && SAFE_AGENT_NAME.test(value);
+}
+
+function isIsoTimestamp(value) {
+  if (typeof value !== "string" || value.trim() === "") return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed);
+}
+
+function readJSONIfExists(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return null;
+    return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 // ─── IO helpers ──────────────────────────────────────────────────────────────
@@ -1089,13 +1232,25 @@ function isProcessAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+function killTimedOutChild(pid) {
+  const target = process.platform === "win32" ? pid : -pid;
+  try {
+    process.kill(target, "SIGTERM");
+  } catch {}
+  setTimeout(() => {
+    try {
+      process.kill(target, "SIGKILL");
+    } catch {}
+  }, 2000).unref?.();
+}
+
 function readDiffSnapshot(worktree) {
   if (!fs.existsSync(worktree)) return "";
   try {
-    const unstaged = execSync("git diff --stat", { cwd: worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
-    const staged = execSync("git diff --staged --stat", { cwd: worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
-    const commits = execSync("git log -n 5 --oneline", { cwd: worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
-    const untracked = execSync("git ls-files --others --exclude-standard", { cwd: worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+    const unstaged = gitStdout(worktree, ["diff", "--stat"]);
+    const staged = gitStdout(worktree, ["diff", "--staged", "--stat"]);
+    const commits = gitStdout(worktree, ["log", "-n", "5", "--oneline"]);
+    const untracked = gitStdout(worktree, ["ls-files", "--others", "--exclude-standard"]);
     return `${unstaged}\n${staged}\n${commits}\n${untracked}`;
   } catch { return ""; }
 }
@@ -1103,7 +1258,14 @@ function readDiffSnapshot(worktree) {
 function readTail(filePath, lines) {
   if (!fs.existsSync(filePath)) return "";
   try {
-    return execSync(`tail -n ${lines} "${filePath}"`, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+    const limit = Math.max(0, Math.floor(Number(lines) || 0));
+    if (limit === 0) return "";
+    const content = fs.readFileSync(filePath, "utf-8");
+    const hadTrailingNewline = content.endsWith("\n");
+    const split = content.split(/\r?\n/);
+    if (hadTrailingNewline) split.pop();
+    const tail = split.slice(-limit).join("\n");
+    return tail ? `${tail}${hadTrailingNewline ? "\n" : ""}` : "";
   } catch { return ""; }
 }
 
@@ -1117,6 +1279,45 @@ function stageAllChanges(worktree) {
   const result = spawnSync("git", ["add", "-A"], { cwd: worktree, stdio: "ignore" });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`git add -A exited with status ${result.status}`);
+}
+
+function stageCompletionChanges(worktree, changedFiles) {
+  const files = Array.isArray(changedFiles) ? changedFiles.filter(Boolean) : [];
+  if (files.length === 0) return;
+  const result = spawnSync("git", ["add", "-A", "--", ...files], { cwd: worktree, stdio: "ignore" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`git add -A -- <owned files> exited with status ${result.status}`);
+}
+
+function gitStdout(cwd, args) {
+  return runGit(cwd, args).stdout;
+}
+
+function runGit(cwd, args, options = {}) {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: false,
+  });
+  const normalized = {
+    status: result.status === null ? 1 : result.status,
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+    error: result.error || null,
+  };
+  if (normalized.error) {
+    if (options.allowFailure) return normalized;
+    throw normalized.error;
+  }
+  if (normalized.status !== 0 && !options.allowFailure) {
+    throw new Error(`git ${args.join(" ")} exited with status ${normalized.status}: ${gitErrorDetails(normalized)}`);
+  }
+  return normalized;
+}
+
+function gitErrorDetails(result) {
+  return (result.stderr || result.stdout || (result.error && result.error.message) || `exit ${result.status}`).trim();
 }
 
 function commitWorktree(worktree, message) {
@@ -1140,7 +1341,7 @@ function commitWorktree(worktree, message) {
 // If error is set the worktree was NOT touched — the caller must abort the restart.
 function captureRecoveryAndReset(worktree, agent, log) {
   try {
-    const headBefore = execSync("git rev-parse HEAD", { cwd: worktree, encoding: "utf-8" }).trim();
+    const headBefore = gitStdout(worktree, ["rev-parse", "HEAD"]).trim();
     let createdRecovery = false;
     try {
       stageAllChanges(worktree);
@@ -1154,18 +1355,18 @@ function captureRecoveryAndReset(worktree, agent, log) {
     if (createdRecovery) {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
       tag = `recovery/${agent}/${ts}`;
-      try {
-        execSync(`git tag "${tag}"`, { cwd: worktree, stdio: "ignore" });
-      } catch (err) {
-        log(`Failed to create recovery tag: ${err.message}`);
+      const tagResult = runGit(worktree, ["tag", tag], { allowFailure: true });
+      if (tagResult.status !== 0) {
+        const details = gitErrorDetails(tagResult);
+        log(`Failed to create recovery tag: ${details}`);
         // Recovery commit is on HEAD but the tag is missing — abort before
         // the destructive reset, otherwise the commit is orphaned (reflog-only).
-        return { tag: null, error: `recovery commit created but tag failed: ${err.message}` };
+        return { tag: null, error: `recovery commit created but tag failed: ${details}` };
       }
     }
 
-    execSync(`git reset --hard ${headBefore}`, { cwd: worktree, stdio: "ignore" });
-    execSync("git clean -fd", { cwd: worktree, stdio: "ignore" });
+    runGit(worktree, ["reset", "--hard", headBefore]);
+    runGit(worktree, ["clean", "-fd"]);
     return { tag, error: null };
   } catch (err) {
     log(`Hard reset failed: ${err.message}`);
@@ -1206,6 +1407,216 @@ function runValidation(agent, log) {
   return { passed: true, log: "" };
 }
 
+function checkCompletionOwnership(agentName, agent, paths, log) {
+  const worktree = agent.worktree;
+  if (!worktree || !fs.existsSync(worktree)) {
+    return ownershipResult({
+      ok: true,
+      changedFiles: [],
+      forbiddenViolations: [],
+      outsideAllowed: [],
+      allowedPaths: [],
+      forbiddenPaths: [],
+    });
+  }
+
+  const task = readTaskContext(paths.context, agentName) || {};
+  const allowedPaths = pathList(task.allowed_paths || agent.allowed_paths);
+  const forbiddenPaths = pathList(task.forbidden_paths || agent.forbidden_paths);
+  const changed = collectOwnershipChangedFiles(worktree, agent.base_ref, log);
+  const changedFiles = changed.files.filter((file) => !isRuntimeCoordSymlink(file, worktree));
+  const forbiddenViolations = changedFiles.filter((file) => matchesAnyPathPattern(file, forbiddenPaths));
+  const outsideAllowed = changedFiles.filter((file) => !matchesAnyPathPattern(file, allowedPaths));
+  const errors = changed.errors.slice();
+  if (allowedPaths.length === 0 && changedFiles.length > 0) {
+    errors.push("allowed_paths is missing or empty for this agent.");
+  }
+
+  return ownershipResult({
+    ok: errors.length === 0 && forbiddenViolations.length === 0 && outsideAllowed.length === 0,
+    changedFiles,
+    forbiddenViolations,
+    outsideAllowed,
+    allowedPaths,
+    forbiddenPaths,
+    errors,
+  });
+}
+
+function ownershipResult(result) {
+  const issues = [];
+  if (result.errors?.length > 0) issues.push(`${result.errors.length} ownership check error(s)`);
+  if (result.forbiddenViolations.length > 0) issues.push(`${result.forbiddenViolations.length} forbidden-path change(s)`);
+  if (result.outsideAllowed.length > 0) issues.push(`${result.outsideAllowed.length} change(s) outside allowed_paths`);
+  return {
+    errors: [],
+    ...result,
+    summary: issues.length > 0 ? issues.join("; ") : "changed files are within ownership.",
+  };
+}
+
+function formatOwnershipViolation(result) {
+  return [
+    `Allowed paths: ${formatList(result.allowedPaths)}`,
+    `Forbidden paths: ${formatList(result.forbiddenPaths)}`,
+    `Changed files checked: ${formatOwnershipFileList(result.changedFiles)}`,
+    `Forbidden-path violations: ${formatOwnershipFileList(result.forbiddenViolations)}`,
+    `Outside allowed_paths: ${formatOwnershipFileList(result.outsideAllowed)}`,
+    result.errors.length > 0 ? `Ownership check errors: ${result.errors.join("; ")}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function collectOwnershipChangedFiles(worktree, baseRef, log) {
+  const files = new Set();
+  const errors = [];
+  const base = resolveOwnershipBaseRef(worktree, baseRef);
+  if (base.error) {
+    errors.push(base.error);
+  } else if (base.ref) {
+    addGitLines(files, worktree, ["diff", "--name-only", `${base.ref}...HEAD`, "--"], errors, `committed diff against ${base.ref}`);
+  }
+
+  addGitLines(files, worktree, ["diff", "--name-only", "--"], errors, "unstaged diff");
+  addGitLines(files, worktree, ["diff", "--staged", "--name-only", "--"], errors, "staged diff");
+  addGitLines(files, worktree, ["ls-files", "--others", "--exclude-standard"], errors, "untracked files");
+
+  if (errors.length > 0) {
+    log(`Ownership check could not inspect all changed files: ${errors.join("; ")}`);
+  }
+
+  return {
+    files: Array.from(files).map(normalizeRepoPath).filter(Boolean).sort(),
+    errors,
+  };
+}
+
+function resolveOwnershipBaseRef(worktree, baseRef) {
+  const requested = typeof baseRef === "string" && baseRef.trim() ? baseRef.trim() : "";
+  const candidates = requested ? [requested] : ["main", "master"];
+  for (const candidate of candidates) {
+    const result = spawnSync("git", ["rev-parse", "--verify", `${candidate}^{commit}`], {
+      cwd: worktree,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.status === 0) return { ref: candidate };
+  }
+  if (requested) {
+    return { ref: "", error: `base_ref "${requested}" does not resolve to a commit.` };
+  }
+  return { ref: "", error: "No default base ref (main or master) resolves to a commit." };
+}
+
+function addGitLines(files, cwd, args, errors, label) {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) {
+    errors.push(`${label}: ${result.error.message}`);
+    return;
+  }
+  if (result.status !== 0) {
+    const details = (result.stderr || result.stdout || "").trim();
+    errors.push(`${label}: ${details || `git exited ${result.status}`}`);
+    return;
+  }
+  for (const line of (result.stdout || "").split("\n")) {
+    const normalized = normalizeRepoPath(line);
+    if (normalized) files.add(normalized);
+  }
+}
+
+function pathList(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === "string" && item.trim() !== "").map((item) => item.trim());
+}
+
+function matchesAnyPathPattern(file, patterns) {
+  if (patterns.length === 0) return false;
+  return patterns.some((pattern) => pathPatternMatches(file, pattern));
+}
+
+function pathPatternMatches(file, rawPattern) {
+  const raw = String(rawPattern || "").trim();
+  if (!raw) return false;
+  const filePath = normalizeRepoPath(file);
+  const pattern = normalizeRepoPath(raw);
+  if (!pattern) return false;
+  if (pattern === "." || pattern === "*" || pattern === "**" || pattern === "**/*") return true;
+
+  if (pattern.endsWith("/**")) {
+    const root = pattern.slice(0, -3).replace(/\/+$/, "");
+    return filePath === root || filePath.startsWith(`${root}/`);
+  }
+
+  if (!hasGlob(pattern)) {
+    return filePath === pattern || filePath.startsWith(`${pattern}/`);
+  }
+
+  return globPatternToRegExp(pattern).test(filePath);
+}
+
+function globPatternToRegExp(pattern) {
+  let source = "^";
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i];
+    if (char === "*") {
+      if (pattern[i + 1] === "*") {
+        i++;
+        if (pattern[i + 1] === "/") {
+          i++;
+          source += "(?:[^/]+/)*";
+        } else {
+          source += ".*";
+        }
+      } else {
+        source += "[^/]*";
+      }
+    } else if (char === "?") {
+      source += "[^/]";
+    } else {
+      source += escapeRegExp(char);
+    }
+  }
+  return new RegExp(`${source}$`);
+}
+
+function hasGlob(pattern) {
+  return /[*?\[]/.test(pattern);
+}
+
+function normalizeRepoPath(value) {
+  return toPosixPath(String(value || "").trim())
+    .replace(/^\.\/+/, "")
+    .replace(/\/+$/, "");
+}
+
+function isRuntimeCoordSymlink(file, worktree) {
+  if (normalizeRepoPath(file) !== "coord") return false;
+  try {
+    return fs.lstatSync(path.join(worktree, "coord")).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function formatOwnershipFileList(files) {
+  if (!Array.isArray(files) || files.length === 0) return "(none)";
+  const shown = files.slice(0, 20);
+  const suffix = files.length > shown.length ? `, ... (${files.length - shown.length} more)` : "";
+  return `${shown.join(", ")}${suffix}`;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[\\^$+?.()|{}[\]]/g, "\\$&");
+}
+
+function toPosixPath(value) {
+  return String(value).replace(/\\/g, "/");
+}
+
 function collectWorktreeStates(pending, agents) {
   const states = {};
   for (const req of pending) {
@@ -1213,19 +1624,19 @@ function collectWorktreeStates(pending, agents) {
     const worktree = agents[req.agent].worktree;
     if (!fs.existsSync(worktree)) continue;
     try {
-      const status = execSync("git status -s", { cwd: worktree, encoding: "utf-8" });
+      const status = gitStdout(worktree, ["status", "-s"]);
       const baseBranch = agents[req.agent].base_ref || "main";
 
-      const diffStatUnstaged = execSync("git diff --stat", { cwd: worktree, encoding: "utf-8" });
-      const diffStatStaged = execSync("git diff --staged --stat", { cwd: worktree, encoding: "utf-8" });
-      const diffStatBranch = execSync(`git diff ${baseBranch}...HEAD --stat`, { cwd: worktree, encoding: "utf-8" });
+      const diffStatUnstaged = gitStdout(worktree, ["diff", "--stat"]);
+      const diffStatStaged = gitStdout(worktree, ["diff", "--staged", "--stat"]);
+      const diffStatBranch = gitStdout(worktree, ["diff", `${baseBranch}...HEAD`, "--stat"]);
 
       let targetedDiffs = "";
       try {
-        const filesChanged = execSync(`git diff ${baseBranch}...HEAD --name-only`, { cwd: worktree, encoding: "utf-8" }).split("\n").filter(Boolean);
+        const filesChanged = gitStdout(worktree, ["diff", `${baseBranch}...HEAD`, "--name-only"]).split("\n").filter(Boolean);
         for (const file of filesChanged) {
           if (req.content.includes(file) || req.content.includes(path.basename(file))) {
-            const fileDiff = execSync(`git diff ${baseBranch}...HEAD -- "${file}"`, { cwd: worktree, encoding: "utf-8" });
+            const fileDiff = gitStdout(worktree, ["diff", `${baseBranch}...HEAD`, "--", file]);
             targetedDiffs += `\nFull diff for ${file}:\n${fileDiff.slice(0, 3000)}`;
           }
         }
@@ -1301,14 +1712,15 @@ Apply the responsibilities and response format above to these new requests.
 
 // Calls the orchestrator CLI for arbitration. Honors `orchestrator_cli` + `cli_templates`
 // in orchestrator config so monitoring runs through a configurable (often cheap) model.
-function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
+async function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
   const cli = parsedConfig.orchestrator_cli;
   const template = parsedConfig.cli_templates[cli];
+  const timeoutMs = parsedConfig.orchestrator_cli_timeout_ms;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const mode = template ? cliTemplateMode(template) : "missing-template";
-    log(`Calling orchestrator CLI '${cli}' via ${mode} mode (attempt ${attempt}/${maxRetries})...`);
-    const { stdout, error } = invokeOrchestratorCli(cli, template, prompt);
+    log(`Calling orchestrator CLI '${cli}' via ${mode} mode (attempt ${attempt}/${maxRetries}, timeout ${timeoutMs}ms)...`);
+    const { stdout, error } = await invokeOrchestratorCli(cli, template, prompt, timeoutMs);
     if (error) {
       log(`Orchestrator CLI failed: ${error}`);
       if (attempt === maxRetries) return null;
@@ -1332,27 +1744,72 @@ function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
   return null;
 
   // Single-use helper — only called from the retry loop above.
-  function invokeOrchestratorCli(cli, template, prompt) {
-    if (template) {
-      const promptFile = path.join(os.tmpdir(), `orch-prompt-${Date.now()}.txt`);
-      fs.writeFileSync(promptFile, prompt, "utf-8");
+  function invokeOrchestratorCli(cli, template, prompt, timeoutMs) {
+    if (!template) {
+      return Promise.resolve({ stdout: "", error: `No cli_templates.${cli} configured for orchestrator_cli.` });
+    }
+
+    const promptFile = path.join(os.tmpdir(), `orch-prompt-${process.pid}-${Date.now()}.txt`);
+    fs.writeFileSync(promptFile, prompt, "utf-8");
+
+    return new Promise((resolve) => {
+      let child;
+      let settled = false;
+      let stdout = "";
+      let stderr = "";
+      const maxBuffer = 1024 * 1024 * 10;
+
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        try { fs.unlinkSync(promptFile); } catch {}
+        resolve(value);
+      };
+
+      const timeout = setTimeout(() => {
+        const pid = child?.pid;
+        if (pid) {
+          log(`Orchestrator CLI '${cli}' timed out after ${timeoutMs}ms; terminating PID ${pid}.`);
+          killTimedOutChild(pid);
+        }
+        try { child?.stdout?.destroy(); } catch {}
+        try { child?.stderr?.destroy(); } catch {}
+        try { child?.unref?.(); } catch {}
+        finish({ stdout, error: `Timed out after ${timeoutMs}ms` });
+      }, timeoutMs);
+
       try {
-        const { result } = spawnCliTemplateSync(cli, template, {
+        child = spawnCliTemplate(cli, template, {
           promptFile,
           promptText: prompt,
-          encoding: "utf-8",
-          maxBuffer: 1024 * 1024 * 10,
+          detached: process.platform !== "win32",
+          stdio: ["ignore", "pipe", "pipe"],
         });
-        if (result.error) return { stdout: "", error: result.error.message };
-        if (result.status !== 0) return { stdout: result.stdout || "", error: `Exit ${result.status}: ${result.stderr}` };
-        return { stdout: result.stdout || "" };
       } catch (err) {
-        return { stdout: "", error: err.message };
-      } finally {
-        try { fs.unlinkSync(promptFile); } catch {}
+        finish({ stdout: "", error: err.message });
+        return;
       }
-    }
-    return { stdout: "", error: `No cli_templates.${cli} configured for orchestrator_cli.` };
+
+      child.stdout?.on("data", (chunk) => {
+        if (stdout.length < maxBuffer) stdout += chunk.toString("utf-8");
+      });
+      child.stderr?.on("data", (chunk) => {
+        if (stderr.length < maxBuffer) stderr += chunk.toString("utf-8");
+      });
+      child.on("error", (err) => {
+        finish({ stdout, error: err.message });
+      });
+      child.on("close", (status, signal) => {
+        if (status === 0) {
+          finish({ stdout });
+          return;
+        }
+        const suffix = stderr ? `: ${stderr}` : "";
+        const exit = signal ? `Signal ${signal}` : `Exit ${status}`;
+        finish({ stdout, error: `${exit}${suffix}` });
+      });
+    });
   }
 }
 
@@ -1414,9 +1871,14 @@ function finalize(config, paths, parsedConfig, log) {
       const command = `cat ${shellQuote(path.resolve(summaryFile))}; echo; echo 'Press any key to close...'; read -n 1`;
       runAppleScriptTerminal(command);
     } else if (process.platform === "win32") {
-      execSync(`start cmd /k "type ${summaryFile}"`, { shell: "cmd.exe" });
+      runSummaryTerminal("cmd.exe", ["/c", "start", "cmd", "/k", "type", path.resolve(summaryFile)]);
     } else {
-      execSync(`x-terminal-emulator -e "cat '${summaryFile}'; read -p 'Press Enter to close...'" || xterm -e "cat '${summaryFile}'; read -p 'Press Enter to close...'"`, { shell: "/bin/bash" });
+      const summaryPath = path.resolve(summaryFile);
+      try {
+        runSummaryTerminal("x-terminal-emulator", ["-e", "sh", "-c", "cat \"$1\"; printf '\\nPress Enter to close...'; read _", "summary-view", summaryPath]);
+      } catch {
+        runSummaryTerminal("xterm", ["-e", "sh", "-c", "cat \"$1\"; printf '\\nPress Enter to close...'; read _", "summary-view", summaryPath]);
+      }
     }
     log("Opened review summary in new terminal window.");
   } catch (err) {
@@ -1424,6 +1886,19 @@ function finalize(config, paths, parsedConfig, log) {
     console.log("\n" + summaryOutput + "\n");
   }
   log("Orchestrator loop ending.");
+}
+
+function runSummaryTerminal(cmd, args) {
+  const result = spawnSync(cmd, args, {
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: false,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const details = (result.stderr || result.stdout || "").trim();
+    throw new Error(details || `${cmd} exited with status ${result.status}`);
+  }
 }
 
 function buildFinalSummary(agents = {}, requests = []) {
@@ -1498,7 +1973,10 @@ function truncate(value, max) {
 module.exports = {
   buildOrchestratorPrompt,
   buildFinalSummary,
+  checkCompletionOwnership,
+  collectOwnershipChangedFiles,
   commitWorktree,
+  pathPatternMatches,
   stageAllChanges,
   readAgentCurrentStartMs,
 };

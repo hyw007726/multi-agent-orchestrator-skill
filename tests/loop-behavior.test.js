@@ -14,6 +14,7 @@ const {
   addKiloWorktree,
   runLoop,
   readJson,
+  readJsonl,
 } = require('./helpers/temp-project');
 
 describe('loop behavior', () => {
@@ -544,6 +545,149 @@ describe('loop behavior', () => {
         `Log should mention validation failure\nlog:\n${log}`);
       assert.ok(log.includes('Running validation: test -f done.txt'),
         `Log should contain the validation command\nlog:\n${log}`);
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
+  // 5. File ownership violations block completion and send the worker through a fix restart.
+  it('rejects end_agent completion when changed files violate ownership', () => {
+    let project;
+    try {
+      project = createTempProject('ownership-violation-');
+
+      const cliPath = path.join(project.root, 'ownership-cli.js');
+      fs.writeFileSync(cliPath, [
+        '#!/usr/bin/env node',
+        "'use strict';",
+        'const fs = require("fs");',
+        'const path = require("path");',
+        'const args = process.argv.slice(2);',
+        'if (args[0] === "--version") { console.log("ownership-cli 1.0"); process.exit(0); }',
+        'const promptFile = args[0];',
+        'if (!promptFile) { console.error("Error: prompt file required"); process.exit(1); }',
+        'const prompt = fs.readFileSync(promptFile, "utf-8");',
+        'const agentName = "agent-owner";',
+        '',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  const start = prompt.indexOf("## New Requests from Agents");',
+        '  const end = prompt.indexOf("## Your Responsibilities");',
+        '  const section = prompt.slice(start, end === -1 ? undefined : end);',
+        '  const match = section.match(/\\[[\\s\\S]*\\]/);',
+        '  const requests = match ? JSON.parse(match[0]) : [];',
+        '  const approved = requests.map(r => ({',
+        '    request_id: r.request_id,',
+        '    decision: "Approved " + r.request_id,',
+        '    reason: "Ownership test approval."',
+        '  }));',
+        '  const actions = requests.map(r => ({ type: "end_agent", agent: r.agent }));',
+        '  console.log(JSON.stringify({ approved, rejected: [], actions }, null, 2));',
+        '  process.exit(0);',
+        '}',
+        '',
+        'if (prompt.includes("reviewing the completed output")) {',
+        '  console.log("Ownership test summary.");',
+        '  process.exit(0);',
+        '}',
+        '',
+        'function stageRequest(requestId, content) {',
+        '  const requestsDir = path.join("coord", "requests");',
+        '  fs.mkdirSync(requestsDir, { recursive: true });',
+        '  const request = {',
+        '    request_id: requestId,',
+        '    agent: agentName,',
+        '    type: "review_request",',
+        '    priority: "medium",',
+        '    status: "pending",',
+        '    content,',
+        '    created_at: new Date().toISOString()',
+        '  };',
+        '  const tmpFile = path.join(requestsDir, request.request_id + ".tmp");',
+        '  const finalFile = path.join(requestsDir, request.request_id + ".json");',
+        '  fs.writeFileSync(tmpFile, JSON.stringify(request) + "\\n", "utf-8");',
+        '  fs.renameSync(tmpFile, finalFile);',
+        '}',
+        '',
+        'if (prompt.includes("Completion was rejected because")) {',
+        '  fs.rmSync("package.json", { force: true });',
+        '  fs.rmSync("outside.txt", { force: true });',
+        '  fs.mkdirSync("allowed", { recursive: true });',
+        '  fs.writeFileSync(path.join("allowed", "result.txt"), "fixed within ownership\\n", "utf-8");',
+        '  stageRequest(agentName + "-fixed", "Fixed ownership violation and kept only allowed files.");',
+        '} else {',
+        '  fs.writeFileSync("package.json", "{\\"private\\":true}\\n", "utf-8");',
+        '  fs.writeFileSync("outside.txt", "outside allowed paths\\n", "utf-8");',
+        '  stageRequest(agentName + "-violating", "Done, but with ownership violations.");',
+        '}',
+        '',
+        'const maxTimer = setTimeout(() => process.exit(0), 50);',
+        'process.on("SIGTERM", () => { clearTimeout(maxTimer); process.exit(0); });',
+      ].join('\n'), 'utf-8');
+
+      writeProjectConfig(project.root, cliPath);
+      bootstrapProject(project.root, 'Ownership violation test project');
+
+      const baseBranchResult = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+        cwd: project.root,
+        encoding: 'utf-8',
+      });
+      assert.strictEqual(baseBranchResult.status, 0, baseBranchResult.stderr);
+      const baseBranch = baseBranchResult.stdout.trim();
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.tasks = {
+        'agent-owner': {
+          description: 'Test completion ownership enforcement.',
+          cli: 'fake',
+          allowed_paths: ['allowed/**'],
+          forbidden_paths: ['package.json'],
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2), 'utf-8');
+
+      addKiloWorktree(project.root, 'agent-owner');
+
+      const promptFile = path.join(project.root, 'worker-prompt.txt');
+      fs.writeFileSync(promptFile, 'Start the ownership test agent.', 'utf-8');
+
+      const spawnResult = spawnSync('node', [
+        path.join(repoRoot(), 'scripts', 'spawn-agent.js'),
+        '--agent', 'agent-owner',
+        '--prompt-file', promptFile,
+        '--coord', './coord',
+        '--cli', 'fake',
+        '--base-ref', baseBranch,
+      ], { cwd: project.root, encoding: 'utf-8' });
+      assert.strictEqual(spawnResult.status, 0, `spawn-agent.js failed: ${spawnResult.stderr}`);
+
+      const loop = runLoop(project.root);
+      assert.strictEqual(loop.status, 0,
+        `orchestrator loop failed\nstdout:\n${loop.stdout}\nstderr:\n${loop.stderr}`);
+
+      const agents = readJson(path.join(project.root, 'coord', 'agents.json'));
+      assert.strictEqual(agents['agent-owner'].status, 'completed');
+      assert.strictEqual(agents['agent-owner'].restart_count, 1);
+
+      const requests = readJsonl(path.join(project.root, 'coord', 'requests.jsonl'));
+      assert.strictEqual(requests.find((r) => r.request_id === 'agent-owner-violating').status, 'rejected');
+      assert.strictEqual(requests.find((r) => r.request_id === 'agent-owner-fixed').status, 'resolved');
+
+      const worktree = path.join(project.root, '.agents', 'worktrees', 'agent-owner');
+      assert.strictEqual(fs.existsSync(path.join(worktree, 'package.json')), false);
+      assert.strictEqual(fs.existsSync(path.join(worktree, 'outside.txt')), false);
+      assert.strictEqual(fs.readFileSync(path.join(worktree, 'allowed', 'result.txt'), 'utf-8'), 'fixed within ownership\n');
+
+      const changed = spawnSync('git', ['diff', '--name-only', `${baseBranch}...HEAD`, '--'], {
+        cwd: worktree,
+        encoding: 'utf-8',
+      });
+      assert.strictEqual(changed.status, 0, changed.stderr);
+      assert.deepStrictEqual(changed.stdout.trim().split('\n').filter(Boolean), ['allowed/result.txt']);
+
+      const log = fs.readFileSync(path.join(project.root, 'coord', 'orchestrator.log'), 'utf-8');
+      assert.match(log, /Completion rejected for agent-owner: file ownership violation/);
+      assert.match(log, /Skipping soft-restart WIP commit for agent-owner/);
     } finally {
       if (project) project.cleanup();
     }

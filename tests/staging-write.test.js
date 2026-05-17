@@ -272,4 +272,123 @@ describe('staging write', () => {
       }
     }
   });
+
+  it('quarantines invalid staged request JSON before appending requests.jsonl', async () => {
+    let project;
+    try {
+      project = createTempProject('staging-validation-');
+
+      const resolverCliPath = path.join(project.root, 'validation-resolver-cli.js');
+      fs.writeFileSync(resolverCliPath, [
+        '#!/usr/bin/env node',
+        "'use strict';",
+        'const fs = require("fs");',
+        'const prompt = fs.readFileSync(process.argv[2], "utf-8");',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  const start = prompt.indexOf("## New Requests from Agents");',
+        '  const end = prompt.indexOf("## Your Responsibilities");',
+        '  const section = prompt.slice(start, end === -1 ? undefined : end);',
+        '  const match = section.match(/\\[[\\s\\S]*\\]/);',
+        '  const requests = match ? JSON.parse(match[0]) : [];',
+        '  const approved = requests.map(r => ({ request_id: r.request_id, decision: "approved", reason: "valid staged request" }));',
+        '  console.log(JSON.stringify({ approved, rejected: [], actions: [] }));',
+        '  process.exit(0);',
+        '}',
+        'if (prompt.includes("reviewing the completed output")) { console.log("validation summary"); process.exit(0); }',
+        'process.exit(0);',
+      ].join('\n'), 'utf-8');
+
+      fs.writeFileSync(path.join(project.root, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  default_cli: "validresolver",',
+        '  orchestrator_cli: "validresolver",',
+        `  cli_templates: { validresolver: 'node "${resolverCliPath}" {prompt_file}' },`,
+        '  cli_health_checks: { validresolver: "node -e \\"process.exit(0)\\"" },',
+        '  poll_min_ms: 250,',
+        '  poll_max_ms: 500,',
+        '  launch_dashboard: false,',
+        '  launch_review_terminal: false,',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      bootstrapProject(project.root, 'Staged request validation test project');
+
+      fs.writeFileSync(path.join(project.root, 'coord', 'agents.json'), JSON.stringify({
+        'agent-valid': {
+          task: 'Valid request processing',
+          status: 'completed',
+          worktree: project.root,
+          cli: 'validresolver',
+          base_ref: 'main',
+        },
+        'agent-other': {
+          task: 'Filename mismatch sentinel',
+          status: 'completed',
+          worktree: project.root,
+          cli: 'validresolver',
+          base_ref: 'main',
+        },
+      }, null, 2) + '\n', 'utf-8');
+
+      const requestsDir = path.join(project.root, 'coord', 'requests');
+      const validRequest = {
+        request_id: 'agent-valid-ok',
+        agent: 'agent-valid',
+        type: 'question',
+        priority: 'low',
+        status: 'pending',
+        content: 'This request is valid.',
+        created_at: new Date().toISOString(),
+      };
+      fs.writeFileSync(path.join(requestsDir, 'agent-valid-ok.json'), JSON.stringify(validRequest), 'utf-8');
+      fs.writeFileSync(path.join(requestsDir, 'agent-valid-bad-json.json'), '{not-json', 'utf-8');
+      fs.writeFileSync(path.join(requestsDir, 'agent-valid-bad-fields.json'), JSON.stringify({
+        request_id: 'bad/id',
+        agent: 'agent-valid',
+        type: 'progress_timeout',
+        priority: 'urgent',
+        status: 'resolved',
+        content: '',
+        created_at: 'not-a-date',
+      }), 'utf-8');
+      fs.writeFileSync(path.join(requestsDir, 'agent-other-mismatch.json'), JSON.stringify({
+        request_id: 'agent-other-mismatch',
+        agent: 'agent-valid',
+        type: 'question',
+        priority: 'medium',
+        status: 'pending',
+        content: 'Filename says agent-other but payload says agent-valid.',
+        created_at: new Date().toISOString(),
+      }), 'utf-8');
+
+      const loop = runLoop(project.root);
+      assert.strictEqual(loop.status, 0,
+        `orchestrator loop failed\nstdout:\n${loop.stdout}\nstderr:\n${loop.stderr}`);
+
+      const requests = readJsonl(path.join(project.root, 'coord', 'requests.jsonl'));
+      assert.strictEqual(requests.length, 1);
+      assert.strictEqual(requests[0].request_id, 'agent-valid-ok');
+      assert.strictEqual(requests[0].status, 'resolved');
+
+      const malformedDir = path.join(requestsDir, 'malformed');
+      const quarantinedJson = fs.readdirSync(malformedDir).filter((file) => file.endsWith('.json')).sort();
+      assert.deepStrictEqual(quarantinedJson, [
+        'agent-other-mismatch.json',
+        'agent-valid-bad-fields.json',
+        'agent-valid-bad-json.json',
+      ]);
+
+      const fieldError = fs.readFileSync(path.join(malformedDir, 'agent-valid-bad-fields.json.error.txt'), 'utf-8');
+      assert.match(fieldError, /request_id/);
+      assert.match(fieldError, /type must be one of/);
+      assert.match(fieldError, /status must be "pending"/);
+
+      const mismatchError = fs.readFileSync(path.join(malformedDir, 'agent-other-mismatch.json.error.txt'), 'utf-8');
+      assert.match(mismatchError, /does not match staging filename context "agent-other"/);
+    } finally {
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
 });

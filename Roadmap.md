@@ -42,5 +42,14 @@
   - Quote using uncached input pricing by default; treat cache discounts, batching, and cheaper worker models as margin until observed billing data is available.
   - Support provider-specific usage fields when available, including cache creation tokens, cache read tokens, reasoning tokens, tool calls, and runtime/container fees.
 
+## Windows Support
+
+- **[C2] Improve native Windows support**
+  - Replace POSIX-only loop backgrounding (`nohup ... &`) with cross-platform Node process spawning.
+  - Use Windows junctions or another non-elevated fallback for the per-worktree `coord/` link.
+  - Prefer structured argv templates for built-in CLIs, especially Kilo, so default templates do not depend on POSIX shell features like `$(cat ...)`.
+  - Replace shell-only diagnostics such as `tail`, `cat`, and `ps` with Node-native output or platform-specific command hints.
+  - Add a `windows-latest` fake-CLI CI smoke test that covers preflight, launch, loop completion, abort, and resume.
+
 
 Decide later if it's better to add a frontend UI dashboard than a teriminal board, in the UI dashboard we can also let users ping the model that is supposed to be working

@@ -537,6 +537,75 @@ describe('orchestrator loop failure paths', () => {
     }
   });
 
+  it('times out hanging orchestrator CLI calls and still writes the stalled flag', () => {
+    let project;
+    try {
+      project = createTempProject('cli-timeout-stalled-');
+      const cliPath = writeScript(project.root, 'timeout-cli.js', [
+        'const fs = require("node:fs");',
+        'const path = require("node:path");',
+        'const promptFile = process.argv[2];',
+        'const prompt = promptFile ? fs.readFileSync(promptFile, "utf-8") : "";',
+        'if (prompt.includes("reviewing the completed output")) { console.log("Timeout summary."); process.exit(0); }',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  const countFile = path.join(process.cwd(), "orchestrator-timeout-count.txt");',
+        '  const count = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, "utf-8")) : 0;',
+        '  fs.writeFileSync(countFile, String(count + 1), "utf-8");',
+        '  if (count < 3) { setInterval(() => {}, 10000); return; }',
+        '  const requests = parseRequests(prompt);',
+        '  const approved = requests.map((r) => ({ request_id: r.request_id, decision: "approved after timeout", reason: "recovered" }));',
+        '  const actions = requests.map((r) => ({ type: "end_agent", agent: r.agent }));',
+        '  console.log(JSON.stringify({ approved, rejected: [], actions }));',
+        '  process.exit(0);',
+        '}',
+        'function parseRequests(prompt) {',
+        '  const start = prompt.indexOf("## New Requests from Agents");',
+        '  const end = prompt.indexOf("## Your Responsibilities");',
+        '  const section = prompt.slice(start, end === -1 ? undefined : end);',
+        '  const match = section.match(/\\[[\\s\\S]*\\]/);',
+        '  return match ? JSON.parse(match[0]) : [];',
+        '}',
+      ]);
+      writeProjectConfig(project.root, cliPath, 'timeoutfake', [
+        '  orchestrator_failure_threshold: 1,',
+        '  orchestrator_cli_timeout_ms: 100,',
+      ]);
+      bootstrapProject(project.root, 'CLI timeout stalled test project');
+      writeAgents(project.root, {
+        'agent-timeout': {
+          status: 'completed',
+          task: 'Await orchestration after a hung arbitrator.',
+          pid: 0,
+          cli: 'timeoutfake',
+          worktree: path.join(project.root, 'missing-worktree'),
+        },
+      });
+      writeRequests(project.root, [{
+        request_id: 'req-timeout-stalled',
+        agent: 'agent-timeout',
+        type: 'review_request',
+        priority: 'high',
+        status: 'pending',
+        content: 'Please end this agent after timeout recovery.',
+      }]);
+
+      const result = runLoop(project.root);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      const log = fs.readFileSync(path.join(project.root, 'coord', 'orchestrator.log'), 'utf-8');
+      assert.match(log, /timed out after 100ms/i);
+      assert.match(log, /Orchestrator CLI failed: Timed out after 100ms/);
+      assert.match(log, /Wrote stalled flag/);
+      assert.match(log, /Cleared stalled flag/);
+      assert.strictEqual(fs.existsSync(path.join(project.root, 'coord', 'orchestrator-stalled.flag')), false);
+
+      const requests = readJsonl(path.join(project.root, 'coord', 'requests.jsonl'));
+      assert.strictEqual(requests.find((r) => r.request_id === 'req-timeout-stalled').status, 'resolved');
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
   it('terminates an agent when a restart action has no follow-up instruction', () => {
     let project;
     try {

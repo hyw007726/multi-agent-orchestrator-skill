@@ -66,6 +66,12 @@
       "description": "Default progress timeout in minutes. If an active agent produces no code changes for this long, the loop creates a progress-timeout arbitration request.",
       "default": 15
     },
+    "orchestrator_cli_timeout_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Per-attempt timeout in milliseconds for background-loop orchestrator CLI arbitration calls.",
+      "default": 120000
+    },
     "default_max_restarts": {
       "type": "integer",
       "minimum": 0,

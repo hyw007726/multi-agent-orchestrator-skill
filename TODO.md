@@ -6,52 +6,34 @@ Each item is tagged with a complexity rating:
 - **[C2]** - multi-file change, some design judgment, moderate test surface.
 - **[C3]** - architectural or protocol change that touches several subsystems.
 
-# Foundation Pre-Spawn Hardening Plan
+# Async Manual Intervention
 
-Goal: make "shared foundation must be complete before workers launch" enforceable enough that callers cannot accidentally fan out workers against missing, uncommitted, or ambiguously owned foundation work.
+- **[C3]** Add an asynchronous manual-attention workflow for workers that reach an automation confidence boundary. Prefer a status such as `needs_attention` over `paused` so it is clear the worker process is stopped and the preserved worktree needs review.
 
-## Tasks
+- **[C2]** When restart budget is exhausted, transition the agent to `needs_attention` instead of `errored`, preserve the worktree, record `attention_reason`, `attention_at`, and actionable `next_steps` in `agents.json`, and append a structured event.
 
-- **[C1] Done - Document runtime caveats clearly.**
-  Added concise caveats sections to `README.md` and `SKILL.md` covering autonomous/yolo CLI modes, required preconfigured CLI auth, caller-owned final review/merge, and the remaining possibility of model-created conflicts.
+- **[C2]** Surface `needs_attention` prominently in `dashboard.js` with a distinct color and concise reason, and optionally write `coord/manual-intervention.flag` when any agent needs human/caller review.
 
-- **[C2] Done - Add explicit foundation state to the plan schema.**
-  Extended draft plans with a machine-readable `foundation` block:
-  - `status`: `not_required`, `completed_committed`, or `owned_by_worker`.
-  - `paths`: shared foundation paths or globs.
-  - `commit`: required when `status` is `completed_committed`.
-  - `owner`: required when `status` is `owned_by_worker`.
-  Keep the human-readable `shared_foundation_notes` for rationale.
+- **[C2]** Document the resolution workflow: inspect `coord/logs/<agent>.log`, inspect or fix the worker worktree, update coordination context if needed, then resume or relaunch the worker intentionally.
 
-- **[C2] Done - Materialize foundation state into launch context.**
-  Updated `scripts/materialize-plan.js` so approved draft foundation state is copied into `coord/context.json` and summarized in `coord/DECISIONS.md`. Workers see the final contract in `DECISIONS.md`; validators use the machine-readable context.
+- **[C2]** Decide which failures should become manual-attention checkpoints, including repeated validation failures, file-ownership violations, unresolved conflicts, broken CLI/auth/model setup, repeated progress timeouts after recovery, or ambiguous product decisions.
 
-- **[C3] Done - Promote unsafe foundation conditions from warnings to launch blockers.**
-  Updated `scripts/lib/context-validation.js` so `parallel` and `phased` launch validation fails when common or declared foundation paths are not either:
-  - forbidden for every worker, or
-  - explicitly owned by exactly one worker.
-  Keep broad ownership overlap diagnostics, but make foundation leaks errors during launch validation.
+# Design Review Follow-Ups
 
-- **[C2] Done - Detect uncommitted foundation work before launch.**
-  Added a git check in validation that fails when `foundation.status` is `completed_committed` but any listed foundation path has uncommitted changes. This prevents workers from branching from `HEAD` without seeing caller-created foundation work.
+- [x] **[C2]** Add a timeout to orchestrator CLI arbitration calls so `callOrchestratorCli()` cannot block the background loop indefinitely. The timeout should also let the stalled-flag path keep working when the arbitration CLI hangs.
 
-- **[C2] Done - Add an explicit override for intentional exceptions.**
-  If a project truly needs a worker to own a shared foundation file, ownership must be declared in the foundation block and repeated in `DECISIONS.md`. There is no broad `--force` that silently bypasses this check.
+- [x] **[C3]** Enforce worker file ownership before completion. Before `end_agent` can mark an agent completed or auto-commit with `git add -A`, compare changed files against `allowed_paths` and `forbidden_paths`, reject violations, and route the agent through a fix/restart path.
 
-- **[C2] Done - Update starter and reviewer prompts.**
-  Updated `scripts/prepare-run.js`, `scripts/draft-plan.js`, and `scripts/review-plan.js` so draft templates and reviewers explicitly ask whether foundation work is missing, committed, or owned by one worker.
+- [x] **[C2]** Replace remaining shell-interpolated git/file helper calls in `orchestrator-loop.js` with argv-based `spawnSync` helpers, especially diff collection, targeted file diffs, tail reads, recovery tags, and reset commands.
 
-- **[C2] Done - Test the new failure modes.**
-  Added tests covering:
-  - `phased` plan with `completed_committed` foundation and clean git status passes.
-  - declared foundation path missing from worker `forbidden_paths` fails.
-  - uncommitted changes in declared foundation paths fail.
-  - exactly one declared owner can edit an owned foundation path.
-  - `direct` and `single_worker` modes remain unaffected unless foundation state is declared inconsistently.
+- [x] **[C2]** Validate staged worker request JSON before appending it to `requests.jsonl`. Enforce required fields, known request types/priorities/statuses, safe `request_id`, and `agent` matching the staging context where possible.
 
-## Acceptance Criteria
+- **[C2]** Enforce the runtime config schema rules inside `normalizeConfig()`, not only in editor JSON Schema. Clamp or reject invalid timeout, restart, poll, reviewer, and dashboard values with actionable errors.
 
-- `launch-all.js` cannot spawn workers for `parallel` or `phased` plans with ambiguous foundation ownership.
-- A caller-authored foundation commit is either referenced and clean, or the launch fails with a concrete diagnostic.
-- `coord/DECISIONS.md` explains foundation ownership in human-readable form.
-- Existing warning-only foundation behavior is preserved only for non-launch advisory validation, not for actual worker launch.
+- **[C3]** Revisit default CLI prompt transport. Prefer prompt-file or stdin-backed templates where CLIs support them to avoid leaking full prompts in process listings and to reduce argument-length failures.
+
+- **[C1]** Make liveness PID checks use the same CLI-aware PID matching as `safeKill()` so recycled PIDs are not treated as still-running worker processes.
+
+# Logging Consistency
+
+- **[C2]** Unify worker log verbosity across providers so claude/gemini emit the same kind of reasoning + tool-call trace that `codex exec` already streams by default. Update `DEFAULT_CLI_TEMPLATES` in `scripts/lib/config.js`: add `--output-format stream-json --include-partial-messages --verbose` to the claude template, and `--output-format stream-json` to the gemini template. Codex stays as-is. Note: switches all three log streams to JSONL, so any dashboard/log-reader code that currently treats logs as opaque text will need a per-provider event parser. No API token cost — output-format flags only change CLI stdout, not what the model generates. Consider adding log rotation for `coord/logs/<agent>.log` at the same time since traces will grow log size substantially.
