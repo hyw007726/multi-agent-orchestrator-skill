@@ -17,7 +17,6 @@ const LOCAL_CONFIG_FILENAMES = [
 // that a default model is selected. Use the --auth flag on the preflight script for that.
 const DEFAULT_HEALTH_CHECKS = {
   kilo: "kilo --version",
-  aider: "aider --version",
   claude: "claude --version",
   codex: "codex --version",
   gemini: "gemini --version",
@@ -26,7 +25,6 @@ const DEFAULT_HEALTH_CHECKS = {
 
 const DEFAULT_CLI_TEMPLATES = {
   kilo: 'kilo run "$(cat {prompt_file})" --auto',
-  aider: { cmd: "aider", args: ["--message-file", { prompt_file: true }, "--yes"] },
   claude: { cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
   gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo"] },
   codex: { cmd: "codex", args: ["exec", "--dangerously-bypass-approvals-and-sandbox", { prompt_text: true }] },

@@ -9,7 +9,7 @@ Use it from Codex, Gemini CLI, Claude Code, or any local coding agent that can r
 ## What It Does
 
 This system orchestrates distinct types of AI agents running in headless, non-interactive ("YOLO") sessions to complete complex tasks:
-- **Worker Agents**: Coding agents (e.g., Kilo CLI, Aider, Claude Code) that implement specific sub-tasks in isolated git worktrees. *Recommended models: Token-efficient, fast, and highly capable of following clear instructions (e.g., DeepSeek v4 pro, etc.).*
+- **Worker Agents**: Coding agents (e.g., Kilo CLI, Claude Code, Codex) that implement specific sub-tasks in isolated git worktrees. *Recommended models: Token-efficient, fast, and highly capable of following clear instructions (e.g., DeepSeek v4 pro, etc.).*
 - **Reviewer Agents**: Optional read-only agents that critique and suggest improvements to the initial task decomposition draft before work begins. *Recommended models: Strong reasoning models with good architectural judgment (e.g., Claude Opus 4.7, etc.).*
 - **Orchestrator/Arbitrator**: An automated background loop that supervises workers, handling questions, progress stalls, test failures, and restarts. *Recommended models: Powerful reasoning models capable of resolving conflicts, evaluating progress, and making course-correction decisions (e.g., Claude Opus 4.7, etc.).*
 
@@ -22,7 +22,7 @@ Key capabilities:
 - Supports optional worker progress heartbeats and converts repeated no-diff stalls into escalating arbitration requests instead of launching a separate review model call.
 - Provides a live terminal dashboard.
 - Produces a deterministic `coord/review-summary.txt` from worker self-reports for final human/agent integration.
-- Supports Kilo Code, Aider, Claude Code, Codex, Gemini CLI, OpenCode, and custom CLIs.
+- Supports Kilo Code, Claude Code, Codex, Gemini CLI, OpenCode, and custom CLIs.
 
 ## When To Use It
 
@@ -503,7 +503,6 @@ The repository root includes a fuller `orchestrator.config.jsonc` with all built
 Built-in templates are provided for:
 
 - `kilo`
-- `aider`
 - `claude`
 - `codex`
 - `gemini`

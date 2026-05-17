@@ -8,7 +8,7 @@
  * Usage:
  *   node scripts/preflight.js                   # checks default_cli + orchestrator_cli + reviewer CLIs (with auth)
  *   node scripts/preflight.js --skip-auth       # binary-only check, no API calls (CI / offline)
- *   node scripts/preflight.js --cli kilo --cli aider
+ *   node scripts/preflight.js --cli kilo --cli codex
  *   node scripts/preflight.js --timeout 15000   # per-CLI timeout in ms (default 10000)
  *
  * Exits 0 if every checked CLI is healthy, non-zero otherwise.

@@ -35,13 +35,11 @@ describe('config merging', () => {
     // Verify cli_templates defaults are present for all known CLIs.
     assert.ok(config.cli_templates, 'cli_templates should exist');
     assert.ok(config.cli_templates.kilo, 'kilo template should exist');
-    assert.ok(config.cli_templates.aider, 'aider template should exist');
     assert.ok(config.cli_templates.claude, 'claude template should exist');
     assert.ok(config.cli_templates.gemini, 'gemini template should exist');
     assert.ok(config.cli_templates.codex, 'codex template should exist');
     assert.ok(config.cli_templates.opencode, 'opencode template should exist');
     assert.ok(config.cli_templates.kilo.includes('kilo'), 'kilo template should contain "kilo"');
-    assert.strictEqual(config.cli_templates.aider.cmd, 'aider', 'aider should use argv template mode');
     assert.strictEqual(config.cli_templates.claude.cmd, 'claude', 'claude should use argv template mode');
     assert.strictEqual(config.cli_templates.codex.cmd, 'codex', 'codex should use argv template mode');
     assert.ok(config.cli_templates.codex.args.includes('exec'), 'codex should use the exec subcommand');
@@ -50,7 +48,6 @@ describe('config merging', () => {
     // Verify cli_health_checks defaults are present.
     assert.ok(config.cli_health_checks, 'cli_health_checks should exist');
     assert.ok(config.cli_health_checks.kilo, 'kilo health check should exist');
-    assert.ok(config.cli_health_checks.aider, 'aider health check should exist');
     assert.ok(config.cli_health_checks.claude, 'claude health check should exist');
   });
 
@@ -109,7 +106,7 @@ describe('config merging', () => {
     let config;
     try {
       fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.jsonc'), '{ "default_cli": "gemini" }\n', 'utf-8');
-      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.js'), 'module.exports = { default_cli: "aider" };\n', 'utf-8');
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.js'), 'module.exports = { default_cli: "codex" };\n', 'utf-8');
 
       const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
       config = loadConfig(tmpDir);
@@ -141,10 +138,13 @@ describe('config merging', () => {
       fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.local.jsonc'), [
         '{',
         '  // Personal overrides only.',
-        '  "default_cli": "aider",',
+        '  "default_cli": "localworker",',
         '  "launch_dashboard": false,',
         '  "cli_templates": {',
-        '    "aider": { "cmd": "aider", "args": ["--message-file", { "prompt_file": true }, "--yes", "--model", "local-model"] },',
+        '    "localworker": { "cmd": "node", "args": ["worker.js", { "prompt_file": true }, "--model", "local-model"] },',
+        '  },',
+        '  "cli_health_checks": {',
+        '    "localworker": "node --version",',
         '  },',
         '}',
       ].join('\n') + '\n', 'utf-8');
@@ -155,7 +155,7 @@ describe('config merging', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
 
-    assert.strictEqual(config.default_cli, 'aider');
+    assert.strictEqual(config.default_cli, 'localworker');
     assert.strictEqual(config.orchestrator_cli, 'claude');
     assert.strictEqual(config.default_timeout_mins, 12);
     assert.strictEqual(config.launch_dashboard, false);
@@ -163,11 +163,12 @@ describe('config merging', () => {
       cmd: 'codex',
       args: ['exec', { prompt_text: true }],
     });
-    assert.deepStrictEqual(config.cli_templates.aider, {
-      cmd: 'aider',
-      args: ['--message-file', { prompt_file: true }, '--yes', '--model', 'local-model'],
+    assert.deepStrictEqual(config.cli_templates.localworker, {
+      cmd: 'node',
+      args: ['worker.js', { prompt_file: true }, '--model', 'local-model'],
     });
     assert.strictEqual(config.cli_health_checks.codex, 'codex --version');
+    assert.strictEqual(config.cli_health_checks.localworker, 'node --version');
   });
 
   it('allows local config alone and lets null orchestrator_cli follow the final worker CLI', () => {
@@ -198,7 +199,7 @@ describe('config merging', () => {
     try {
       fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.js'), [
         'module.exports = {',
-        '  default_cli: "aider",',
+        '  default_cli: "codex",',
         '  orchestrator_cli: "gemini",',
         '  default_timeout_mins: 20,',
         '  default_progress_timeout_mins: 30,',
@@ -217,7 +218,7 @@ describe('config merging', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
 
-    assert.strictEqual(config.default_cli, 'aider');
+    assert.strictEqual(config.default_cli, 'codex');
     assert.strictEqual(config.orchestrator_cli, 'gemini');
     assert.strictEqual(config.planner_cli, undefined);
     assert.strictEqual(config.default_timeout_mins, 20);
@@ -239,7 +240,7 @@ describe('config merging', () => {
         'module.exports = {',
         '  cli_templates: {',
         '    kilo: \'custom-kilo --prompt {prompt_file}\',',
-        '    aider: \'custom-aider -f {prompt_file} --model gpt-4\',',
+        '    localworker: \'custom-worker -f {prompt_file} --model local-model\',',
         '  },',
         '};',
       ].join('\n') + '\n', 'utf-8');
@@ -252,7 +253,7 @@ describe('config merging', () => {
 
     // Project overrides should take effect.
     assert.strictEqual(config.cli_templates.kilo, 'custom-kilo --prompt {prompt_file}');
-    assert.strictEqual(config.cli_templates.aider, 'custom-aider -f {prompt_file} --model gpt-4');
+    assert.strictEqual(config.cli_templates.localworker, 'custom-worker -f {prompt_file} --model local-model');
 
     // Unspecified CLIs should keep the built-in defaults.
     assert.ok(config.cli_templates.claude, 'claude template should still exist from defaults');
@@ -270,7 +271,7 @@ describe('config merging', () => {
         'module.exports = {',
         '  cli_health_checks: {',
         '    kilo: "custom-kilo --health",',
-        '    aider: "custom-aider --health",',
+        '    localworker: "custom-worker --health",',
         '  },',
         '};',
       ].join('\n') + '\n', 'utf-8');
@@ -283,7 +284,7 @@ describe('config merging', () => {
 
     // Project overrides should take effect.
     assert.strictEqual(config.cli_health_checks.kilo, 'custom-kilo --health');
-    assert.strictEqual(config.cli_health_checks.aider, 'custom-aider --health');
+    assert.strictEqual(config.cli_health_checks.localworker, 'custom-worker --health');
 
     // Unspecified CLIs should keep the built-in defaults.
     assert.ok(config.cli_health_checks.claude, 'claude health check should still exist from defaults');

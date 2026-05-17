@@ -1,6 +1,6 @@
 ---
 name: multi-agent-orchestrator
-description: Decompose a large coding task into parallel worker agents (Kilo, Aider, Claude, Codex, Gemini, OpenCode) running in isolated git worktrees with self-healing supervision. Use when the user asks to "build something complex with multiple agents", "split this work in parallel", "spawn a swarm", or to coordinate background headless CLI workers.
+description: Decompose a large coding task into parallel worker agents (Kilo, Claude, Codex, Gemini, OpenCode) running in isolated git worktrees with self-healing supervision. Use when the user asks to "build something complex with multiple agents", "split this work in parallel", "spawn a swarm", or to coordinate background headless CLI workers.
 ---
 
 # Multi-Agent Orchestrator Skill
@@ -9,7 +9,7 @@ This skill defines a caller-neutral, CLI-agnostic multi-agent orchestration syst
 
 ## Prerequisites & Recommendations
 Before using this skill, ensure you have:
-1. **A Headless Worker CLI**: Installed globally. This skill uses `kilo` (Kilo Code) by default, but it can orchestrate **Aider**, **Claude Code**, **Gemini**, **Codex**, **OpenCode**, or any other CLI added to `cli_templates` in `orchestrator.config.jsonc`. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
+1. **A Headless Worker CLI**: Installed globally. This skill uses `kilo` (Kilo Code) by default, but it can orchestrate **Claude Code**, **Gemini**, **Codex**, **OpenCode**, or any other CLI added to `cli_templates` in `orchestrator.config.jsonc`. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
 
 ## Caller Support
 
@@ -32,7 +32,7 @@ The runtime itself is independent of the caller. The caller only performs decomp
 >
 > **Model Selection Strategy:** Use a powerful reasoning model for your interactive caller sessions (Contexts 1 & 3). Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for bulk coding. Set `orchestrator_cli` only when request arbitration should use a different CLI/model from the workers.
 >
-> **How to pin a model:** Model selection stays attached to the CLI mechanism that actually launches the worker. If the CLI supports a launch-time model flag, pin it in `cli_templates` — e.g. `{ cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] }` for Sonnet, add `--model gpt-5.4-mini` to Codex args, or add `--model gpt-4o-mini` to Aider args. If a CLI does not support a launch-time model flag, select the model in that CLI's own settings. Unpinned templates use the CLI's current config/default.
+> **How to pin a model:** Model selection stays attached to the CLI mechanism that actually launches the worker. If the CLI supports a launch-time model flag, pin it in `cli_templates` — e.g. `{ cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] }` for Sonnet, or add `--model gpt-5.4-mini` to Codex args. If a CLI does not support a launch-time model flag, select the model in that CLI's own settings. Unpinned templates use the CLI's current config/default.
 >
 > **`claude` is the one CLI where pinning is effectively required, not optional.** Other CLIs can also be pinned when they expose model flags, but when unpinned they normally read their model from independent CLI config/defaults. `claude` is different when this runtime is launched from Claude Code — without `--model`, the spawned worker can inherit the model of the parent Claude Code session running this skill (for example, an expensive high-tier orchestrator model), routing bulk worker coding to the orchestrator's model. The shipped `cli_templates.claude` already pins Sonnet 4.6 for this reason.
 >
@@ -80,7 +80,6 @@ Example `orchestrator.config.jsonc`:
   // CLIs that genuinely need shell behavior.
   "cli_templates": {
     "kilo": "kilo run \"$(cat {prompt_file})\" --auto",
-    "aider": { "cmd": "aider", "args": ["--message-file", { "prompt_file": true }, "--yes"] },
     "claude": { "cmd": "claude", "args": ["-p", { "prompt_text": true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
     "gemini": { "cmd": "gemini", "args": ["--prompt", { "prompt_text": true }, "--yolo"] },
     "codex": { "cmd": "codex", "args": ["exec", "--dangerously-bypass-approvals-and-sandbox", { "prompt_text": true }] },
@@ -91,7 +90,7 @@ Example `orchestrator.config.jsonc`:
 
 If no shared or local config file exists, you MUST dynamically evaluate the overall size and complexity of the user's project to determine sensible default bounds (e.g., a simple script might only need a 5-minute progress timeout and 3 iterations, while a complex React app might need a 20-minute progress timeout and 10 iterations). You can also offer to create the shared config file for the user so they can explicitly customize workflow bounds in the future!
 
-> **Note:** All worker CLIs are automatically launched with their respective "bypass permissions" flags (`--yes`, `--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--auto`) so they run fully autonomously in the background. The Orchestrator Loop will remember which CLI tool you spawned the agent with and will automatically use the exact same tool if it needs to respawn the agent after a rollback!
+> **Note:** All worker CLIs are automatically launched with their respective "bypass permissions" flags (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--auto`) so they run fully autonomously in the background. The Orchestrator Loop will remember which CLI tool you spawned the agent with and will automatically use the exact same tool if it needs to respawn the agent after a rollback!
 
 ## Phase 0 — Setup
 

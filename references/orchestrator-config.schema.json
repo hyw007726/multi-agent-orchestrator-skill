@@ -12,7 +12,7 @@
     "default_cli": {
       "type": "string",
       "minLength": 1,
-      "description": "Default worker CLI for coding agents. Built-in choices include kilo, aider, claude, codex, gemini, and opencode; custom names are allowed when cli_templates and cli_health_checks define them.",
+      "description": "Default worker CLI for coding agents. Built-in choices include kilo, claude, codex, gemini, and opencode; custom names are allowed when cli_templates and cli_health_checks define them.",
       "default": "kilo"
     },
     "orchestrator_cli": {

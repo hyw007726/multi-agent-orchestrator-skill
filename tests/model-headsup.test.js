@@ -22,11 +22,11 @@ describe('model heads-up', () => {
   });
 
   it('extracts pinned models from shell templates', () => {
-    const extracted = extractModelFromTemplate('aider --message-file {prompt_file} --model "gpt-4o-mini" --yes');
+    const extracted = extractModelFromTemplate('custom-worker --prompt {prompt_file} --model "local-model" --auto');
 
     assert.deepStrictEqual(extracted, {
       flag: '--model',
-      model: 'gpt-4o-mini',
+      model: 'local-model',
     });
   });
 
@@ -44,16 +44,16 @@ describe('model heads-up', () => {
       orchestrator_cli: 'claude',
       cli_templates: {
         kilo: 'kilo run "$(cat {prompt_file})" --auto',
-        aider: { cmd: 'aider', args: ['--message-file', { prompt_file: true }, '--yes', '--model=gpt-4o-mini'] },
+        codex: { cmd: 'codex', args: ['exec', { prompt_text: true }, '--model=gpt-5.4-mini'] },
         claude: { cmd: 'claude', args: ['-p', { prompt_text: true }, '--model', 'claude-sonnet-4-6'] },
       },
     };
 
-    const output = formatModelHeadsUp(config, { workerClis: ['kilo', 'aider'] });
+    const output = formatModelHeadsUp(config, { workerClis: ['kilo', 'codex'] });
 
     assert.match(output, /Model heads-up:/);
     assert.match(output, /kilo: model selected by kilo's CLI config\/default/);
-    assert.match(output, /aider: model gpt-4o-mini/);
+    assert.match(output, /codex: model gpt-5\.4-mini/);
     assert.match(output, /claude: model claude-sonnet-4-6/);
   });
 
