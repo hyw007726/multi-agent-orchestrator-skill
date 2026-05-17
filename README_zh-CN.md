@@ -2,15 +2,15 @@
 
 # Multi-Agent Orchestrator
 
-用 Git worktree 隔离多个代码 Agent，让它们并行开发、各改各的文件，并由后台进程负责监控、重启和验证。
+生成经过智能体审查的大型任务拆分计划，然后协调并监督多个并行的智能体以完成该计划；所有智能体都可以独立使用可配置的模型在独立的 Git 工作树中工作。
 
-Multi-Agent Orchestrator 是一个 Agent Skill，也是一套无依赖的 Node.js 本地运行时。它适合把一个较大的开发任务拆成多个边界清晰的子任务，分别交给 Claude Code、Codex、Gemini CLI，以及 Kilo Code、OpenCode 等其他代码 Agent 在独立 worktree 中完成。主会话负责拆分任务和最终合并，后台循环负责看住 worker、处理问题、跑验证命令，并生成最终交接摘要。
+Multi-Agent Orchestrator 是一个 Agent Skill，也是一套无依赖的 Node.js 本地运行时，用来把一个大型实现任务转成一组受监督的 worker run。它可以同时启动 Claude Code、Codex、Gemini CLI、Kilo Code、OpenCode，或你自己配置的 CLI alias；如果 provider 支持启动时指定模型，就把模型直接固定在对应的 CLI template 里。运行时会把决策和任务边界写入 `coord/`，为每个 worker 创建独立 git worktree，监控进展，转交提问，执行验证，在 worker 卡住时按配置重启，并在结束后生成交接摘要，方便主会话 review 和合并。
 
 你可以在 Claude Code、Codex、Gemini CLI，或任何能读取 `SKILL.md` 并执行 shell 命令的本地代码 Agent 中使用它。
 
-![Dashboard showing parallel worker status](image-1.png)
-![Dashboard showing parallel worker status](image-2.png)
-![Dashboard showing parallel worker status](image-3.png)
+<img src="image-1.png" alt="仪表盘显示多个 worker 状态" width="640">
+<img src="image-2.png" alt="仪表盘显示多个 worker 状态" width="640">
+<img src="image-3.png" alt="仪表盘显示多个 worker 状态" width="640">
 
 ## 它解决什么问题
 
@@ -296,17 +296,3 @@ node scripts/run-tests.js
 - [references/schemas.md](references/schemas.md)：协调文件和 prompt schema 细节。
 - [CONTRIBUTING.md](CONTRIBUTING.md)：贡献指南。
 - [SECURITY.md](SECURITY.md)：漏洞报告和安全边界。
-
-## 收录信息
-
-如果要把本项目加入 catalog 或 awesome list，建议使用：
-
-```markdown
-- **[hyw007726/multi-agent-orchestrator-skill](https://github.com/hyw007726/multi-agent-orchestrator-skill)** - Parallel coding agents in isolated git worktrees.
-```
-
-建议 GitHub topics：
-
-```text
-agent-skills, claude-code, codex-skills, codex-cli, gemini-cli, ai-agents, coding-agents, multi-agent-systems, agent-orchestration, git-worktrees
-```

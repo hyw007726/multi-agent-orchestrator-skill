@@ -2,17 +2,19 @@
 
 # Multi-Agent Orchestrator
 
-Run parallel coding agents safely with git worktree isolation, scoped prompts, validation, restarts, and multi-CLI support.
+Generate a agents-reviewed plan to decompose a large task, then coordinate and supervise parallel agents for implementation. All agents use configurable models and work in isolated git worktrees.
 
-Multi-Agent Orchestrator is an Agent Skill and dependency-free Node.js runtime for coordinating multiple headless coding agents on one repository. It splits large tasks into isolated git worktrees, gives every worker explicit file ownership, supervises progress, restarts stuck agents, runs validation commands, and writes a deterministic final handoff summary for review and merge.
+Multi-Agent Orchestrator is an Agent Skill and dependency-free Node.js runtime for turning one large implementation into supervised worker runs. It can launch Claude Code, Codex, Gemini CLI, Kilo Code, OpenCode, or custom CLI aliases side by side. When a provider supports launch-time model selection, pin that model directly in its CLI template. The runtime records decisions and task boundaries in `coord/`, creates a separate git worktree for each worker, watches progress, routes questions, runs validation, restarts stuck workers, and produces a final handoff summary for review and merge.
 
 Use it from Claude Code, Codex, Gemini CLI, or any other local coding agent that can read `SKILL.md` and run shell commands.
 
-![Dashboard showing parallel worker status](image-1.png)
-![Dashboard showing parallel worker status](image-2.png)
-![Dashboard showing parallel worker status](image-3.png)
+<img src="image-1.png" alt="Dashboard showing parallel worker status" width="640">
+<img src="image-2.png" alt="Dashboard showing parallel worker status" width="640">
+<img src="image-3.png" alt="Dashboard showing parallel worker status" width="640">
 
-## What It Coordinates
+## What Problem It Solves
+
+Running several coding agents manually in parallel breaks down quickly: context drifts, agents edit the same shared files, stalled runs go unnoticed, and final merge decisions get murky. This project provides a local coordination layer:
 
 - **Worker agents** implement scoped subtasks in isolated git worktrees.
 - **Reviewer agents** can critique the decomposition before workers launch.
@@ -294,17 +296,3 @@ Live model tests are opt-in because they call authenticated provider CLIs and ma
 - [references/schemas.md](references/schemas.md): coordination file and prompt schema details.
 - [CONTRIBUTING.md](CONTRIBUTING.md): contribution guidelines.
 - [SECURITY.md](SECURITY.md): vulnerability reporting and security scope.
-
-## Listing This Project
-
-If you add this repo to a catalog or awesome list, use:
-
-```markdown
-- **[hyw007726/multi-agent-orchestrator-skill](https://github.com/hyw007726/multi-agent-orchestrator-skill)** - Parallel coding agents in isolated git worktrees.
-```
-
-Suggested GitHub topics:
-
-```text
-agent-skills, claude-code, codex-skills, codex-cli, gemini-cli, ai-agents, coding-agents, multi-agent-systems, agent-orchestration, git-worktrees
-```
