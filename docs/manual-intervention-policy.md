@@ -123,3 +123,10 @@ added here; this is intent only.
   no safety. Blocker on flipping: none — deliberately not planned. Revisit
   only if the orchestrator gains authority to answer product questions
   autonomously, at which point the *unanswered* case would need parking.
+
+## Resolving a parked agent
+
+This doc decides *which* failures park. For the operator workflow that takes a
+parked agent back to `running` — inspect, fix, then run the resume primitive
+(`scripts/resume-agent.js`) — see
+[resolving-needs-attention.md](resolving-needs-attention.md).
