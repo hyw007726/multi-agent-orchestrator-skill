@@ -1,6 +1,6 @@
 ---
 name: multi-agent-orchestrator
-description: Decompose a large coding task into parallel worker agents (Kilo, Claude, Codex, Gemini, OpenCode) running in isolated git worktrees with self-healing supervision. Use when the user asks to "build something complex with multiple agents", "split this work in parallel", "spawn a swarm", or to coordinate background headless CLI workers.
+description: Decompose a large coding task into parallel worker agents (Claude, Codex, Gemini, Kilo, OpenCode, or custom CLIs) running in isolated git worktrees with self-healing supervision. Use when the user asks to "build something complex with multiple agents", "split this work in parallel", "spawn a swarm", or to coordinate background headless CLI workers.
 ---
 
 # Multi-Agent Orchestrator Skill
@@ -9,15 +9,15 @@ This skill defines a caller-neutral, CLI-agnostic multi-agent orchestration syst
 
 ## Prerequisites & Recommendations
 Before using this skill, ensure you have:
-1. **A Headless Worker CLI**: Installed globally. This skill uses `kilo` (Kilo Code) by default, but it can orchestrate **Claude Code**, **Gemini**, **Codex**, **OpenCode**, or any other CLI added to `cli_templates` in `orchestrator.config.jsonc`. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
+1. **A Headless Worker CLI**: Installed globally. This skill ships with `default_cli: kilo`, and can orchestrate **Claude Code**, **Codex**, **Gemini**, **Kilo Code**, **OpenCode**, or any other CLI added to `cli_templates` in `orchestrator.config.jsonc`. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
 
 ## Caller Support
 
 Use this workflow from any local coding-agent caller that can read `SKILL.md` and run shell commands:
 
+- **Claude Code**: Install this folder as a Claude Code skill.
 - **Codex**: Install this folder as a Codex skill. `agents/openai.yaml` provides Codex UI metadata, and `AGENTS.md` provides a short repository-level caller guide.
 - **Gemini CLI**: Install this folder as a Gemini extension. `gemini-extension.json` loads `GEMINI.md`, which imports this `SKILL.md`; `skills/multi-agent-orchestrator/` exposes a native skill wrapper; and `commands/multi-agent-orchestrator.toml` exposes a `/multi-agent-orchestrator` command.
-- **Claude Code**: Install this folder as a Claude Code skill.
 - **Other local callers**: Explicitly instruct the caller to read this `SKILL.md` and use the absolute path to this repository when running scripts.
 
 The runtime itself is independent of the caller. The caller only performs decomposition, file edits, script launches, and final integration.
@@ -79,10 +79,10 @@ Example `orchestrator.config.jsonc`:
   // the prompt contents as one argv item. String templates remain supported for
   // CLIs that genuinely need shell behavior.
   "cli_templates": {
-    "kilo": "kilo run \"$(cat {prompt_file})\" --auto",
     "claude": { "cmd": "claude", "args": ["-p", { "prompt_text": true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
-    "gemini": { "cmd": "gemini", "args": ["--prompt", { "prompt_text": true }, "--yolo"] },
     "codex": { "cmd": "codex", "args": ["exec", "--dangerously-bypass-approvals-and-sandbox", { "prompt_text": true }] },
+    "gemini": { "cmd": "gemini", "args": ["--prompt", { "prompt_text": true }, "--yolo"] },
+    "kilo": "kilo run \"$(cat {prompt_file})\" --auto",
     "opencode": { "cmd": "opencode", "args": ["run", "--dangerously-skip-permissions", { "prompt_text": true }] }
   }
 }

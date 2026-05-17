@@ -25,7 +25,7 @@ encode anything the headless background loop won't otherwise know.
   "tasks": {
     "agent-name": {
       "description": "string — what this agent is allowed to build",
-      "cli": "string — which worker CLI or configured CLI alias to spawn (kilo | claude | codex | gemini | opencode | custom alias); falls back to default_cli when omitted",
+      "cli": "string — which worker CLI or configured CLI alias to spawn (claude | codex | gemini | kilo | opencode | custom alias); falls back to default_cli when omitted",
       "mode": "string | omitted — kilo-specific mode (code | architect | debug | ask); ignored by other CLIs",
       "read_first": ["string — files or paths this worker should inspect before broad search; prompt-only guidance"],
       "relevant_files": ["string — legacy alias for read_first; prefer read_first in new context files"],

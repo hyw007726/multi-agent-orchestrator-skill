@@ -9,8 +9,8 @@ on:
         default: codex
         type: choice
         options:
-          - codex
           - claude
+          - codex
           - gemini
           - kilo
           - opencode
@@ -68,8 +68,8 @@ jobs:
         shell: bash
         run: |
           node --version
-          codex --version || true
           claude --version || true
+          codex --version || true
           gemini --version || true
           kilo --version || true
           opencode --version || true

@@ -20,18 +20,6 @@ const openCodeJsonTextPath = path.join(repoRoot(), "scripts", "opencode-json-tex
 const reviewPlanPath = path.join(repoRoot(), "scripts", "review-plan.js");
 
 const PROVIDERS = {
-  codex: {
-    envPrefix: "CODEX",
-    cli: "codex",
-    defaultModel: "gpt-5.4-mini",
-    healthCheck: "codex --version",
-    template(model) {
-      return {
-        cmd: "codex",
-        args: ["exec", "--model", model, "--dangerously-bypass-approvals-and-sandbox", { prompt_text: true }],
-      };
-    },
-  },
   claude: {
     envPrefix: "CLAUDE",
     cli: "claude",
@@ -41,6 +29,18 @@ const PROVIDERS = {
       return {
         cmd: "claude",
         args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", model],
+      };
+    },
+  },
+  codex: {
+    envPrefix: "CODEX",
+    cli: "codex",
+    defaultModel: "gpt-5.4-mini",
+    healthCheck: "codex --version",
+    template(model) {
+      return {
+        cmd: "codex",
+        args: ["exec", "--model", model, "--dangerously-bypass-approvals-and-sandbox", { prompt_text: true }],
       };
     },
   },

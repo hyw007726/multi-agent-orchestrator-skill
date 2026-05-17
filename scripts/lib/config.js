@@ -16,18 +16,18 @@ const LOCAL_CONFIG_FILENAMES = [
 // `--version` confirms the binary is installed and runnable; it does NOT confirm auth or
 // that a default model is selected. Use the --auth flag on the preflight script for that.
 const DEFAULT_HEALTH_CHECKS = {
-  kilo: "kilo --version",
   claude: "claude --version",
   codex: "codex --version",
   gemini: "gemini --version",
+  kilo: "kilo --version",
   opencode: "opencode --version",
 };
 
 const DEFAULT_CLI_TEMPLATES = {
-  kilo: 'kilo run "$(cat {prompt_file})" --auto',
   claude: { cmd: "claude", args: ["-p", { prompt_text: true }, "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6"] },
-  gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo"] },
   codex: { cmd: "codex", args: ["exec", "--dangerously-bypass-approvals-and-sandbox", { prompt_text: true }] },
+  gemini: { cmd: "gemini", args: ["--prompt", { prompt_text: true }, "--yolo"] },
+  kilo: 'kilo run "$(cat {prompt_file})" --auto',
   opencode: { cmd: "opencode", args: ["run", "--dangerously-skip-permissions", { prompt_text: true }] },
 };
 
