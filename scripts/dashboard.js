@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
 const { parseAgentState } = require("./lib/agent-log-parser");
+const { STATUS } = require("./lib/status");
 
 const coordDir = process.argv[2] === "--coord" ? process.argv[3] : "./coord";
 const agentsFile = path.join(coordDir, "agents.json");
@@ -83,7 +84,12 @@ function renderAgents() {
         const a = agents[name];
         const taskText = String(a.task || "Initial prompt");
         let info = taskText.slice(0, 40) + (taskText.length > 40 ? "..." : "");
-        try {
+        if (a.status === STATUS.NEEDS_ATTENTION) {
+          // Parked for a human. The reason lives on the agent record, not the
+          // log, so this branch does not depend on a log file existing.
+          const reason = String(a.attention_reason || "(no reason recorded)").slice(0, 40);
+          info = `${colorAttention("ATTENTION:")} ${reason}`;
+        } else try {
           const logPath = path.join(coordDir, "logs", `${name}.log`);
           if (fs.existsSync(logPath)) {
             const logs = fs.readFileSync(logPath, "utf-8").trim().split("\n");
@@ -114,6 +120,16 @@ function renderAgents() {
     );
   } catch {
     console.log("Waiting for agents.json...");
+  }
+
+  // Amber so a parked agent reads as "warning / awaiting human" — distinct
+  // from the red a reader expects for `errored`. The token is colored rather
+  // than the Status column because console.table includes ANSI bytes in its
+  // width math, which misaligns a colored column. Skipped for non-TTY/NO_COLOR
+  // so piped or captured output stays clean.
+  function colorAttention(text) {
+    if (!process.stdout.isTTY || process.env.NO_COLOR) return text;
+    return `\x1b[33m${text}\x1b[0m`;
   }
 }
 
