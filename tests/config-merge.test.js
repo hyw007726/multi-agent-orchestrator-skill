@@ -22,6 +22,7 @@ describe('config merging', () => {
     assert.strictEqual(config.planner_cli, undefined);
     assert.strictEqual(config.default_timeout_mins, 10);
     assert.strictEqual(config.default_progress_timeout_mins, 15);
+    assert.strictEqual(config.orchestrator_cli_timeout_ms, 120000);
     assert.strictEqual(config.default_max_restarts, 3);
     assert.strictEqual(config.orchestrator_failure_threshold, 5);
     assert.strictEqual(config.claude_failure_threshold, 5);
@@ -232,6 +233,29 @@ describe('config merging', () => {
     assert.strictEqual(config.launch_review_terminal, true);
   });
 
+  it('rejects invalid timeout, restart, failure-threshold, and poll values', () => {
+    const cases = [
+      [['default_timeout_mins: 0,'], /default_timeout_mins must be a positive number/],
+      [['default_progress_timeout_mins: -1,'], /default_progress_timeout_mins must be a positive number/],
+      [['orchestrator_cli_timeout_ms: 1.5,'], /orchestrator_cli_timeout_ms must be a positive integer/],
+      [['default_max_restarts: -1,'], /default_max_restarts must be a non-negative integer/],
+      [['orchestrator_failure_threshold: 0,'], /orchestrator_failure_threshold must be a positive integer/],
+      [['claude_failure_threshold: 0,'], /claude_failure_threshold must be a positive integer/],
+      [['poll_min_ms: 0,'], /poll_min_ms must be a positive integer/],
+      [['poll_max_ms: 0,'], /poll_max_ms must be a positive integer/],
+      [['poll_min_ms: 1000,', 'poll_max_ms: 500,'], /poll_min_ms \(1000\) must be less than or equal to poll_max_ms \(500\)/],
+    ];
+
+    for (const [bodyLines, pattern] of cases) {
+      assertConfigThrows(bodyLines, pattern);
+    }
+  });
+
+  it('rejects invalid dashboard settings', () => {
+    assertConfigThrows(['launch_dashboard: "yes",'], /launch_dashboard must be "auto", true, or false/);
+    assertConfigThrows(['launch_review_terminal: "auto",'], /launch_review_terminal must be a boolean/);
+  });
+
   it('merges cli_templates - project values override defaults, omitted CLIs keep defaults', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
     let config;
@@ -261,6 +285,12 @@ describe('config merging', () => {
     assert.ok(config.cli_templates.gemini, 'gemini template should still exist from defaults');
     assert.ok(config.cli_templates.codex, 'codex template should still exist from defaults');
     assert.ok(config.cli_templates.opencode, 'opencode template should still exist from defaults');
+  });
+
+  it('rejects invalid cli template and health-check containers', () => {
+    assertConfigThrows(['cli_templates: [],'], /cli_templates must be an object/);
+    assertConfigThrows(['cli_health_checks: [],'], /cli_health_checks must be an object/);
+    assertConfigThrows(['cli_health_checks: { bad: "" },'], /cli_health_checks\.bad must be a non-empty string/);
   });
 
   it('merges cli_health_checks - project values override defaults, omitted CLIs keep defaults', () => {
@@ -331,30 +361,37 @@ describe('config merging', () => {
     assert.ok(config.cli_health_checks.kilo && config.cli_health_checks.kilo.includes('kilo'));
   });
 
-  it('ignores non-standard keys in the config file', () => {
+  it('rejects non-standard keys in the config file', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
-    let config;
     try {
       fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.js'), [
         'module.exports = {',
         '  default_cli: "kilo",',
-        '  planner_cli: "ignored",',
+        '  planner_cli: "unsupported",',
         '  unsupported_key: "should-be-ignored",',
-        '  another_random: 42,',
         '};',
       ].join('\n') + '\n', 'utf-8');
 
       const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
-      config = loadConfig(tmpDir);
+      assert.throws(
+        () => loadConfig(tmpDir),
+        /Unsupported config key 'planner_cli'.*orchestrator-config\.schema\.json/
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
 
-    assert.strictEqual(config.default_cli, 'kilo');
-    // Extra keys should NOT leak onto the merged config.
-    assert.strictEqual(config.planner_cli, undefined);
-    assert.strictEqual(config.unsupported_key, undefined);
-    assert.strictEqual(config.another_random, undefined);
+  it('rejects configs that do not parse to an object', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.js'), 'module.exports = [];\n', 'utf-8');
+
+      const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
+      assert.throws(() => loadConfig(tmpDir), /orchestrator config must export or parse to an object/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('accepts claude_failure_threshold as a deprecated alias', () => {
@@ -443,6 +480,23 @@ describe('config merging', () => {
     ]);
   });
 
+  it('rejects reviewer config values that violate the runtime schema', () => {
+    assertConfigThrows(['reviewers: "architecture",'], /reviewers must be an array/);
+    assertConfigThrows([
+      'reviewers: [{ name: "architecture", cli: "reviewfake", review_focus: "ownership", unexpected: true }],',
+    ], /reviewers\[0\]\.unexpected is not supported/);
+    assertConfigThrows([
+      'reviewers: [{ name: "architecture", cli: "reviewfake", review_focus: "ownership", timeout_mins: 0 }],',
+      'cli_templates: { reviewfake: { cmd: "node", args: ["reviewer.js", { prompt_file: true }] } },',
+      'cli_health_checks: { reviewfake: "node --version" },',
+    ], /reviewers\[0\]\.timeout_mins must be a positive number/);
+    assertConfigThrows([
+      'reviewers: [{ name: "architecture", cli: "reviewfake", review_focus: "ownership", template_args: [""] }],',
+      'cli_templates: { reviewfake: { cmd: "node", args: ["reviewer.js", { prompt_file: true }] } },',
+      'cli_health_checks: { reviewfake: "node --version" },',
+    ], /reviewers\[0\]\.template_args\[0\] must be a non-empty string/);
+  });
+
   it('rejects reviewer CLIs without templates or health checks', () => {
     const tmpMissingTemplate = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
     const tmpMissingHealth = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
@@ -486,6 +540,22 @@ describe('config merging', () => {
     }
   });
 });
+
+function assertConfigThrows(bodyLines, pattern) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-test-'));
+  try {
+    fs.writeFileSync(path.join(tmpDir, 'orchestrator.config.js'), [
+      'module.exports = {',
+      ...bodyLines.map((line) => `  ${line}`),
+      '};',
+    ].join('\n') + '\n', 'utf-8');
+
+    const { loadConfig } = require(path.join(__dirname, '..', 'scripts', 'lib', 'config'));
+    assert.throws(() => loadConfig(tmpDir), pattern);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
 
 function templateContains(template, text) {
   if (typeof template === 'string') return template.includes(text);

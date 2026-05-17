@@ -12,6 +12,37 @@ const LOCAL_CONFIG_FILENAMES = [
   "orchestrator.config.local.json",
 ];
 
+const SUPPORTED_CONFIG_KEYS = new Set([
+  "$schema",
+  "default_cli",
+  "orchestrator_cli",
+  "cli_templates",
+  "cli_health_checks",
+  "reviewers",
+  "max_plan_review_iterations",
+  "default_timeout_mins",
+  "default_progress_timeout_mins",
+  "orchestrator_cli_timeout_ms",
+  "default_max_restarts",
+  "orchestrator_failure_threshold",
+  "claude_failure_threshold",
+  "poll_min_ms",
+  "poll_max_ms",
+  "launch_dashboard",
+  "launch_review_terminal",
+]);
+
+const REVIEWER_KEYS = new Set([
+  "name",
+  "cli",
+  "review_focus",
+  "model",
+  "model_flag",
+  "template_args",
+  "extra_args",
+  "timeout_mins",
+]);
+
 // Default `--version`-style probes per CLI. Overridable via cli_health_checks in config.
 // `--version` confirms the binary is installed and runnable; it does NOT confirm auth or
 // that a default model is selected. Use the --auth flag on the preflight script for that.
@@ -72,35 +103,75 @@ function loadConfig(cwd = process.cwd()) {
 }
 
 function normalizeConfig(parsed = {}) {
+  assertPlainConfigObject(parsed);
+  rejectUnsupportedConfigKeys(parsed);
+
   const merged = defaultConfig();
-  if (typeof parsed.default_cli === "string") merged.default_cli = parsed.default_cli;
-  const hasExplicitOrchestratorCli = typeof parsed.orchestrator_cli === "string" && parsed.orchestrator_cli.trim() !== "";
-  if (hasExplicitOrchestratorCli) merged.orchestrator_cli = parsed.orchestrator_cli;
-  else merged.orchestrator_cli = merged.default_cli;
-  if (parsed.cli_templates && typeof parsed.cli_templates === "object") {
+  if (hasOwn(parsed, "default_cli")) {
+    merged.default_cli = normalizeNonEmptyString(parsed.default_cli, "default_cli");
+  }
+  if (hasOwn(parsed, "orchestrator_cli") && parsed.orchestrator_cli !== null) {
+    merged.orchestrator_cli = normalizeNonEmptyString(parsed.orchestrator_cli, "orchestrator_cli");
+  } else {
+    merged.orchestrator_cli = merged.default_cli;
+  }
+  if (hasOwn(parsed, "cli_templates")) {
+    if (!isPlainObject(parsed.cli_templates)) {
+      throw new Error("cli_templates must be an object mapping CLI names to shell strings or { cmd, args } templates. Remove it to use the built-in templates.");
+    }
     // Project-level entries override built-ins; omitted CLIs keep usable defaults.
     merged.cli_templates = { ...DEFAULT_CLI_TEMPLATES, ...parsed.cli_templates };
   }
-  if (parsed.cli_health_checks && typeof parsed.cli_health_checks === "object") {
+  if (hasOwn(parsed, "cli_health_checks")) {
+    if (!isPlainObject(parsed.cli_health_checks)) {
+      throw new Error("cli_health_checks must be an object mapping CLI names to non-empty shell command strings. Remove it to use the built-in health checks.");
+    }
+    for (const [cli, command] of Object.entries(parsed.cli_health_checks)) {
+      normalizeNonEmptyString(command, `cli_health_checks.${cli}`);
+    }
     // User-provided entries override the per-CLI defaults; unspecified CLIs keep the default probe.
     merged.cli_health_checks = { ...DEFAULT_HEALTH_CHECKS, ...parsed.cli_health_checks };
   }
-  if (typeof parsed.default_timeout_mins === "number") merged.default_timeout_mins = parsed.default_timeout_mins;
-  if (typeof parsed.default_progress_timeout_mins === "number") merged.default_progress_timeout_mins = parsed.default_progress_timeout_mins;
-  if (typeof parsed.orchestrator_cli_timeout_ms === "number" && parsed.orchestrator_cli_timeout_ms > 0) merged.orchestrator_cli_timeout_ms = parsed.orchestrator_cli_timeout_ms;
-  if (typeof parsed.default_max_restarts === "number") merged.default_max_restarts = parsed.default_max_restarts;
-  if (typeof parsed.orchestrator_failure_threshold === "number") {
-    merged.orchestrator_failure_threshold = parsed.orchestrator_failure_threshold;
-  } else if (typeof parsed.claude_failure_threshold === "number") {
-    merged.orchestrator_failure_threshold = parsed.claude_failure_threshold;
+  if (hasOwn(parsed, "default_timeout_mins")) {
+    merged.default_timeout_mins = normalizePositiveNumber(parsed.default_timeout_mins, "default_timeout_mins", "minutes");
+  }
+  if (hasOwn(parsed, "default_progress_timeout_mins")) {
+    merged.default_progress_timeout_mins = normalizePositiveNumber(parsed.default_progress_timeout_mins, "default_progress_timeout_mins", "minutes");
+  }
+  if (hasOwn(parsed, "orchestrator_cli_timeout_ms")) {
+    merged.orchestrator_cli_timeout_ms = normalizePositiveInteger(parsed.orchestrator_cli_timeout_ms, "orchestrator_cli_timeout_ms", "milliseconds");
+  }
+  if (hasOwn(parsed, "default_max_restarts")) {
+    merged.default_max_restarts = normalizeNonNegativeInteger(parsed.default_max_restarts, "default_max_restarts");
+  }
+  const hasFailureThreshold = hasOwn(parsed, "orchestrator_failure_threshold");
+  const hasDeprecatedFailureThreshold = hasOwn(parsed, "claude_failure_threshold");
+  if (hasFailureThreshold) {
+    merged.orchestrator_failure_threshold = normalizePositiveInteger(parsed.orchestrator_failure_threshold, "orchestrator_failure_threshold");
+  }
+  if (hasDeprecatedFailureThreshold) {
+    const aliasValue = normalizePositiveInteger(parsed.claude_failure_threshold, "claude_failure_threshold");
+    if (!hasFailureThreshold) merged.orchestrator_failure_threshold = aliasValue;
   }
   merged.claude_failure_threshold = merged.orchestrator_failure_threshold;
-  if (typeof parsed.poll_min_ms === "number") merged.poll_min_ms = parsed.poll_min_ms;
-  if (typeof parsed.poll_max_ms === "number") merged.poll_max_ms = parsed.poll_max_ms;
-  if (typeof parsed.launch_dashboard === "boolean" || parsed.launch_dashboard === "auto") {
-    merged.launch_dashboard = parsed.launch_dashboard;
+  if (hasOwn(parsed, "poll_min_ms")) {
+    merged.poll_min_ms = normalizePositiveInteger(parsed.poll_min_ms, "poll_min_ms", "milliseconds");
   }
-  if (typeof parsed.launch_review_terminal === "boolean") merged.launch_review_terminal = parsed.launch_review_terminal;
+  if (hasOwn(parsed, "poll_max_ms")) {
+    merged.poll_max_ms = normalizePositiveInteger(parsed.poll_max_ms, "poll_max_ms", "milliseconds");
+  }
+  if (merged.poll_min_ms > merged.poll_max_ms) {
+    throw new Error(`poll_min_ms (${merged.poll_min_ms}) must be less than or equal to poll_max_ms (${merged.poll_max_ms}). Lower poll_min_ms or raise poll_max_ms.`);
+  }
+  if (hasOwn(parsed, "launch_dashboard")) {
+    merged.launch_dashboard = normalizeLaunchDashboard(parsed.launch_dashboard);
+  }
+  if (hasOwn(parsed, "launch_review_terminal")) {
+    if (typeof parsed.launch_review_terminal !== "boolean") {
+      throw new Error("launch_review_terminal must be a boolean. Set it to true, false, or remove it to use false.");
+    }
+    merged.launch_review_terminal = parsed.launch_review_terminal;
+  }
   merged.max_plan_review_iterations = normalizeMaxPlanReviewIterations(parsed.max_plan_review_iterations);
   merged.reviewers = normalizeReviewers(parsed.reviewers, merged);
 
@@ -110,8 +181,18 @@ function normalizeConfig(parsed = {}) {
 function mergeConfigInputs(configs) {
   const merged = {};
   for (const config of configs) {
-    if (!isPlainObject(config)) continue;
+    if (!isPlainObject(config)) {
+      throw new Error("orchestrator config must export or parse to an object.");
+    }
 
+    const hasCliTemplates = hasOwn(config, "cli_templates");
+    const hasCliHealthChecks = hasOwn(config, "cli_health_checks");
+    if (hasCliTemplates && !isPlainObject(config.cli_templates)) {
+      throw new Error("cli_templates must be an object mapping CLI names to shell strings or { cmd, args } templates. Remove it to use the built-in templates.");
+    }
+    if (hasCliHealthChecks && !isPlainObject(config.cli_health_checks)) {
+      throw new Error("cli_health_checks must be an object mapping CLI names to non-empty shell command strings. Remove it to use the built-in health checks.");
+    }
     const cliTemplates = isPlainObject(config.cli_templates) ? config.cli_templates : undefined;
     const cliHealthChecks = isPlainObject(config.cli_health_checks) ? config.cli_health_checks : undefined;
     const previousCliTemplates = isPlainObject(merged.cli_templates) ? merged.cli_templates : {};
@@ -283,6 +364,7 @@ function normalizeReviewers(value, config) {
     if (!isPlainObject(entry)) {
       throw new Error(`reviewers[${index}] must be an object.`);
     }
+    rejectUnsupportedReviewerKeys(entry, index);
 
     const name = normalizeNonEmptyString(entry.name, `reviewers[${index}].name`);
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
@@ -330,6 +412,54 @@ function normalizeReviewers(value, config) {
   });
 }
 
+function assertPlainConfigObject(value) {
+  if (!isPlainObject(value)) {
+    throw new Error("orchestrator config must export or parse to an object.");
+  }
+}
+
+function rejectUnsupportedConfigKeys(config) {
+  for (const key of Object.keys(config)) {
+    if (!SUPPORTED_CONFIG_KEYS.has(key)) {
+      throw new Error(`Unsupported config key '${key}'. Remove it, or add it to references/orchestrator-config.schema.json and scripts/lib/config.js before using it.`);
+    }
+  }
+}
+
+function rejectUnsupportedReviewerKeys(entry, index) {
+  for (const key of Object.keys(entry)) {
+    if (!REVIEWER_KEYS.has(key)) {
+      throw new Error(`reviewers[${index}].${key} is not supported. Remove it, or add it to the reviewer schema and normalizeReviewers().`);
+    }
+  }
+}
+
+function normalizePositiveNumber(value, label, units = "value") {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} must be a positive number (${units}). Set ${label} to a value greater than 0, or remove it to use the default.`);
+  }
+  return value;
+}
+
+function normalizePositiveInteger(value, label, units = "value") {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive integer (${units}). Set ${label} to 1 or greater, or remove it to use the default.`);
+  }
+  return value;
+}
+
+function normalizeNonNegativeInteger(value, label) {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer. Set ${label} to 0 or greater, or remove it to use the default.`);
+  }
+  return value;
+}
+
+function normalizeLaunchDashboard(value) {
+  if (value === "auto" || typeof value === "boolean") return value;
+  throw new Error('launch_dashboard must be "auto", true, or false. Use "auto" for local macOS auto-launch behavior, or remove it to use "auto".');
+}
+
 function normalizeNonEmptyString(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} must be a non-empty string.`);
@@ -351,6 +481,10 @@ function normalizeStringArray(value, label) {
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
 }
 
 module.exports = {
