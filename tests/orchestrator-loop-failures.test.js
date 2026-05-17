@@ -89,6 +89,15 @@ describe('orchestrator loop failure paths', () => {
       const log = fs.readFileSync(path.join(project.root, 'coord', 'orchestrator.log'), 'utf-8');
       assert.match(log, /Agent agent-idle idle .* Killing/);
       assert.match(log, /running -> needs_attention \(liveness timeout/);
+      assert.match(log, /Run paused for review \(1 agents awaiting human intervention\)/);
+
+      // The only agent is parked, so the run is "awaiting review", not failed
+      // and not all-completed.
+      const summary = fs.readFileSync(path.join(project.root, 'coord', 'review-summary.txt'), 'utf-8');
+      assert.match(summary, /AWAITING REVIEW/);
+      assert.doesNotMatch(summary, /ALL AGENTS COMPLETED/);
+      assert.match(summary, /parked awaiting human intervention/);
+      assert.match(summary, /agent-idle: liveness timeout - idle/);
     } finally {
       if (project) project.cleanup();
     }
@@ -727,6 +736,40 @@ describe('orchestrator loop failure paths', () => {
     } finally {
       if (project) project.cleanup();
     }
+  });
+});
+
+describe('buildFinalSummary tri-state title', () => {
+  const { buildFinalSummary } = require('../scripts/orchestrator-loop');
+
+  it('titles RUN INCOMPLETE when an agent failed/vanished (even alongside a parked one)', () => {
+    const summary = buildFinalSummary({
+      'agent-a': { status: 'completed' },
+      'agent-b': { status: 'errored' },
+      'agent-c': { status: 'needs_attention', attention_reason: 'liveness timeout - idle 30 mins' },
+    });
+    assert.match(summary, /^RUN INCOMPLETE/);
+    assert.match(summary, /Some agents failed or vanished/);
+  });
+
+  it('titles AWAITING REVIEW when some completed and some parked, none failed', () => {
+    const summary = buildFinalSummary({
+      'agent-a': { status: 'completed' },
+      'agent-b': { status: 'needs_attention', attention_reason: 'hard restart recovery failed: reset blocked' },
+    });
+    assert.match(summary, /^AWAITING REVIEW/);
+    assert.doesNotMatch(summary, /^RUN INCOMPLETE/m);
+    assert.match(summary, /parked awaiting human intervention/);
+    assert.match(summary, /- agent-b: hard restart recovery failed: reset blocked/);
+  });
+
+  it('titles ALL AGENTS COMPLETED when every agent completed', () => {
+    const summary = buildFinalSummary({
+      'agent-a': { status: 'completed' },
+      'agent-b': { status: 'completed' },
+    });
+    assert.match(summary, /^ALL AGENTS COMPLETED/);
+    assert.doesNotMatch(summary, /parked awaiting human intervention/);
   });
 });
 

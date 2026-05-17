@@ -1892,8 +1892,11 @@ function finalize(config, paths, parsedConfig, log) {
   // Deliberately excludes needs_attention: a parked agent is awaiting a human,
   // not failed/vanished, so it must not flip the run to the "incomplete" copy.
   const failedCount = Object.values(agents).filter((agent) => agent.status === "exited" || agent.status === "errored").length;
+  const parkedCount = Object.values(agents).filter((agent) => agent.status === STATUS.NEEDS_ATTENTION).length;
   if (failedCount > 0) {
     log(`Run ended incomplete (${failedCount} agents failed/vanished). Deterministic summary written to ${path.resolve(summaryFile)}.`);
+  } else if (parkedCount > 0) {
+    log(`Run paused for review (${parkedCount} agents awaiting human intervention). Deterministic summary written to ${path.resolve(summaryFile)}.`);
   } else {
     log(`All worker agents completed. Deterministic summary written to ${path.resolve(summaryFile)}.`);
   }
@@ -1949,7 +1952,15 @@ function buildFinalSummary(agents = {}, requests = []) {
     const status = agents[name]?.status;
     return status === "exited" || status === "errored";
   });
-  const title = failedAgents.length > 0 ? "RUN INCOMPLETE" : "ALL AGENTS COMPLETED";
+  // Tri-state, independent of failedAgents semantics: a parked agent is neither
+  // a success nor a failure, but the run is not "all completed" while a human
+  // still has to step in.
+  const parkedAgents = names.filter((name) => agents[name]?.status === STATUS.NEEDS_ATTENTION);
+  const title = failedAgents.length > 0
+    ? "RUN INCOMPLETE"
+    : parkedAgents.length > 0
+      ? "AWAITING REVIEW"
+      : "ALL AGENTS COMPLETED";
   const lines = [
     title,
     "",
@@ -1962,6 +1973,15 @@ function buildFinalSummary(agents = {}, requests = []) {
     for (const name of failedAgents) {
       const agent = agents[name];
       lines.push(`- ${name} (${agent.status}): ${truncate(agent.task || "Initial prompt", 120)}`);
+    }
+    lines.push("");
+  }
+
+  if (parkedAgents.length > 0) {
+    lines.push("Some agents are parked awaiting human intervention:");
+    for (const name of parkedAgents) {
+      const agent = agents[name];
+      lines.push(`- ${name}: ${truncate(agent.attention_reason || "(no reason recorded)", 120)}`);
     }
     lines.push("");
   }
