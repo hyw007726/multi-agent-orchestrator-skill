@@ -69,4 +69,45 @@ function parkAgentForAttention(agent, name, reason, log, fields = {}) {
   return agent;
 }
 
-module.exports = { STATUS, transitionAgentStatus, parkAgentForAttention };
+// Shared — used by the liveness-timeout, restart-budget-exhausted, and
+// hard-restart-recovery-failed park sites in scripts/orchestrator-loop.js
+// (`:161`, `:464`, `:517`). Site-keyed so the human recovery guidance written
+// into `next_steps` is owned by the status domain and stays decoupled from
+// buildProgressEscalation, which is structurally about progress timeouts. All
+// three are Class B "no cheap recovery" failures
+// (docs/manual-intervention-policy.md).
+const PARK_RATIONALES = Object.freeze({
+  liveness_timeout:
+    "The worker produced no log output within its liveness window and was " +
+    "killed. This usually means it is wedged, or its CLI/auth/model setup is " +
+    "broken; a blind restart tends to re-wedge. Inspect the agent log and the " +
+    "preserved worktree, fix the underlying CLI/auth/environment issue, then " +
+    "resume or restart the worker manually.",
+  restart_budget_exhausted:
+    "The agent has no restart budget remaining: the cheap recovery path " +
+    "(soft/hard restart) has already been spent the full restart allowance, " +
+    "so another automatic restart would just loop. Review the agent log and " +
+    "worktree, decide whether the work is salvageable, and either resume it " +
+    "manually or abandon the branch.",
+  hard_restart_recovery_failed:
+    "A hard restart was attempted but the recovery/reset primitive itself " +
+    "failed, so there is no further automatic fallback. Inspect the worktree " +
+    "state and the recovery error in the log, repair the worktree by hand if " +
+    "needed, then resume or restart the worker manually.",
+});
+
+/**
+ * Return the human recovery guidance (`next_steps`) for a park site.
+ *
+ * @param {string} site - One of the {@link PARK_RATIONALES} keys.
+ * @returns {string} The rationale paragraph for that site.
+ */
+function parkRationale(site) {
+  const rationale = PARK_RATIONALES[site];
+  if (rationale === undefined) {
+    throw new Error(`Unknown park site: ${site}`);
+  }
+  return rationale;
+}
+
+module.exports = { STATUS, transitionAgentStatus, parkAgentForAttention, parkRationale };
