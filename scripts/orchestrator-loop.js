@@ -8,7 +8,7 @@ const { loadConfig } = require("./lib/config");
 const { pidMatchesCli, safeKill } = require("./lib/process");
 const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL, appendJSONL } = require("./lib/locking");
 const { renderWorkerPrompt, renderWorkerRestartPrompt } = require("./lib/prompt-render");
-const { STATUS, transitionAgentStatus } = require("./lib/status");
+const { STATUS, transitionAgentStatus, parkAgentForAttention } = require("./lib/status");
 const { appendEvent } = require("./lib/events");
 const { cliTemplateMode, cliTemplateProcessMatch, spawnCliTemplate } = require("./lib/cli-template");
 const { extractJsonObject } = require("./lib/provider-output");
@@ -154,11 +154,22 @@ async function runLoop() {
         if (Date.now() - lastActivity > timeoutMins * 60 * 1000) {
           log(`Agent ${name} idle (no log output) for ${timeoutMins} mins. Killing.`);
           safeKill({ pid: agent.pid, expectedCli: expectedProcessForAgent(agent, parsedConfig), log, coordDir: config.coordDir, agent: name });
+          const livenessReason = `liveness timeout - idle ${timeoutMins} mins`;
+          let livenessNextSteps, livenessAttentionAt;
           updateJSON(paths.agents, (agents) => {
             if (agents[name] && agents[name].status === "running") {
-              transitionAgentStatus(agents[name], name, STATUS.ERRORED, `liveness timeout - idle ${timeoutMins} mins`, log);
+              livenessNextSteps = parkNextSteps("liveness_timeout", agents[name], parsedConfig);
+              parkAgentForAttention(agents[name], name, livenessReason, log, { nextSteps: livenessNextSteps });
+              livenessAttentionAt = agents[name].attention_at;
             }
           });
+          if (livenessAttentionAt) {
+            appendEvent(config.coordDir, "agent_parked", {
+              agent: name,
+              reason: livenessReason,
+              data: { attention_at: livenessAttentionAt, next_steps: livenessNextSteps },
+            });
+          }
           continue;
         }
 
@@ -449,9 +460,15 @@ async function runLoop() {
       const maxRestarts = parsedConfig.default_max_restarts;
       if (nextCount > maxRestarts) {
         agent.task = `Exhausted ${maxRestarts} restart attempts (${reason}). Last instruction: ${instruction.slice(0, 200)}`;
-        transitionAgentStatus(agent, name, STATUS.ERRORED, `max restarts (${maxRestarts}) exhausted`, log);
+        const attentionReason = `max restarts (${maxRestarts}) exhausted`;
+        const nextSteps = parkNextSteps("restart_budget_exhausted", agent, parsedConfig);
+        parkAgentForAttention(agent, name, attentionReason, log, { nextSteps });
         outcomeRef.value = { kind: "errored", pid: agent.pid, cliTool, processMatch: expectedProcessForAgent(agent, parsedConfig), worktree: agent.worktree };
-        appendEvent(config.coordDir, "restart_aborted", { agent: name, reason: `max restarts (${maxRestarts}) reached - ${reason}` });
+        appendEvent(config.coordDir, "agent_parked", {
+          agent: name,
+          reason: attentionReason,
+          data: { attention_at: agent.attention_at, next_steps: nextSteps },
+        });
         return;
       }
 
@@ -492,13 +509,23 @@ async function runLoop() {
       if (mode === "hard") {
         const recovery = captureRecoveryAndReset(outcome.worktree, name, log);
         if (recovery.error) {
-          log(`Hard restart: recovery/reset failed — ${recovery.error}. Marking errored.`);
+          log(`Hard restart: recovery/reset failed — ${recovery.error}. Parking for attention.`);
+          const recoveryReason = `hard restart recovery failed: ${recovery.error}`;
+          let recoveryNextSteps, recoveryAttentionAt;
           updateJSON(paths.agents, (agents) => {
             if (agents[name]) {
-              transitionAgentStatus(agents[name], name, STATUS.ERRORED, `hard restart recovery failed: ${recovery.error}`, log);
+              recoveryNextSteps = parkNextSteps("hard_restart_recovery_failed", agents[name], parsedConfig);
+              parkAgentForAttention(agents[name], name, recoveryReason, log, { nextSteps: recoveryNextSteps });
+              recoveryAttentionAt = agents[name].attention_at;
             }
           });
-          appendEvent(config.coordDir, "restart_aborted", { agent: name, reason: `hard reset failed: ${recovery.error}` });
+          if (recoveryAttentionAt) {
+            appendEvent(config.coordDir, "agent_parked", {
+              agent: name,
+              reason: recoveryReason,
+              data: { attention_at: recoveryAttentionAt, next_steps: recoveryNextSteps },
+            });
+          }
           return false;
         }
         if (recovery.tag) {
@@ -849,6 +876,28 @@ function progressTimeoutHistory(requests, agentName) {
     request.type === "progress_timeout"
   ).length;
   return { previousCount, timeoutCount: previousCount + 1 };
+}
+
+// Shared — used by the liveness-timeout (`:159`), restart-budget-exhausted
+// (`:452`), and hard-restart-recovery-failed (`:498`) park sites. Maps a park
+// site to buildProgressEscalation inputs and returns its rationale string for
+// `next_steps`, so the recovery guidance is generated by one helper instead of
+// hand-written per site. All three are Class B "no cheap recovery" failures
+// (docs/manual-intervention-policy.md): a wedged worker and a failed recovery
+// primitive have no cheaper path than a human, so they intentionally resolve to
+// the budget-exhausted branch even when their literal restart budget is intact.
+function parkNextSteps(site, agent, parsedConfig) {
+  const maxRestarts = parsedConfig.default_max_restarts || 0;
+  const restartCount = site === "restart_budget_exhausted"
+    ? (agent.restart_count || 0)
+    : maxRestarts;
+  return buildProgressEscalation({
+    previousProgressTimeouts: 0,
+    restartCount,
+    maxRestarts,
+    hasRecoveryTag: Boolean(agent.recovery_tag),
+    progressMins: agent.progress_timeout_mins || parsedConfig.default_progress_timeout_mins,
+  }).rationale;
 }
 
 function buildProgressEscalation({ previousProgressTimeouts, restartCount, maxRestarts, hasRecoveryTag, progressMins }) {
@@ -1994,4 +2043,5 @@ module.exports = {
   pathPatternMatches,
   stageAllChanges,
   readAgentCurrentStartMs,
+  parkNextSteps,
 };
