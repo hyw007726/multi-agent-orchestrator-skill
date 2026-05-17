@@ -50,6 +50,7 @@ describe('draft-plan runner', () => {
         '    mode_specific_decomposition: ["Two workers can proceed in parallel."]',
         '  },',
         '  shared_foundation_assumptions: ["Validation foundation is already committed."],',
+        '  foundation: { status: "not_required", paths: [], commit: "", owner: "" },',
         '  known_risks: ["Path ownership can drift."],',
         '  tasks: {',
         '    "agent-script": {',
@@ -206,6 +207,12 @@ describe('draft-plan runner', () => {
       user_requirements: [42],
       constraints: 'not-array',
       shared_foundation_assumptions: [],
+      foundation: {
+        status: 'bogus',
+        paths: 'bad',
+        commit: 123,
+        owner: 456,
+      },
       known_risks: [],
       candidate_execution_topology: {
         execution_mode: 'bogus',
@@ -233,6 +240,10 @@ describe('draft-plan runner', () => {
     assert.match(errors, /project must be a non-empty string/);
     assert.match(errors, /user_requirements\[0\] must be a non-empty string/);
     assert.match(errors, /constraints must be an array/);
+    assert.match(errors, /foundation\.status must be not_required/);
+    assert.match(errors, /foundation\.paths must be an array/);
+    assert.match(errors, /foundation\.commit must be a string/);
+    assert.match(errors, /foundation\.owner must be a string/);
     assert.match(errors, /execution_mode must be direct/);
     assert.match(errors, /rejected_alternatives\[0\] must be an object/);
     assert.match(errors, /rejected_alternatives\[1\]\.execution_mode is invalid/);
@@ -255,6 +266,16 @@ describe('draft-plan runner', () => {
       validateDraftPlan({ ...validPlan({ mode: 'parallel', tasks: {} }), candidate_execution_topology: null }).errors.join('\n'),
       /candidate_execution_topology must be an object/
     );
+
+    const completedWithoutCommit = validPlan({
+      foundation: { status: 'completed_committed', paths: ['package.json'], commit: '', owner: '' },
+    });
+    assert.match(validateDraftPlan(completedWithoutCommit).errors.join('\n'), /foundation\.commit is required/);
+
+    const ownedWithoutMatchingTask = validPlan({
+      foundation: { status: 'owned_by_worker', paths: ['package.json'], commit: '', owner: 'missing-agent' },
+    });
+    assert.match(validateDraftPlan(ownedWithoutMatchingTask).errors.join('\n'), /foundation\.owner "missing-agent" must match/);
   });
 
   it('summarizes repository files, package scripts, dependencies, and validation candidates', () => {
@@ -316,6 +337,7 @@ describe('draft-plan runner', () => {
     assert.match(prompt, /Do not edit files, create worktrees/);
     assert.match(prompt, /direct, single_worker, parallel, or phased/);
     assert.match(prompt, /"candidate_execution_topology"/);
+    assert.match(prompt, /"foundation"/);
     assert.match(prompt, /Split a starter workflow/);
   });
 });
@@ -356,7 +378,7 @@ function writePlanner(projectRoot, name, bodyLines) {
   return file;
 }
 
-function validPlan({ mode = 'parallel', tasks } = {}) {
+function validPlan({ mode = 'parallel', tasks, foundation } = {}) {
   return {
     project: 'Demo',
     user_requirements: ['Do work'],
@@ -372,6 +394,12 @@ function validPlan({ mode = 'parallel', tasks } = {}) {
       mode_specific_decomposition: ['Split safely.'],
     },
     shared_foundation_assumptions: ['Foundation exists.'],
+    foundation: foundation || {
+      status: 'not_required',
+      paths: [],
+      commit: '',
+      owner: '',
+    },
     known_risks: ['Merge conflicts.'],
     tasks: tasks === undefined
       ? {

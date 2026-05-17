@@ -18,6 +18,7 @@ const { spawnCliTemplateSync, validateCliTemplate } = require("./lib/cli-templat
 const { extractJsonObject } = require("./review-plan");
 
 const VALID_EXECUTION_MODES = new Set(["direct", "single_worker", "parallel", "phased"]);
+const VALID_FOUNDATION_STATUSES = new Set(["not_required", "completed_committed", "owned_by_worker"]);
 const REQUIRED_ARRAY_FIELDS = [
   "user_requirements",
   "constraints",
@@ -143,6 +144,12 @@ function renderPlannerPrompt({ project, taskText, repoScan, coordDir }) {
       mode_specific_decomposition: ["string"],
     },
     shared_foundation_assumptions: ["string"],
+    foundation: {
+      status: "not_required | completed_committed | owned_by_worker",
+      paths: ["string"],
+      commit: "",
+      owner: "",
+    },
     known_risks: ["string"],
     tasks: {
       "agent-name": {
@@ -169,6 +176,7 @@ function renderPlannerPrompt({ project, taskText, repoScan, coordDir }) {
     "- Use parallel only when worker file ownership is genuinely non-overlapping.",
     "- Use phased when shared foundations must be committed first, then independent leaves can fan out.",
     "- Put shared files such as package.json, config files, schemas, routers, shared types, and lockfiles in shared foundation notes unless one worker can safely own them.",
+    "- Include a machine-readable foundation block. Use status `not_required` with empty paths when no shared foundation work is needed. Use `completed_committed` with paths and commit when the caller has already committed foundation work. Use `owned_by_worker` with paths and owner when exactly one worker owns a shared foundation file.",
     "- For each worker task, include precise allowed_paths, forbidden_paths, read_first, sequencing_notes, and a validation_command.",
     "- Prefer validation_command as a JSON argv array; use null only when no automated validation is possible.",
     "- Do not include long file contents or chat transcripts.",
@@ -224,10 +232,11 @@ function validateDraftPlan(plan) {
   }
 
   const tasks = plan.tasks;
+  let taskNames = [];
   if (!isPlainObject(tasks)) {
     errors.push("tasks must be an object keyed by agent name.");
   } else if (topology && topology.execution_mode) {
-    const taskNames = Object.keys(tasks);
+    taskNames = Object.keys(tasks);
     if (topology.execution_mode === "direct" && taskNames.length > 0) {
       errors.push("direct topology must not include worker tasks.");
     }
@@ -240,7 +249,11 @@ function validateDraftPlan(plan) {
     for (const taskName of taskNames) {
       validateDraftTask(taskName, tasks[taskName], errors);
     }
+  } else if (isPlainObject(tasks)) {
+    taskNames = Object.keys(tasks);
   }
+
+  validateDraftFoundation(plan.foundation, taskNames, errors);
 
   const todoPaths = findTodoPlaceholders(plan);
   if (todoPaths.length > 0) {
@@ -343,6 +356,70 @@ function validateValidationCommand(value, label, errors) {
   }
   if (typeof value === "string" && value.trim() !== "") return;
   errors.push(`${label} must be a JSON argv array, shell command string, or null.`);
+}
+
+function validateDraftFoundation(foundation, taskNames, errors) {
+  if (!isPlainObject(foundation)) {
+    errors.push("foundation must be an object with status, paths, and optional commit/owner.");
+    return;
+  }
+
+  const status = typeof foundation.status === "string" ? foundation.status.trim() : "";
+  if (!VALID_FOUNDATION_STATUSES.has(status)) {
+    errors.push("foundation.status must be not_required, completed_committed, or owned_by_worker.");
+  }
+
+  validateStringArray(foundation.paths, "foundation.paths", { required: true }, errors);
+  const paths = Array.isArray(foundation.paths)
+    ? foundation.paths.filter((item) => typeof item === "string" && item.trim() !== "")
+    : [];
+  const commit = typeof foundation.commit === "string" ? foundation.commit.trim() : "";
+  const owner = typeof foundation.owner === "string" ? foundation.owner.trim() : "";
+
+  if (foundation.commit !== undefined && typeof foundation.commit !== "string") {
+    errors.push("foundation.commit must be a string when provided.");
+  }
+  if (foundation.owner !== undefined && typeof foundation.owner !== "string") {
+    errors.push("foundation.owner must be a string when provided.");
+  }
+
+  if (status === "not_required") {
+    if (paths.length > 0) {
+      errors.push("foundation.paths must be empty when foundation.status is not_required.");
+    }
+    if (commit) {
+      errors.push("foundation.commit must be empty when foundation.status is not_required.");
+    }
+    if (owner) {
+      errors.push("foundation.owner must be empty when foundation.status is not_required.");
+    }
+  }
+
+  if (status === "completed_committed") {
+    if (paths.length === 0) {
+      errors.push("foundation.paths must list committed foundation paths when foundation.status is completed_committed.");
+    }
+    if (!commit) {
+      errors.push("foundation.commit is required when foundation.status is completed_committed.");
+    }
+    if (owner) {
+      errors.push("foundation.owner must be empty when foundation.status is completed_committed.");
+    }
+  }
+
+  if (status === "owned_by_worker") {
+    if (paths.length === 0) {
+      errors.push("foundation.paths must list worker-owned foundation paths when foundation.status is owned_by_worker.");
+    }
+    if (!owner) {
+      errors.push("foundation.owner is required when foundation.status is owned_by_worker.");
+    } else if (!taskNames.includes(owner)) {
+      errors.push(`foundation.owner "${owner}" must match one of the draft task names.`);
+    }
+    if (commit) {
+      errors.push("foundation.commit must be empty when foundation.status is owned_by_worker.");
+    }
+  }
 }
 
 function buildRepoScanSummary(projectRoot, coordDir) {

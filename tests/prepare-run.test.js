@@ -62,6 +62,7 @@ describe('prepare-run guided starter pipeline', () => {
       const draft = readJson(path.join(project.root, 'coord', 'plan-reviews', 'draft-plan-v1.json'));
       assert.strictEqual(draft.project, 'Prepare run project');
       assert.match(draft.candidate_execution_topology.execution_mode, /^TODO:/);
+      assert.match(draft.foundation.status, /^TODO:/);
       assert.strictEqual(draft._source.task, 'Add starter automation safely');
       assert.ok(fs.existsSync(path.join(project.root, 'coord', 'plan-reviews', 'draft-plan-v1.instructions.md')));
       assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees')));
@@ -354,6 +355,12 @@ function writeApprovedDraft(projectRoot, options) {
       mode_specific_decomposition: ['One worker handles the fake implementation.'],
     },
     shared_foundation_assumptions: ['No package or lockfile changes.'],
+    foundation: {
+      status: 'not_required',
+      paths: [],
+      commit: '',
+      owner: '',
+    },
     known_risks: ['The caller must review before launching.'],
     tasks: {
       [agentName]: {
@@ -418,6 +425,7 @@ function writeEndToEndCli(projectRoot) {
     '      mode_specific_decomposition: ["One worker writes worker-output.txt and requests review."]',
     '    },',
     '    shared_foundation_assumptions: ["README.md is read-only context for this run."],',
+    '    foundation: { status: "not_required", paths: [], commit: "", owner: "" },',
     '    known_risks: ["The background loop must receive caller context from files, not chat."],',
     '    tasks: {',
     '      "agent-one": {',

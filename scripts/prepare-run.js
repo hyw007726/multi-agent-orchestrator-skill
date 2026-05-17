@@ -262,7 +262,8 @@ function buildDraftPlanTemplate(args, taskText) {
       "This file is intentionally caller-authored. Replace every TODO value before running prepare-run.js --approve-draft.",
       "Use direct with an empty tasks object when the caller session should keep the work.",
       "Use single_worker with exactly one task, or parallel/phased only when worker ownership is genuinely non-overlapping.",
-      "Keep workers out of coord/ and other shared foundations unless a worker explicitly owns that foundation work.",
+      "Fill the foundation block so shared foundation work is either not required, already committed, or owned by exactly one worker.",
+      "Keep workers out of coord/ and other shared foundations unless a worker explicitly owns that foundation work in the foundation block.",
     ],
     _source: {
       project: args.project,
@@ -286,6 +287,12 @@ function buildDraftPlanTemplate(args, taskText) {
       mode_specific_decomposition: ["TODO: how this topology decomposes the work."],
     },
     shared_foundation_assumptions: ["TODO: package/config/schema/shared-contract assumptions."],
+    foundation: {
+      status: "TODO: not_required | completed_committed | owned_by_worker",
+      paths: ["TODO: shared foundation path/glob, or empty array when not_required"],
+      commit: "TODO: required git commit/revision when completed_committed; otherwise empty string",
+      owner: "TODO: required agent name when owned_by_worker; otherwise empty string",
+    },
     known_risks: ["TODO: merge, validation, ambiguity, or integration risks."],
     tasks: {
       "agent-name": {
@@ -322,7 +329,8 @@ function buildDraftInstructions(args, taskText, options) {
     "- Choose exactly one topology: direct, single_worker, parallel, or phased.",
     "- For direct mode, use an empty tasks object and do not launch workers.",
     "- For single_worker, define exactly one task.",
-    "- For parallel or phased, keep allowed_paths ownership non-overlapping and forbid shared foundations.",
+    "- Fill the foundation block: use not_required with empty paths, completed_committed with paths and commit, or owned_by_worker with paths and owner.",
+    "- For parallel or phased, keep allowed_paths ownership non-overlapping and forbid shared foundations unless exactly one worker owns them.",
     "- Use real validation_command values as JSON argv arrays, shell strings, or null when automation is impossible.",
     "",
     "## Approval",

@@ -62,11 +62,15 @@ describe('materialize-plan runner', () => {
           'Shared foundation: No new shared package files.',
         ],
       });
+      assert.deepStrictEqual(context.foundation, {
+        status: 'not_required',
+        paths: [],
+      });
       assert.deepStrictEqual(context.tasks['agent-conversion'], {
         description: 'Build the conversion script.',
         read_first: ['scripts/draft-plan.js', 'scripts/lib/context-validation.js'],
         allowed_paths: ['scripts/materialize-plan.js', 'tests/materialize-plan.test.js'],
-        forbidden_paths: ['coord/', 'README.md'],
+        forbidden_paths: ['coord/', '.gitignore', 'README.md'],
         validation_command: ['node', '--test', 'tests/materialize-plan.test.js'],
       });
       assert.deepStrictEqual(context.tasks['agent-docs'].validation_command, null);
@@ -76,6 +80,8 @@ describe('materialize-plan runner', () => {
       assert.match(decisions, /## Final Execution Topology/);
       assert.match(decisions, /Mode: parallel/);
       assert.match(decisions, /direct: Too much for the caller session/);
+      assert.match(decisions, /### Foundation Contract/);
+      assert.match(decisions, /Status: not_required/);
       assert.match(decisions, /## File Ownership/);
       assert.match(decisions, /### agent-conversion/);
       assert.match(decisions, /Allowed paths: scripts\/materialize-plan\.js, tests\/materialize-plan\.test\.js/);
@@ -278,22 +284,22 @@ function writeDraft(projectRoot, draft) {
 function draftPlan(overrides = {}) {
   const mode = overrides.mode || 'parallel';
   const tasks = overrides.tasks !== undefined ? overrides.tasks : {
-    'agent-conversion': {
-      description: 'Build the conversion script.',
-      allowed_paths: ['scripts/materialize-plan.js', 'tests/materialize-plan.test.js'],
-      forbidden_paths: ['coord/', 'README.md'],
-      read_first: ['scripts/draft-plan.js', 'scripts/lib/context-validation.js'],
-      validation_command: ['node', '--test', 'tests/materialize-plan.test.js'],
-      sequencing_notes: ['Run after draft plan generation lands.'],
-    },
+        'agent-conversion': {
+          description: 'Build the conversion script.',
+          allowed_paths: ['scripts/materialize-plan.js', 'tests/materialize-plan.test.js'],
+          forbidden_paths: ['coord/', '.gitignore', 'README.md'],
+          read_first: ['scripts/draft-plan.js', 'scripts/lib/context-validation.js'],
+          validation_command: ['node', '--test', 'tests/materialize-plan.test.js'],
+          sequencing_notes: ['Run after draft plan generation lands.'],
+        },
     'agent-docs': {
-      description: 'Document the conversion flow.',
-      allowed_paths: ['README.md', 'SKILL.md', 'references/schemas.md'],
-      forbidden_paths: ['scripts/**', 'coord/'],
-      read_first: ['README.md', 'SKILL.md', 'references/schemas.md'],
-      validation_command: null,
-      sequencing_notes: ['Only edit documentation.'],
-    },
+          description: 'Document the conversion flow.',
+          allowed_paths: ['README.md', 'SKILL.md', 'references/schemas.md'],
+          forbidden_paths: ['scripts/**', 'coord/', '.gitignore'],
+          read_first: ['README.md', 'SKILL.md', 'references/schemas.md'],
+          validation_command: null,
+          sequencing_notes: ['Only edit documentation.'],
+        },
   };
 
   return {
@@ -314,6 +320,12 @@ function draftPlan(overrides = {}) {
       mode_specific_decomposition: ['Conversion and docs are separate ownership boundaries.'],
     },
     shared_foundation_assumptions: ['No lockfile or package manifest changes are required.'],
+    foundation: {
+      status: 'not_required',
+      paths: [],
+      commit: '',
+      owner: '',
+    },
     known_risks: ['Generated decisions may need caller edits for project-specific contracts.'],
     tasks,
   };

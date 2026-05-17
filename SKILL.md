@@ -14,8 +14,9 @@ Before using this skill, ensure you have:
 ## Caveats
 
 - Worker CLIs run non-interactively with autonomous or permission-bypass flags such as `--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, or `--auto`, depending on the configured CLI template.
-
-- The caller session owns shared foundation work before launch and final diff review, validation, merge, and worktree cleanup after workers finish. The runtime supervises workers, but it does not replace final human or caller-session integration review as models can still touch shared files and make incompatible choices.
+- Every worker, orchestrator, and reviewer CLI must already be installed, authenticated, and configured with a usable model. Run `scripts/preflight.js` and stop on failures before decomposition or launch.
+- The caller session owns shared foundation work before launch and final diff review, validation, merge, and worktree cleanup after workers finish. The runtime supervises workers, but it does not replace final human or caller-session integration review.
+- Git worktrees reduce accidental overlap, but they do not guarantee conflict-free results. Models can still touch shared files, make incompatible choices, or require manual reconciliation even when prompts and path boundaries are explicit.
 
 ## Caller Support
 
@@ -122,12 +123,13 @@ Evaluate whether the user's overall task is suitable for multi-agent orchestrati
   - `single_worker`: substantial but mostly sequential work that benefits from delegated background execution. Create exactly one worker task.
   - `parallel`: genuinely independent task boundaries with non-overlapping file ownership and worker-specific validation. Use this only when workers can proceed at the same time safely.
   - `phased`: shared foundations must be handled first, then independent leaves can fan out to workers. Implement and commit the shared foundation in the caller session before writing the final worker task map.
-- Record the candidate topology before decomposition: `execution_mode`, rejected alternatives with reasons, `reason`, `dependency_notes`, shared-foundation notes, and the mode-specific task decomposition.
+- Record the candidate topology before decomposition: `execution_mode`, rejected alternatives with reasons, `reason`, `dependency_notes`, shared-foundation notes, machine-readable `foundation` state, and the mode-specific task decomposition.
 - Treat the topology as a candidate until after optional Phase 1.5 review and reconciliation. The main caller may change the mode before writing final `coord/context.json`, or decide not to launch workers.
 - **Handle Overlapping Foundations First (CRITICAL):** True non-overlapping boundaries are rare. If agents will need to touch shared files (e.g., `package.json`, generic `types.ts`, test config, database schemas, router setups), **you must handle these sequentially before spawning agents.** If you spawn parallel worktrees that modify the same foundational files, you will create impossible merge conflicts.
   - *Action:* Tell the user: "I need to set up the shared foundation (schemas, package.json, etc.) first to prevent merge conflicts."
   - *Action:* Implement these shared foundations yourself in the current session.
   - *Action:* Commit the foundation.
+  - *Action:* Record the committed foundation paths and commit in the draft/context `foundation` block.
   - *Action:* Only then, split the remaining work into truly parallel, isolated agent tasks.
 - **Proceed** only for `single_worker`, `parallel`, or `phased` after the foundation is either already set or has just been completed by you.
 
@@ -135,8 +137,9 @@ If proceeding:
 1. Break the work down into non-overlapping agent boundaries.
 2. Explicitly map out what files each agent is allowed to touch.
 3. List `read_first` files/paths for each agent so workers begin with targeted source context instead of broad repo scans.
-4. Determine a `validation_command` for each agent. **Prefer JSON-argv form** so the loop can run it with no shell expansion (e.g. `--validate '["npm","run","test","--","src/foo"]'`); fall back to a shell string only when you need pipes / `&&` / env expansion (e.g. `--validate "npm run lint && npm test"`). Use `null` if no automated validation is possible/needed.
-5. Prepare a mapping of agent names to their task descriptions.
+4. Fill the `foundation` block: `not_required` with empty paths, `completed_committed` with paths and commit, or `owned_by_worker` with paths and owner.
+5. Determine a `validation_command` for each agent. **Prefer JSON-argv form** so the loop can run it with no shell expansion (e.g. `--validate '["npm","run","test","--","src/foo"]'`); fall back to a shell string only when you need pipes / `&&` / env expansion (e.g. `--validate "npm run lint && npm test"`). Use `null` if no automated validation is possible/needed.
+6. Prepare a mapping of agent names to their task descriptions.
 
 ### Guided Starter Helper
 
@@ -173,7 +176,7 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/draft-plan.js \
   --coord ./coord
 ```
 
-The optional helper uses `orchestrator_cli` (falling back to `default_cli` through normal config), writes `coord/plan-reviews/draft-plan-v1.prompt.md`, `coord/plan-reviews/draft-plan-v1.raw.md`, and the canonical `coord/plan-reviews/draft-plan-v1.json`, and must not launch workers or edit project files. The caller still owns review and approval. Include the user requirements, constraints, candidate execution topology, rejected topology alternatives, topology reason, dependency notes, candidate file ownership, shared-foundation assumptions, mode-specific task decomposition, validation commands, known risks, and any sequencing dependencies.
+The optional helper uses `orchestrator_cli` (falling back to `default_cli` through normal config), writes `coord/plan-reviews/draft-plan-v1.prompt.md`, `coord/plan-reviews/draft-plan-v1.raw.md`, and the canonical `coord/plan-reviews/draft-plan-v1.json`, and must not launch workers or edit project files. The caller still owns review and approval. Include the user requirements, constraints, candidate execution topology, rejected topology alternatives, topology reason, dependency notes, candidate file ownership, shared-foundation assumptions, machine-readable foundation state, mode-specific task decomposition, validation commands, known risks, and any sequencing dependencies.
 
 Run one read-only review iteration:
 
@@ -213,7 +216,7 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/materialize-plan.js \
   --coord ./coord
 ```
 
-The materializer preserves existing compact `chat_context`, writes the final execution topology and task map to `context.json`, writes topology rationale, rejected alternatives, shared-foundation assumptions, durable requirements, constraints, file ownership, sequencing notes, validation commands, and known risks to `DECISIONS.md`, writes user intent, important chat nuance, environment assumptions, and non-durable rationale to `CALLER_CONTEXT.md`, then validates the generated context. It refuses to overwrite an existing non-empty task map unless `--force` is passed. If the final topology is `direct`, it writes no worker tasks and tells the caller not to run `launch-all.js`.
+The materializer preserves existing compact `chat_context`, writes the final execution topology, foundation contract, and task map to `context.json`, writes topology rationale, rejected alternatives, shared-foundation assumptions, foundation contract, durable requirements, constraints, file ownership, sequencing notes, validation commands, and known risks to `DECISIONS.md`, writes user intent, important chat nuance, environment assumptions, and non-durable rationale to `CALLER_CONTEXT.md`, then validates the generated context. It refuses to overwrite an existing non-empty task map unless `--force` is passed. If the final topology is `direct`, it writes no worker tasks and tells the caller not to run `launch-all.js`.
 
 ## Phase 2 — Bootstrap
 When starting a new orchestrated project, create the `coord/` directory at the project root and initialize these files.
@@ -231,9 +234,9 @@ node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/bootstrap.js \
 ### `coord/context.json`
 Because the orchestrator loop runs after your interactive caller session is done, it has **zero access** to your original chat history. **You must heavily compress all user preferences, architectural nuances, and conversational context into a structured `chat_context` object.** Keep `context.json` compact: it is serialized into arbitration prompts. Do not paste long specs, transcripts, file contents, or diffs here.
 
-You should also include the final execution topology and the tasks you generated in Phase 1 under the `"tasks"` key. If the final mode is `direct`, do not create or launch an orchestrated run.
+You should also include the final execution topology, machine-readable foundation contract, and the tasks you generated in Phase 1 under the `"tasks"` key. If the final mode is `direct`, do not create or launch an orchestrated run.
 
-`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`, `execution_topology: { execution_mode: "", reason: "", dependency_notes: [] }`, `tasks: {}`). After running it, edit `context.json` with the structured shape below or run `scripts/materialize-plan.js` from an approved draft before you spawn any workers. Put durable requirements, architecture, shared contracts, topology rationale, and file ownership in `coord/DECISIONS.md`; put user intent, important chat nuance, environment assumptions, and non-durable rationale in `coord/CALLER_CONTEXT.md`; use `context.json` as the compact run index.
+`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`, `execution_topology: { execution_mode: "", reason: "", dependency_notes: [] }`, `foundation: { status: "", paths: [] }`, `tasks: {}`). After running it, edit `context.json` with the structured shape below or run `scripts/materialize-plan.js` from an approved draft before you spawn any workers. Put durable requirements, architecture, shared contracts, topology rationale, foundation rationale, and file ownership in `coord/DECISIONS.md`; put user intent, important chat nuance, environment assumptions, and non-durable rationale in `coord/CALLER_CONTEXT.md`; use `context.json` as the compact run index.
 
 ```json
 {
@@ -248,6 +251,12 @@ You should also include the final execution topology and the tasks you generated
     "execution_mode": "<single_worker | parallel | phased>",
     "reason": "<why this topology is the right amount of orchestration>",
     "dependency_notes": ["<shared foundations already committed, fan-out dependencies, or sequencing constraints>"]
+  },
+  "foundation": {
+    "status": "<not_required | completed_committed | owned_by_worker>",
+    "paths": ["<shared foundation path/glob, empty when not_required>"],
+    "commit": "<required git commit/revision when completed_committed>",
+    "owner": "<required task name when owned_by_worker>"
   },
   "requirements": ["<compact requirement summary 1>", "<compact requirement summary 2>"],
   "constraints": ["<compact constraint summary 1>", "<compact constraint summary 2>"],
@@ -280,7 +289,7 @@ Before launching, you can confirm `coord/context.json` is launchable with the sh
 node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/validate-context.js --coord ./coord
 ```
 
-The validator checks the execution topology, per-task name safety, allowed/forbidden path shape, CLI references against `cli_templates`, and common foundation-path leaks. `scripts/materialize-plan.js`, `scripts/prepare-run.js --approve-draft`, and `scripts/launch-all.js` all call the same validator internally; running it standalone is useful after hand-edits to `context.json`.
+The validator checks the execution topology, foundation status, committed foundation cleanliness, per-task name safety, allowed/forbidden path shape, CLI references against `cli_templates`, and common foundation-path leaks. `scripts/materialize-plan.js`, `scripts/prepare-run.js --approve-draft`, and `scripts/launch-all.js` all call the same validator internally; running it standalone is useful after hand-edits to `context.json`.
 
 ## Phase 3 — Prompt Generation
 

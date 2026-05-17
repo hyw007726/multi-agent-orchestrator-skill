@@ -19,6 +19,12 @@ encode anything the headless background loop won't otherwise know.
     "reason": "string — why this topology is the right amount of orchestration",
     "dependency_notes": ["string — shared-foundation, sequencing, or fan-out dependency notes"]
   },
+  "foundation": {
+    "status": "string — not_required | completed_committed | owned_by_worker",
+    "paths": ["string — shared foundation paths/globs; empty when status is not_required"],
+    "commit": "string | omitted — required when status is completed_committed",
+    "owner": "string | omitted — task name required when status is owned_by_worker"
+  },
   "requirements": ["string — compact requirement summaries only; durable detail belongs in DECISIONS.md"],
   "constraints": ["string — compact constraint summaries only; durable detail belongs in DECISIONS.md"],
   "created_at": "ISO 8601 timestamp",
@@ -41,8 +47,9 @@ encode anything the headless background loop won't otherwise know.
 
 `bootstrap.js` initializes `chat_context` and `tasks` as empty objects (or wraps
 a `--chat-context` string as `{ "summary": "<string>" }` for backward compat)
-and creates an empty `execution_topology` skeleton; the orchestrator session is
-expected to use the `Edit` tool to populate them between Phase 2 and Phase 4.
+and creates empty `execution_topology` and `foundation` skeletons; the
+orchestrator session is expected to use the `Edit` tool to populate them between
+Phase 2 and Phase 4.
 Keep this file compact: it is serialized into arbitration prompts. Do not paste
 full specs, long chat transcripts, file contents, or large diffs into it. Put
 durable requirements, architecture, topology rationale, shared API/data
@@ -56,6 +63,13 @@ should handle the task without launching workers. `single_worker` means exactly
 one task should be present. `parallel` means worker boundaries are independent.
 `phased` means shared foundation work has already been completed and committed,
 and the remaining `tasks` are the independent fan-out leaves.
+
+`foundation` is the machine-readable pre-spawn foundation contract. Use
+`not_required` with an empty `paths` array when no shared files need foundation
+work. Use `completed_committed` with `paths` plus `commit` when the caller has
+already committed shared files before launch. Use `owned_by_worker` with `paths`
+plus `owner` only when exactly one worker is allowed to edit those shared files;
+all other workers must forbid them.
 
 The full per-agent record under `tasks` is the canonical contract — `launch-all.js`
 reads it to drive worktree creation, prompt rendering, and the `spawn-agent.js`
@@ -136,6 +150,12 @@ Draft plans are versioned:
     "mode_specific_decomposition": ["string"]
   },
   "shared_foundation_assumptions": ["string"],
+  "foundation": {
+    "status": "not_required | completed_committed | owned_by_worker",
+    "paths": ["string"],
+    "commit": "string — required for completed_committed; otherwise empty or omitted",
+    "owner": "string — required for owned_by_worker; otherwise empty or omitted"
+  },
   "known_risks": ["string"],
   "tasks": {
     "agent-name": {
@@ -234,14 +254,17 @@ The generated `context.json` stays compact and machine-oriented:
 - `project`, `requirements`, and `constraints` come from the draft.
 - `chat_context` is preserved from the existing bootstrapped context.
 - `execution_topology` uses the draft topology and compact dependency notes.
+- `foundation` carries the launch-facing shared-foundation status, paths, commit,
+  and optional owning worker.
 - `tasks` contains only launch-facing fields: `description`, `read_first`,
   `allowed_paths`, `forbidden_paths`, `validation_command`, and optional CLI or
   timeout overrides if present.
 
 The generated `DECISIONS.md` carries durable human-readable detail:
 topology rationale, rejected alternatives, dependency and shared-foundation
-notes, durable requirements, constraints, file ownership, per-worker sequencing
-notes, validation commands, known risks, and materialization provenance. The
+notes, the foundation contract, durable requirements, constraints, file
+ownership, per-worker sequencing notes, validation commands, known risks, and
+materialization provenance. The
 script refuses to overwrite an existing non-empty `context.json` task map unless
 `--force` is provided. Manual edits remain supported: callers may skip the
 script and edit `context.json` / `DECISIONS.md` directly.

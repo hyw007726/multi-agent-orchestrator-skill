@@ -124,11 +124,22 @@ function buildContextFromDraftPlan(draftPlan, options = {}) {
         ...(topology.shared_foundation_notes || []).map((note) => `Shared foundation: ${note}`),
       ]),
     },
+    foundation: buildContextFoundation(draftPlan.foundation),
     requirements: compactList(draftPlan.user_requirements || []),
     constraints: compactList(draftPlan.constraints || []),
     created_at: existingContext.created_at || generatedAt,
     tasks: executionMode === "direct" ? {} : buildContextTasks(draftPlan.tasks || {}),
   };
+}
+
+function buildContextFoundation(foundation) {
+  const value = foundation && typeof foundation === "object" ? foundation : {};
+  return stripUndefined({
+    status: optionalString(value.status) || "not_required",
+    paths: compactList(value.paths || []),
+    commit: optionalString(value.commit),
+    owner: optionalString(value.owner),
+  });
 }
 
 function buildContextTasks(tasks) {
@@ -177,6 +188,9 @@ function buildDecisionsMarkdown(draftPlan, options = {}) {
       ...(topology.shared_foundation_notes || []),
       ...(draftPlan.shared_foundation_assumptions || []).map((item) => `Assumption: ${item}`),
     ], "No shared-foundation assumptions recorded."),
+    "",
+    "### Foundation Contract",
+    formatFoundationContract(draftPlan.foundation),
     "",
     "## Durable Requirements",
     formatBullets(draftPlan.user_requirements || [], "No durable requirements recorded."),
@@ -288,6 +302,24 @@ function formatTaskOwnership(tasks, executionMode) {
     "- Sequencing notes:",
     indentBullets(task.sequencing_notes || [], "No sequencing notes recorded."),
   ].join("\n")).join("\n\n");
+}
+
+function formatFoundationContract(foundation) {
+  if (!foundation || typeof foundation !== "object") {
+    return "- Foundation status: not recorded.";
+  }
+  const status = foundation.status || "(unknown)";
+  const lines = [
+    `- Status: ${status}`,
+    `- Paths: ${formatInlineList(foundation.paths)}`,
+  ];
+  if (foundation.commit) {
+    lines.push(`- Commit: \`${foundation.commit}\``);
+  }
+  if (foundation.owner) {
+    lines.push(`- Owner: ${foundation.owner}`);
+  }
+  return lines.join("\n");
 }
 
 function formatValidationCommand(value) {

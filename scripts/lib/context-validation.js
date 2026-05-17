@@ -1,9 +1,11 @@
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 const { validateCliTemplate } = require("./cli-template");
 
 const VALID_EXECUTION_MODES = new Set(["direct", "single_worker", "parallel", "phased"]);
 const LAUNCHABLE_EXECUTION_MODES = new Set(["single_worker", "parallel", "phased"]);
+const VALID_FOUNDATION_STATUSES = new Set(["not_required", "completed_committed", "owned_by_worker"]);
 const SAFE_TASK_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const BROAD_PATTERNS = new Set([".", "./", "*", "./*", "**", "./**", "**/*", "./**/*"]);
 
@@ -83,6 +85,8 @@ function validateContext(context, config, options = {}) {
     warnings.push(`execution_mode "${executionMode}" usually needs at least two independent worker tasks; use single_worker if this is sequential.`);
   }
 
+  const foundation = validateFoundationRecord(context.foundation, taskNames, executionMode, requireLaunchable, errors, warnings);
+
   const resolvedTasks = [];
   for (const taskName of taskNames) {
     validateTaskName(taskName, errors);
@@ -101,7 +105,8 @@ function validateContext(context, config, options = {}) {
   }
 
   validateOwnershipRisks(resolvedTasks, executionMode, warnings);
-  validateFoundationWarnings(resolvedTasks, executionMode, projectRoot, coordDir, warnings);
+  validateFoundationSafety(resolvedTasks, executionMode, projectRoot, coordDir, foundation, requireLaunchable, errors, warnings);
+  validateCompletedFoundationGitState(foundation, projectRoot, errors);
 
   return { ok: errors.length === 0, errors, warnings };
 }
@@ -264,25 +269,152 @@ function validateOwnershipRisks(tasks, executionMode, warnings) {
   }
 }
 
-function validateFoundationWarnings(tasks, executionMode, projectRoot, coordDir, warnings) {
-  if ((executionMode !== "parallel" && executionMode !== "phased") || tasks.length < 2) return;
-
-  const foundations = existingFoundationPaths(projectRoot, coordDir);
-  if (foundations.length === 0) return;
-
-  const examples = [];
-  for (const task of tasks) {
-    const missing = foundations.filter((foundation) =>
-      !task.forbiddenPaths.some((forbidden) => patternsOverlap(forbidden, analyzePathPattern(foundation)))
-    );
-    if (missing.length > 0) {
-      examples.push(`${task.name} missing ${missing.slice(0, 4).join(", ")}${missing.length > 4 ? ", ..." : ""}`);
+function validateFoundationRecord(value, taskNames, executionMode, requireLaunchable, errors, warnings) {
+  const fanoutMode = executionMode === "parallel" || executionMode === "phased";
+  const target = requireLaunchable ? errors : warnings;
+  if (value === undefined) {
+    if (fanoutMode) {
+      target.push("context.json foundation is required for parallel/phased runs. Set foundation.status to not_required, completed_committed, or owned_by_worker before launch.");
     }
-    if (examples.length >= 4) break;
+    return null;
+  }
+  if (!isPlainObject(value)) {
+    errors.push("context.json foundation must be an object with status, paths, and optional commit/owner.");
+    return null;
   }
 
-  if (examples.length > 0) {
-    warnings.push(`Some parallel/phased tasks do not forbid common foundational paths (${examples.join("; ")}). If foundation work is already committed, add these to forbidden_paths or document the owning worker in DECISIONS.md.`);
+  const status = normalizeString(value.status);
+  if (!VALID_FOUNDATION_STATUSES.has(status)) {
+    errors.push("context.json foundation.status must be not_required, completed_committed, or owned_by_worker.");
+  }
+  validateStringArray(value.paths, "foundation.paths", { required: true }, errors);
+  const paths = compactStringList(value.paths);
+  const commit = normalizeString(value.commit);
+  const owner = normalizeString(value.owner);
+
+  if (value.commit !== undefined && typeof value.commit !== "string") {
+    errors.push("foundation.commit must be a string when provided.");
+  }
+  if (value.owner !== undefined && typeof value.owner !== "string") {
+    errors.push("foundation.owner must be a string when provided.");
+  }
+
+  if (status === "not_required") {
+    if (paths.length > 0) {
+      errors.push("foundation.paths must be empty when foundation.status is not_required.");
+    }
+    if (commit) {
+      errors.push("foundation.commit must be empty when foundation.status is not_required.");
+    }
+    if (owner) {
+      errors.push("foundation.owner must be empty when foundation.status is not_required.");
+    }
+  }
+
+  if (status === "completed_committed") {
+    if (paths.length === 0) {
+      errors.push("foundation.paths must list committed foundation paths when foundation.status is completed_committed.");
+    }
+    if (!commit) {
+      errors.push("foundation.commit is required when foundation.status is completed_committed.");
+    }
+    if (owner) {
+      errors.push("foundation.owner must be empty when foundation.status is completed_committed.");
+    }
+  }
+
+  if (status === "owned_by_worker") {
+    if (paths.length === 0) {
+      errors.push("foundation.paths must list worker-owned foundation paths when foundation.status is owned_by_worker.");
+    }
+    if (!owner) {
+      errors.push("foundation.owner is required when foundation.status is owned_by_worker.");
+    } else if (!taskNames.includes(owner)) {
+      errors.push(`foundation.owner "${owner}" must match one of the task names.`);
+    }
+    if (commit) {
+      errors.push("foundation.commit must be empty when foundation.status is owned_by_worker.");
+    }
+  }
+
+  return { status, paths, commit, owner };
+}
+
+function validateFoundationSafety(tasks, executionMode, projectRoot, coordDir, foundation, requireLaunchable, errors, warnings) {
+  if ((executionMode !== "parallel" && executionMode !== "phased") || tasks.length < 2) return;
+
+  const sink = requireLaunchable ? errors : warnings;
+  const commonFoundations = existingFoundationPaths(projectRoot, coordDir);
+  const declaredFoundations = foundation ? foundation.paths : [];
+  const foundations = mergeFoundationPaths(commonFoundations, declaredFoundations);
+  if (foundations.length === 0) return;
+
+  const ownedPaths = foundation?.status === "owned_by_worker"
+    ? normalizePathList(foundation.paths)
+    : [];
+  const owner = foundation?.status === "owned_by_worker" ? foundation.owner : "";
+  const ownerTask = owner ? tasks.find((task) => task.name === owner) : null;
+
+  for (const foundationPath of foundations) {
+    const owned = ownerTask && ownedPaths.some((ownedPath) => patternsOverlap(ownedPath, foundationPath));
+    if (owned) {
+      validateOwnedFoundationPath(ownerTask, foundationPath, sink);
+      for (const task of tasks) {
+        if (task.name === ownerTask.name) continue;
+        validateForbiddenFoundationPath(task, foundationPath, sink, { ownedBy: ownerTask.name });
+      }
+    } else {
+      for (const task of tasks) {
+        validateForbiddenFoundationPath(task, foundationPath, sink);
+      }
+    }
+  }
+}
+
+function validateOwnedFoundationPath(task, foundationPath, sink) {
+  const allowed = task.allowedPaths.some((allowedPath) => patternsOverlap(allowedPath, foundationPath));
+  if (!allowed) {
+    sink.push(`Foundation path "${foundationPath.raw}" is owned by ${task.name}, but tasks.${task.name}.allowed_paths does not include it.`);
+  }
+  const forbidden = task.forbiddenPaths.some((forbiddenPath) => patternsOverlap(forbiddenPath, foundationPath));
+  if (forbidden) {
+    sink.push(`Foundation path "${foundationPath.raw}" is owned by ${task.name}, but tasks.${task.name}.forbidden_paths also forbids it.`);
+  }
+}
+
+function validateForbiddenFoundationPath(task, foundationPath, sink, options = {}) {
+  const forbidden = task.forbiddenPaths.some((forbiddenPath) => patternsOverlap(forbiddenPath, foundationPath));
+  if (forbidden) return;
+  const suffix = options.ownedBy
+    ? ` It is declared as owned by ${options.ownedBy}, so every other worker must forbid it.`
+    : " Add it to forbidden_paths or declare exactly one foundation owner in DECISIONS.md and context.json.";
+  sink.push(`Foundation path "${foundationPath.raw}" is not forbidden by tasks.${task.name}.forbidden_paths.${suffix}`);
+}
+
+function validateCompletedFoundationGitState(foundation, projectRoot, errors) {
+  if (!foundation || foundation.status !== "completed_committed") return;
+  if (!foundation.commit || foundation.paths.length === 0) return;
+
+  const commit = foundation.commit;
+  const commitCheck = runGit(projectRoot, ["cat-file", "-e", `${commit}^{commit}`]);
+  if (commitCheck.status !== 0) {
+    errors.push(`foundation.commit "${commit}" does not resolve to a git commit.`);
+    return;
+  }
+
+  const ancestorCheck = runGit(projectRoot, ["merge-base", "--is-ancestor", commit, "HEAD"]);
+  if (ancestorCheck.status !== 0) {
+    errors.push(`foundation.commit "${commit}" is not an ancestor of HEAD, so worker branches may not include the committed foundation.`);
+  }
+
+  const status = runGit(projectRoot, ["status", "--porcelain", "--untracked-files=all", "--", ...foundation.paths]);
+  if (status.status !== 0) {
+    errors.push(`Unable to check committed foundation paths with git status: ${status.stderr || status.stdout || "unknown error"}`.trim());
+    return;
+  }
+  const dirty = status.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (dirty.length > 0) {
+    errors.push(`foundation.status is completed_committed, but listed foundation paths have uncommitted changes: ${dirty.slice(0, 6).join("; ")}${dirty.length > 6 ? "; ..." : ""}. Commit or revert these changes before launching workers.`);
   }
 }
 
@@ -299,11 +431,28 @@ function existingFoundationPaths(projectRoot, coordDir) {
   return out;
 }
 
+function mergeFoundationPaths(commonFoundations, declaredFoundations) {
+  const out = new Map();
+  for (const raw of [...commonFoundations, ...declaredFoundations]) {
+    if (typeof raw !== "string" || raw.trim() === "") continue;
+    const analyzed = analyzePathPattern(raw);
+    if (!out.has(analyzed.normalized)) out.set(analyzed.normalized, analyzed);
+  }
+  return Array.from(out.values());
+}
+
 function normalizePathList(value) {
   if (!Array.isArray(value)) return [];
   return value
     .filter((item) => typeof item === "string" && item.trim() !== "")
     .map(analyzePathPattern);
+}
+
+function compactStringList(value) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value
+    .filter((item) => typeof item === "string" && item.trim() !== "")
+    .map((item) => item.trim())));
 }
 
 function analyzePathPattern(raw) {
@@ -376,6 +525,19 @@ function isPathPrefix(parent, child) {
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function runGit(cwd, args) {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return {
+    status: result.status === null ? 1 : result.status,
+    stdout: result.stdout || "",
+    stderr: result.stderr || (result.error ? result.error.message : ""),
+  };
 }
 
 function isPlainObject(value) {

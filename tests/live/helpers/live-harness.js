@@ -720,6 +720,7 @@ function writeReviewerSmokeDraft(projectRoot) {
       mode_specific_decomposition: ["One worker writes live-worker-output.txt and requests review."],
     },
     shared_foundation_assumptions: ["README.md is read-only context."],
+    foundation: { status: "not_required", paths: [], commit: "", owner: "" },
     known_risks: ["Live model output may fail JSON formatting and should be diagnosed from saved artifacts."],
     tasks: {
       "agent-live": {
@@ -921,6 +922,7 @@ function allLivePlan(providerName) {
       mode_specific_decomposition: ["One worker asks approval, waits, writes live-worker-output.txt, and requests final review."],
     },
     shared_foundation_assumptions: ["README.md and coord files are read-only context except for documented request staging."],
+    foundation: { status: "not_required", paths: [], commit: "", owner: "" },
     known_risks: ["Live model behavior may fail JSON formatting, waiting, or exact file content requirements."],
     tasks: {
       "agent-live-all": {

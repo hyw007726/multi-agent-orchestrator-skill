@@ -52,8 +52,9 @@ Use this only in repositories where you are comfortable reviewing and reverting 
 Caveats:
 
 - Worker CLIs run non-interactively with autonomous or permission-bypass flags such as `--yolo`, `--auto`, or `--dangerously-skip-permissions`, depending on the configured CLI template.
-
-- The caller session owns shared foundation work before launch and final diff review, validation, merge, and worktree cleanup after workers finish. The runtime supervises workers, but it does not replace final human or caller-session integration review as models can still touch shared files and make incompatible choices.
+- Every worker, orchestrator, and reviewer CLI must already be installed, authenticated, and configured with a usable model. Run preflight and stop on failures before decomposition or launch.
+- The caller session owns shared foundation work before launch and final diff review, validation, merge, and worktree cleanup after workers finish. Worker output is not automatically merged into the main branch.
+- Git worktrees reduce accidental overlap, but they do not guarantee conflict-free results. Models can still touch shared files, make incompatible choices, or require manual reconciliation even when task prompts forbid conflicts.
 
 ## Prerequisites
 
@@ -151,7 +152,7 @@ For Gemini CLI:
 The caller session will:
 
 1. choose an execution topology: `direct`, `single_worker`, `parallel`, or `phased`;
-2. handle shared foundation files first;
+2. handle shared foundation files first and record the foundation status;
 3. draft the topology-aware decomposition;
 4. create or update `coord/context.json`, `coord/DECISIONS.md`, and `coord/CALLER_CONTEXT.md`;
 5. launch worker worktrees and the background supervision loop;
@@ -204,10 +205,10 @@ Most users should let the caller agent run these commands after it has read `SKI
 
 ## How It Works
 
-1. The interactive caller session acts as architect. It chooses the execution topology, decomposes the task, resolves shared foundations, assigns file ownership, and gives each worker a `read_first` file/path list.
+1. The interactive caller session acts as architect. It chooses the execution topology, decomposes the task, resolves shared foundations, records the machine-readable foundation contract, assigns file ownership, and gives each worker a `read_first` file/path list.
 2. `scripts/prepare-run.js` or `scripts/bootstrap.js` initializes `coord/`, the state directory shared by the caller, workers, and background loop.
 3. `scripts/materialize-plan.js` converts an approved draft into compact `coord/context.json`, durable `coord/DECISIONS.md`, and human-readable `coord/CALLER_CONTEXT.md`.
-4. `scripts/launch-all.js` validates context, creates one git worktree per agent, renders prompts from `references/worker-prompt-template.md`, spawns workers, and starts the background loop.
+4. `scripts/launch-all.js` validates context, blocks ambiguous or dirty foundation state, creates one git worktree per agent, renders prompts from `references/worker-prompt-template.md`, spawns workers, and starts the background loop.
 5. `scripts/orchestrator-loop.js` arbitrates questions, reads optional progress heartbeats, converts progress timeouts into arbitration requests, detects hung workers, restarts within limits, and runs validation commands.
 6. When all workers finish, the loop writes `coord/review-summary.txt` from worker self-reports.
 7. The caller session reviews diffs, runs final checks, merges approved work, and removes completed worktrees.

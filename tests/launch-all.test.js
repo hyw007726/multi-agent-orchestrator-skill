@@ -40,26 +40,27 @@ describe('launch-all smoke test', () => {
         reason: 'Fake workers own separate paths.',
         dependency_notes: [],
       };
+      context.foundation = { status: 'not_required', paths: [] };
       context.tasks = {
         'agent-alpha': {
           description: 'Fake worker alpha task — produce alpha output',
           cli: 'fake',
           allowed_paths: ['alpha/**', 'tests/**'],
-          forbidden_paths: ['beta/**', 'gamma/**'],
+          forbidden_paths: ['beta/**', 'gamma/**', '.gitignore', 'orchestrator.config.js', 'coord/'],
           validation_command: null,
         },
         'agent-beta': {
           description: 'Fake worker beta task — produce beta output',
           cli: 'fake',
           allowed_paths: ['beta/**', 'tests/**'],
-          forbidden_paths: ['alpha/**', 'gamma/**'],
+          forbidden_paths: ['alpha/**', 'gamma/**', '.gitignore', 'orchestrator.config.js', 'coord/'],
           validation_command: null,
         },
         'agent-gamma': {
           description: 'Fake worker gamma task — produce gamma output',
           cli: 'fake',
           allowed_paths: ['gamma/**', 'tests/**'],
-          forbidden_paths: ['alpha/**', 'beta/**'],
+          forbidden_paths: ['alpha/**', 'beta/**', '.gitignore', 'orchestrator.config.js', 'coord/'],
           validation_command: null,
         },
       };
@@ -231,6 +232,7 @@ describe('launch-all smoke test', () => {
         reason: 'One preserved worker can be relaunched safely.',
         dependency_notes: [],
       };
+      context.foundation = { status: 'not_required', paths: [] };
       context.tasks = {
         'agent-resume': {
           description: 'Initial resume assignment',
@@ -320,6 +322,7 @@ describe('launch-all smoke test', () => {
         reason: 'Validate preserved worktree branch ownership.',
         dependency_notes: [],
       };
+      context.foundation = { status: 'not_required', paths: [] };
       context.tasks = {
         'agent-resume': {
           description: 'This worker must own its matching branch.',

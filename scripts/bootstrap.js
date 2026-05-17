@@ -43,6 +43,7 @@ function runBootstrap() {
   // Schema (see references/schemas.md):
   //   chat_context: compact structured object — { preferences, architecture, naming_conventions, gotchas, ... }
   //   execution_topology: durable topology choice — { execution_mode, reason, dependency_notes }
+  //   foundation: shared foundation contract — { status, paths, commit?, owner? }
   //   requirements/constraints: compact summaries only; durable detail belongs in DECISIONS.md.
   //   tasks:        Record<agent-name, { description, read_first?, timeout_mins?, progress_timeout_mins? }>
   // The caller session is expected to populate these between Phase 2 and Phase 4.
@@ -56,6 +57,10 @@ function runBootstrap() {
       execution_mode: "",
       reason: "",
       dependency_notes: [],
+    },
+    foundation: {
+      status: "",
+      paths: [],
     },
     requirements,
     constraints,
@@ -79,6 +84,10 @@ function runBootstrap() {
         "Commit shared foundation files before launching the worker.",
         "Use parallel or phased only after splitting independent non-overlapping leaves.",
       ],
+    },
+    foundation: {
+      status: "not_required",
+      paths: [],
     },
     requirements: ["Add a new subcommand that accepts --format and --output flags"],
     constraints: ["Must use Node.js built-ins only", "No new npm dependencies", "All paths relative to project root"],
