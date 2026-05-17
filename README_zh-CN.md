@@ -8,9 +8,9 @@ Multi-Agent Orchestrator 是一个 Agent Skill，也是一套无依赖的 Node.j
 
 你可以在 Claude Code、Codex、Gemini CLI，或任何能读取 `SKILL.md` 并执行 shell 命令的本地代码 Agent 中使用它。
 
-<!-- 后续可在这里放仪表盘截图或 GIF：
-![Dashboard showing parallel worker status](docs/assets/dashboard.png)
--->
+![Dashboard showing parallel worker status](image-1.png)
+![Dashboard showing parallel worker status](image-2.png)
+![Dashboard showing parallel worker status](image-3.png)
 
 ## 它解决什么问题
 

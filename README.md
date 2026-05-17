@@ -8,9 +8,9 @@ Multi-Agent Orchestrator is an Agent Skill and dependency-free Node.js runtime f
 
 Use it from Claude Code, Codex, Gemini CLI, or any other local coding agent that can read `SKILL.md` and run shell commands.
 
-<!-- Dashboard screenshot/GIF placeholder:
-![Dashboard showing parallel worker status](docs/assets/dashboard.png)
--->
+![Dashboard showing parallel worker status](image-1.png)
+![Dashboard showing parallel worker status](image-2.png)
+![Dashboard showing parallel worker status](image-3.png)
 
 ## What It Coordinates
 
