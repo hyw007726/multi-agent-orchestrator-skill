@@ -68,3 +68,58 @@ re-route is tracked beyond Batch 2's three core sites and is out of scope for th
 initial flip; they are recorded here so the routing intent is unambiguous.
 
 `STATUS.ERRORED` is reserved, after Batch 2, for the truly-give-up paths only.
+
+### Deferred Class B rows
+
+Batches 1–3 re-route the three currently-`ERRORED`-but-worktree-preserved
+sites and surface `needs_attention` in the dashboard. The four remaining
+Class B rows below are **not** scheduled in any `TODO.md` batch. This
+subsection records, per row, the current handling, the intended target state,
+and the explicit blocker — so a reader six months out can tell queued from
+deferred-with-rationale from no-longer-planned. No code or `TODO.md` batch is
+added here; this is intent only.
+
+- **File-ownership violation.** Current handling: rejected at
+  `scripts/orchestrator-loop.js:353` and converted to a `soft_restart` with
+  `skipWipCommit: true` (`:379`), feeding the violation back to the worker.
+  Target state: **stays as today, not flipped.** A first violation is often a
+  scope misunderstanding the worker fixes when told exactly which files were
+  out of bounds; one corrective restart is cheaper than a human round-trip and
+  is genuine Class A "cheap recovery". The park-worthy case is the *repeat*
+  violation (the worker re-offends after the corrective restart), which today
+  falls through to restart-budget-exhausted and is therefore already parked by
+  Batch 2. Blocker on a tighter flip: would need a per-violation
+  first-vs-repeat counter to park on the second offense specifically rather
+  than only at budget exhaustion; not worth the state until evidence shows
+  repeat violations burn the full budget too slowly.
+
+- **Unresolved conflict.** Current handling: `conflict` is a staged request
+  type (`scripts/orchestrator-loop.js:20`) routed to orchestrator
+  arbitration / human review. Target state: **stays as today, not flipped.**
+  This path already reaches a human through the request/arbitration channel;
+  it never auto-recovers destructively, so re-routing it to `needs_attention`
+  would duplicate the existing human hop without removing an auto-recovery
+  loop. Blocker on flipping: none technical — it is simply not worth changing,
+  because the row's purpose ("a human decides") is already met. Revisit only
+  if conflict requests start being auto-resolved without review.
+
+- **Broken CLI / auth / model setup.** Current handling: surfaces indirectly
+  as a liveness timeout (`scripts/orchestrator-loop.js:154`, now parked into
+  `needs_attention` by Batch 2) or via the CLI-failure / stalled-flag
+  threshold. Target state: **park into `needs_attention` with a setup-specific
+  `attention_reason`.** The liveness-timeout path already parks it, but the
+  reason then reads "liveness timeout" rather than "CLI/auth/model setup
+  broken", so a human cannot tell environmental breakage from a wedged worker
+  without reading the log. Blocker: needs a reliable environmental-failure
+  *detector* (auth-error / model-not-found signature in worker output)
+  distinct from a generic stall before a dedicated park reason is meaningful;
+  until that detector exists this stays folded into the liveness-timeout park.
+
+- **Ambiguous product decision.** Current handling: surfaces as a `question`
+  or `change` staged request (`scripts/orchestrator-loop.js:20`) routed to
+  arbitration / human review. Target state: **stays as today, not flipped.**
+  Like the conflict row, the request channel already routes this to a human
+  and never auto-decides the product question, so `needs_attention` would add
+  no safety. Blocker on flipping: none — deliberately not planned. Revisit
+  only if the orchestrator gains authority to answer product questions
+  autonomously, at which point the *unanswered* case would need parking.
