@@ -18,8 +18,8 @@ const {
 } = require('./helpers/temp-project');
 
 describe('loop behavior', () => {
-  // 1. Restart cap marks an agent errored.
-  it('marks agent errored when restart count exceeds max', () => {
+  // 1. Restart cap parks an agent for human attention.
+  it('parks agent for attention when restart count exceeds max', () => {
     let project;
     try {
       project = createTempProject('restart-cap-');
@@ -134,8 +134,20 @@ describe('loop behavior', () => {
 
       const agents = readJson(path.join(project.root, 'coord', 'agents.json'));
       assert.ok(agents && agents['agent-cap'], 'agents.json should contain agent-cap');
-      assert.strictEqual(agents['agent-cap'].status, 'errored',
-        `Expected "errored" but got "${agents['agent-cap'].status}"`);
+      const parked = agents['agent-cap'];
+      assert.strictEqual(parked.status, 'needs_attention',
+        `Expected "needs_attention" but got "${parked.status}"`);
+      assert.match(parked.attention_reason, /max restarts \(\d+\) exhausted/);
+      assert.ok(!Number.isNaN(Date.parse(parked.attention_at)), 'attention_at is an ISO timestamp');
+      assert.ok(parked.next_steps && parked.next_steps.length > 0, 'next_steps populated');
+      // Budget-exhausted preserves the worktree and does not respawn.
+      assert.ok(parked.worktree && fs.existsSync(parked.worktree), 'worktree preserved');
+
+      const events = readJsonl(path.join(project.root, 'coord', 'events.jsonl'));
+      const parkEvent = events.find((e) => e.event === 'agent_parked' && e.agent === 'agent-cap');
+      assert.ok(parkEvent, 'agent_parked event appended');
+      assert.match(parkEvent.reason, /max restarts \(\d+\) exhausted/);
+      assert.ok(parkEvent.data.attention_at && parkEvent.data.next_steps, 'event carries attention_at and next_steps');
 
       const log = fs.readFileSync(path.join(project.root, 'coord', 'orchestrator.log'), 'utf-8');
       assert.ok(log.includes('max restarts'),
@@ -262,7 +274,7 @@ describe('loop behavior', () => {
   });
 
   // 3. Hard-restart recovery fails closed without resetting worktree.
-  it('hard restart recovery failure marks agent errored and preserves worktree', () => {
+  it('hard restart recovery failure parks agent for attention and preserves worktree', () => {
     let project;
     try {
       project = createTempProject('hard-reset-fail-');
@@ -378,13 +390,23 @@ describe('loop behavior', () => {
 
       const agents = readJson(path.join(project.root, 'coord', 'agents.json'));
       assert.ok(agents && agents['agent-hardfail'], 'agents.json should contain agent-hardfail');
-      assert.strictEqual(agents['agent-hardfail'].status, 'errored',
-        `Expected "errored" but got "${agents['agent-hardfail'].status}"`);
+      const parked = agents['agent-hardfail'];
+      assert.strictEqual(parked.status, 'needs_attention',
+        `Expected "needs_attention" but got "${parked.status}"`);
+      assert.match(parked.attention_reason, /hard restart recovery failed:/);
+      assert.ok(!Number.isNaN(Date.parse(parked.attention_at)), 'attention_at is an ISO timestamp');
+      assert.ok(parked.next_steps && parked.next_steps.length > 0, 'next_steps populated');
 
       // Dirty worktree content must still exist — the worktree was NOT reset.
       assert.ok(fs.existsSync(dirtyFile),
         `Dirty worktree file should still exist: ${dirtyFile}`);
       assert.strictEqual(fs.readFileSync(dirtyFile, 'utf-8'), 'dirty worktree content\n');
+
+      const events = readJsonl(path.join(project.root, 'coord', 'events.jsonl'));
+      const parkEvent = events.find((e) => e.event === 'agent_parked' && e.agent === 'agent-hardfail');
+      assert.ok(parkEvent, 'agent_parked event appended');
+      assert.match(parkEvent.reason, /hard restart recovery failed:/);
+      assert.ok(parkEvent.data.attention_at && parkEvent.data.next_steps, 'event carries attention_at and next_steps');
 
       const log = fs.readFileSync(path.join(project.root, 'coord', 'orchestrator.log'), 'utf-8');
       assert.ok(
