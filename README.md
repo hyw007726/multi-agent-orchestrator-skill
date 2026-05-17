@@ -49,6 +49,12 @@ The runtime isolates workers with git worktrees, but the selected worker CLI sti
 
 Use this only in repositories where you are comfortable reviewing and reverting generated changes. Always review worker diffs before merging. The orchestrator is a coordination tool, not a replacement for code review.
 
+Caveats:
+
+- Worker CLIs run non-interactively with autonomous or permission-bypass flags such as `--yolo`, `--auto`, or `--dangerously-skip-permissions`, depending on the configured CLI template.
+
+- The caller session owns shared foundation work before launch and final diff review, validation, merge, and worktree cleanup after workers finish. The runtime supervises workers, but it does not replace final human or caller-session integration review as models can still touch shared files and make incompatible choices.
+
 ## Prerequisites
 
 - Node.js.

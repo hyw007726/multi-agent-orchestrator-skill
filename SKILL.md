@@ -11,6 +11,12 @@ This skill defines a caller-neutral, CLI-agnostic multi-agent orchestration syst
 Before using this skill, ensure you have:
 1. **A Headless Worker CLI**: Installed globally. This skill ships with `default_cli: kilo`, and can orchestrate **Claude Code**, **Codex**, **Gemini**, **Kilo Code**, **OpenCode**, or any other CLI added to `cli_templates` in `orchestrator.config.jsonc`. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
 
+## Caveats
+
+- Worker CLIs run non-interactively with autonomous or permission-bypass flags such as `--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, or `--auto`, depending on the configured CLI template.
+
+- The caller session owns shared foundation work before launch and final diff review, validation, merge, and worktree cleanup after workers finish. The runtime supervises workers, but it does not replace final human or caller-session integration review as models can still touch shared files and make incompatible choices.
+
 ## Caller Support
 
 Use this workflow from any local coding-agent caller that can read `SKILL.md` and run shell commands:
