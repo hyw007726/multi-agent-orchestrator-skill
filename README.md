@@ -1,8 +1,8 @@
 # Multi-Agent Orchestrator
 
-Run several coding agents on one repository without letting them collide.
+Run parallel coding agents safely with git worktree isolation, scoped prompts, validation, restarts, and multi-CLI support.
 
-Multi-Agent Orchestrator is an Agent Skill and dependency-free Node.js runtime for splitting large coding tasks into parallel headless workers. It creates isolated git worktrees, gives every worker a scoped prompt and file boundary, supervises progress, restarts stuck agents, runs validation commands, and writes a deterministic final handoff summary so your interactive session can merge the results.
+Multi-Agent Orchestrator is an Agent Skill and dependency-free Node.js runtime for coordinating multiple headless coding agents on one repository. It splits large tasks into isolated git worktrees, gives every worker explicit file ownership, supervises progress, restarts stuck agents, runs validation commands, and writes a deterministic final handoff summary for review and merge.
 
 Use it from Codex, Gemini CLI, Claude Code, or any local coding agent that can read `SKILL.md` and run shell commands.
 
