@@ -7,7 +7,7 @@ const { spawn, spawnSync } = require("child_process");
 const { loadConfig } = require("./lib/config");
 const { pidMatchesCli, safeKill } = require("./lib/process");
 const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL, appendJSONL } = require("./lib/locking");
-const { renderWorkerPrompt, renderWorkerRestartPrompt } = require("./lib/prompt-render");
+const { renderRestartPrompt } = require("./lib/restart-prompt");
 const { STATUS, transitionAgentStatus, parkAgentForAttention, parkRationale } = require("./lib/status");
 const { appendEvent } = require("./lib/events");
 const { cliTemplateMode, cliTemplateProcessMatch, spawnCliTemplate } = require("./lib/cli-template");
@@ -617,42 +617,6 @@ async function runLoop() {
     }
   }
 
-  function renderRestartPrompt({ name, instruction, worktree, paths, log }) {
-    const contractPrompt = renderRestartContractPrompt({ name, worktree, paths, log });
-    return renderWorkerRestartPrompt(instruction, contractPrompt);
-  }
-
-  function renderRestartContractPrompt({ name, worktree, paths, log }) {
-    try {
-      const context = readJSON(paths.context);
-      const task = context.tasks?.[name];
-      if (!task) return "";
-
-      const templatePath = path.resolve(__dirname, "..", "references", "worker-prompt-template.md");
-      const template = fs.readFileSync(templatePath, "utf-8");
-      const contractPrompt = renderWorkerPrompt(template, {
-        ASSIGNED_TASK: task.description || "",
-        PROJECT_DESCRIPTION: context.project || "",
-        AGENT_NAME: name,
-        WORKTREE_PATH: worktree || "",
-        ALLOWED_PATHS_LIST: task.allowed_paths || [],
-        FORBIDDEN_PATHS_LIST: task.forbidden_paths || [],
-        READ_FIRST_LIST: task.read_first || task.relevant_files || [],
-      });
-      const callerContext = readTextIfExists(paths.callerContextMd).trim();
-      if (!callerContext) return contractPrompt;
-      return [
-        contractPrompt,
-        "",
-        "## Caller Session Context from coord/CALLER_CONTEXT.md",
-        callerContext,
-        "",
-      ].join("\n");
-    } catch (err) {
-      log(`Restart prompt contract render failed for ${name}: ${err.message}`);
-      return "";
-    }
-  }
 
   // Marks resolved/rejected requests in requests.jsonl, appends the full disposition
   // audit log, and keeps decisions.json as a bounded recent window for prompts/dashboard.
