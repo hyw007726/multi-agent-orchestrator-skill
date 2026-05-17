@@ -114,6 +114,8 @@ function inspectLiveWorkspace(workspace) {
   const loopPid = readTextIfExists(path.join(coordDir, "orchestrator.instance.lock", "pid"))?.trim() || null;
   const reviewStreams = findReviewStreams(coordDir);
   const logFiles = findLogFiles(coordDir, agents);
+  const roles = normalizeSessionRoles(session);
+  const tailCommands = buildTailCommands(session, reviewStreams, logFiles);
 
   return {
     workspace: root,
@@ -121,6 +123,7 @@ function inspectLiveWorkspace(workspace) {
     provider: session.provider || inferred.provider,
     test: session.test || inferred.test,
     created_at: session.created_at || null,
+    roles,
     models: session.models || {},
     coord_dir: fs.existsSync(coordDir) ? coordDir : null,
     orchestrator_pid: loopPid,
@@ -129,8 +132,9 @@ function inspectLiveWorkspace(workspace) {
     recent_decisions: Array.isArray(decisions) ? decisions.slice(-5) : [],
     review_streams: reviewStreams,
     log_files: logFiles,
+    tail_commands: tailCommands,
     detections: detectKnownLiveIssues(reviewStreams, logFiles),
-    commands: buildCommands(root, coordDir, loopPid, agents, logFiles),
+    commands: buildCommands(root, coordDir, loopPid, agents, reviewStreams, logFiles),
   };
 }
 
@@ -181,6 +185,12 @@ function findLogFiles(coordDir, agents) {
   return out;
 }
 
+function normalizeSessionRoles(session) {
+  if (isPlainObject(session.roles)) return session.roles;
+  if (!isPlainObject(session.models)) return {};
+  return Object.fromEntries(Object.entries(session.models).map(([role, model]) => [role, { model }]));
+}
+
 function detectKnownLiveIssues(reviewStreams, logFiles) {
   const detections = [];
   for (const stream of reviewStreams) {
@@ -204,7 +214,30 @@ function detectKnownLiveIssues(reviewStreams, logFiles) {
   return detections;
 }
 
-function buildCommands(workspace, coordDir, loopPid, agents, logFiles) {
+function buildTailCommands(session, reviewStreams, logFiles) {
+  const commands = [];
+  const seen = new Set();
+  function push(label, file, command) {
+    const key = command || file;
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    commands.push({ label, path: file || null, command });
+  }
+
+  if (session && typeof session.tail_command === "string" && session.tail_command.trim() !== "") {
+    push("session", null, session.tail_command.trim());
+  }
+  for (const stream of reviewStreams) {
+    push(`reviewer ${path.basename(stream.path)}`, stream.path, `tail -F ${shellQuote(stream.path)}`);
+  }
+  for (const log of logFiles) {
+    const label = log.label === "orchestrator" ? "orchestrator log" : `${log.label} log`;
+    push(label, log.path, `tail -F ${shellQuote(log.path)}`);
+  }
+  return commands;
+}
+
+function buildCommands(workspace, coordDir, loopPid, agents, reviewStreams, logFiles) {
   const commands = [
     `node scripts/inspect-live-test.js ${shellQuote(workspace)}`,
   ];
@@ -213,6 +246,9 @@ function buildCommands(workspace, coordDir, loopPid, agents, logFiles) {
     const agentsPath = path.join(coordDir, "agents.json");
     if (fs.existsSync(sessionPath)) commands.push(`cat ${shellQuote(sessionPath)}`);
     if (fs.existsSync(agentsPath)) commands.push(`cat ${shellQuote(agentsPath)}`);
+  }
+  for (const stream of reviewStreams) {
+    commands.push(`tail -n 120 ${shellQuote(stream.path)}`);
   }
   for (const log of logFiles) {
     commands.push(`tail -n 120 ${shellQuote(log.path)}`);
@@ -237,6 +273,20 @@ function formatInspection(info) {
     lines.push(`Models: ${JSON.stringify(info.models)}`);
   }
   if (info.orchestrator_pid) lines.push(`Orchestrator PID: ${info.orchestrator_pid}`);
+
+  const roles = Object.entries(info.roles || {});
+  if (roles.length > 0) {
+    lines.push("", "Role Mappings:");
+    for (const [role, mapping] of roles) {
+      const bits = [
+        `alias=${mapping.alias || mapping.cli || "?"}`,
+        `provider=${mapping.provider || "?"}`,
+        `model=${mapping.model || "?"}`,
+      ];
+      if (mapping.provider_cli) bits.push(`provider_cli=${mapping.provider_cli}`);
+      lines.push(`  ${role}: ${bits.join(" ")}`);
+    }
+  }
 
   lines.push("", "Agents:");
   if (info.agents.length === 0) {
@@ -263,6 +313,14 @@ function formatInspection(info) {
     for (const detection of info.detections) {
       lines.push(`  ${detection.type}: ${detection.message}`);
       lines.push(`    ${detection.path}`);
+    }
+  }
+
+  const tailCommands = info.tail_commands || [];
+  if (tailCommands.length > 0) {
+    lines.push("", "Tail Commands:");
+    for (const tail of tailCommands) {
+      lines.push(`  ${tail.label}: ${tail.command}`);
     }
   }
 
@@ -323,6 +381,10 @@ function walkFiles(root, maxDepth, depth = 0) {
     }
   }
   return out;
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function shellQuote(value) {

@@ -103,6 +103,26 @@ const PROVIDERS = {
   },
 };
 
+const MIXED_PROVIDER_TARGET = "mixed";
+const LIVE_ROLE_NAMES = ["planner", "reviewer", "arbitrator", "worker"];
+const RUNTIME_ROLE_NAMES = ["reviewer", "arbitrator", "worker"];
+const DEFAULT_MIXED_COMBO = "canonical";
+const MIXED_ROLE_COMBOS = {
+  canonical: {
+    planner: { provider: "claude" },
+    reviewer: { provider: "codex" },
+    arbitrator: { provider: "gemini" },
+    worker: { provider: "kilo" },
+  },
+  "opencode-worker": {
+    planner: { provider: "claude" },
+    reviewer: { provider: "gemini" },
+    arbitrator: { provider: "codex" },
+    worker: { provider: "opencode" },
+  },
+};
+const MIXED_ROLE_DEFAULTS = MIXED_ROLE_COMBOS[DEFAULT_MIXED_COMBO];
+
 const REQUIRED_REVIEWER_ARRAY_FIELDS = [
   "execution_mode_issues",
   "blockers",
@@ -117,8 +137,8 @@ function runLiveReviewerSmoke(t, providerName) {
   const skipReason = liveSkipReason(providerName);
   if (skipReason) return skip(t, skipReason);
 
-  const provider = providerInfo(providerName);
-  const probe = probeProviderCli(providerName);
+  const provider = roleProviderInfo(providerName, "reviewer");
+  const probe = probeLiveRoleClis(providerName, ["reviewer"]);
   if (!probe.ok) return skip(t, probe.message);
 
   const project = createLiveProject(providerName, `live-${providerName}-reviewer-`);
@@ -153,7 +173,7 @@ function runLiveReviewerSmoke(t, providerName) {
       0,
       [
         `${providerName} live reviewer smoke failed in ${project.root}`,
-        `model: ${roleModel(providerName, "reviewer")}`,
+        ...roleFailureDetails(providerName, ["reviewer"]),
         `stdout:\n${result.stdout || "(empty)"}`,
         `stderr:\n${result.stderr || "(empty)"}`,
       ].join("\n\n")
@@ -166,6 +186,7 @@ function runLiveReviewerSmoke(t, providerName) {
 
     return {
       provider: providerName,
+      roles: liveRoleMappings(providerName),
       cli: provider.cli,
       model: roleModel(providerName, "reviewer"),
       reviewer: aliases.reviewer,
@@ -175,6 +196,7 @@ function runLiveReviewerSmoke(t, providerName) {
     };
   } catch (err) {
     preserveArtifacts = true;
+    if (isMixedTarget(providerName)) recordLiveFailure(project.root, providerName, err);
     throw err;
   } finally {
     if (preserveArtifacts) {
@@ -189,8 +211,8 @@ function runLiveArbitratorSmoke(t, providerName) {
   const skipReason = liveSkipReason(providerName);
   if (skipReason) return skip(t, skipReason);
 
-  const provider = providerInfo(providerName);
-  const probe = probeProviderCli(providerName);
+  const provider = roleProviderInfo(providerName, "arbitrator");
+  const probe = probeLiveRoleClis(providerName, ["arbitrator"]);
   if (!probe.ok) return skip(t, probe.message);
 
   const project = createLiveProject(providerName, `live-${providerName}-arbitrator-`);
@@ -235,7 +257,7 @@ function runLiveArbitratorSmoke(t, providerName) {
       0,
       [
         `${providerName} live arbitrator smoke failed in ${project.root}`,
-        `model: ${roleModel(providerName, "arbitrator")}`,
+        ...roleFailureDetails(providerName, ["arbitrator"]),
         `stdout:\n${result.stdout || "(empty)"}`,
         `stderr:\n${result.stderr || "(empty)"}`,
       ].join("\n\n")
@@ -262,6 +284,7 @@ function runLiveArbitratorSmoke(t, providerName) {
 
     return {
       provider: providerName,
+      roles: liveRoleMappings(providerName),
       cli: provider.cli,
       model: roleModel(providerName, "arbitrator"),
       request: resolvedRequest,
@@ -271,6 +294,7 @@ function runLiveArbitratorSmoke(t, providerName) {
     };
   } catch (err) {
     preserveArtifacts = true;
+    if (isMixedTarget(providerName)) recordLiveFailure(project.root, providerName, err);
     throw err;
   } finally {
     if (preserveArtifacts) {
@@ -286,8 +310,8 @@ async function runLiveWorkerSmoke(t, providerName) {
   const skipReason = liveSkipReason(providerName);
   if (skipReason) return skip(t, skipReason);
 
-  const provider = providerInfo(providerName);
-  const probe = probeProviderCli(providerName);
+  const provider = roleProviderInfo(providerName, "worker");
+  const probe = probeLiveRoleClis(providerName, ["worker"]);
   if (!probe.ok) return skip(t, probe.message);
 
   const project = createLiveProject(providerName, `live-${providerName}-worker-`);
@@ -311,7 +335,7 @@ async function runLiveWorkerSmoke(t, providerName) {
       0,
       [
         `${providerName} live worker launch failed in ${project.root}`,
-        `model: ${roleModel(providerName, "worker")}`,
+        ...roleFailureDetails(providerName, ["worker"]),
         `stdout:\n${launchResult.stdout || "(empty)"}`,
         `stderr:\n${launchResult.stderr || "(empty)"}`,
       ].join("\n\n")
@@ -359,6 +383,7 @@ async function runLiveWorkerSmoke(t, providerName) {
 
     return {
       provider: providerName,
+      roles: liveRoleMappings(providerName),
       cli: provider.cli,
       model: roleModel(providerName, "worker"),
       reviewer: aliases.reviewer,
@@ -367,6 +392,7 @@ async function runLiveWorkerSmoke(t, providerName) {
     };
   } catch (err) {
     preserveArtifacts = true;
+    if (isMixedTarget(providerName)) recordLiveFailure(project.root, providerName, err);
     throw err;
   } finally {
     cleanupLiveProcesses(project.root, loopPid);
@@ -382,8 +408,7 @@ async function runAllLiveSmoke(t, providerName) {
   const skipReason = liveSkipReason(providerName);
   if (skipReason) return skip(t, skipReason);
 
-  const provider = providerInfo(providerName);
-  const probe = probeProviderCli(providerName);
+  const probe = probeLiveRoleClis(providerName, RUNTIME_ROLE_NAMES);
   if (!probe.ok) return skip(t, probe.message);
 
   const project = createLiveProject(providerName, `live-${providerName}-all-live-`);
@@ -413,12 +438,14 @@ async function runAllLiveSmoke(t, providerName) {
       maxBuffer: 10 * 1024 * 1024,
       timeout: reviewerTimeoutMs + 5000,
     });
+    const reviewerTransientSkip = transientProviderSkipReason(providerName, ["reviewer"], processResultText(reviewResult));
+    if (reviewResult.status !== 0 && reviewerTransientSkip) return skip(t, reviewerTransientSkip);
     assert.strictEqual(
       reviewResult.status,
       0,
       [
         `${providerName} all-live reviewer phase failed in ${project.root}`,
-        `model: ${roleModel(providerName, "reviewer")}`,
+        ...roleFailureDetails(providerName, ["reviewer"]),
         `stdout:\n${reviewResult.stdout || "(empty)"}`,
         `stderr:\n${reviewResult.stderr || "(empty)"}`,
       ].join("\n\n")
@@ -435,13 +462,14 @@ async function runAllLiveSmoke(t, providerName) {
       maxBuffer: 10 * 1024 * 1024,
       timeout: 30 * 1000,
     });
+    const launchTransientSkip = transientProviderSkipReason(providerName, ["worker", "arbitrator"], processResultText(launchResult));
+    if (launchResult.status !== 0 && launchTransientSkip) return skip(t, launchTransientSkip);
     assert.strictEqual(
       launchResult.status,
       0,
       [
         `${providerName} all-live worker launch failed in ${project.root}`,
-        `worker model: ${roleModel(providerName, "worker")}`,
-        `arbitrator model: ${roleModel(providerName, "arbitrator")}`,
+        ...roleFailureDetails(providerName, ["worker", "arbitrator"]),
         `stdout:\n${launchResult.stdout || "(empty)"}`,
         `stderr:\n${launchResult.stderr || "(empty)"}`,
       ].join("\n\n")
@@ -452,13 +480,25 @@ async function runAllLiveSmoke(t, providerName) {
     updateLiveSession(project.root, { orchestrator_pid: loopPid });
 
     const timeoutMs = liveTimeoutMs("ALL_LIVE", 15 * 60 * 1000);
-    const finalStatus = await waitFor(() => {
-      const agentsPath = path.join(project.root, "coord", "agents.json");
-      if (!fs.existsSync(agentsPath)) return false;
-      const agents = readJson(agentsPath);
-      const status = agents["agent-live-all"]?.status;
-      return ["completed", "errored", "exited", "terminated"].includes(status) ? status : false;
-    }, { timeoutMs, intervalMs: 1000 });
+    let finalStatus;
+    try {
+      finalStatus = await waitFor(() => {
+        const agentsPath = path.join(project.root, "coord", "agents.json");
+        if (!fs.existsSync(agentsPath)) return false;
+        const agents = readJson(agentsPath);
+        const status = agents["agent-live-all"]?.status;
+        return ["completed", "errored", "exited", "terminated"].includes(status) ? status : false;
+      }, { timeoutMs, intervalMs: 1000 });
+    } catch (err) {
+      const transientSkip = transientProviderSkipReasonFromArtifacts(project.root, providerName, ["worker", "arbitrator"]);
+      if (transientSkip) return skip(t, transientSkip);
+      throw err;
+    }
+
+    if (finalStatus !== "completed") {
+      const transientSkip = transientProviderSkipReasonFromArtifacts(project.root, providerName, ["worker", "arbitrator"]);
+      if (transientSkip) return skip(t, transientSkip);
+    }
 
     assert.strictEqual(
       finalStatus,
@@ -467,39 +507,44 @@ async function runAllLiveSmoke(t, providerName) {
     );
 
     const outputPath = path.join(project.root, ".agents", "worktrees", "agent-live-all", "live-worker-output.txt");
-    assert.ok(fs.existsSync(outputPath), `expected all-live worker output at ${outputPath}`);
-    assert.strictEqual(fs.readFileSync(outputPath, "utf-8").trim(), "live worker smoke ok");
+    const protocolFailure = (reason) => liveFailureMessage(project.root, providerName, reason, "agent-live-all", RUNTIME_ROLE_NAMES);
+    assert.ok(fs.existsSync(outputPath), protocolFailure(`expected all-live worker output at ${outputPath}`));
+    assert.strictEqual(
+      fs.readFileSync(outputPath, "utf-8").trim(),
+      "live worker smoke ok",
+      protocolFailure("live-worker-output.txt did not contain the expected text")
+    );
 
     const requests = readJsonl(path.join(project.root, "coord", "requests.jsonl"));
     const gateRequest = requests.find((entry) => entry.request_id === "agent-live-req-output-text");
-    assert.ok(gateRequest, "requests.jsonl should include the forced output-text question");
-    assert.strictEqual(gateRequest.type, "question");
-    assert.strictEqual(gateRequest.status, "resolved");
+    assert.ok(gateRequest, protocolFailure("requests.jsonl should include the forced output-text question"));
+    assert.strictEqual(gateRequest.type, "question", protocolFailure("forced output-text request should be a question"));
+    assert.strictEqual(gateRequest.status, "resolved", protocolFailure("forced output-text question should be resolved"));
 
     const reviewRequest = requests.find((entry) =>
       entry.agent === "agent-live-all" &&
       entry.type === "review_request" &&
       entry.status === "resolved"
     );
-    assert.ok(reviewRequest, "requests.jsonl should include a resolved all-live review_request");
+    assert.ok(reviewRequest, protocolFailure("requests.jsonl should include a resolved all-live review_request"));
     assert.ok(
       requests.findIndex((entry) => entry.request_id === gateRequest.request_id) <
         requests.findIndex((entry) => entry.request_id === reviewRequest.request_id),
-      "forced output-text question should be recorded before the final review_request"
+      protocolFailure("forced output-text question should be recorded before the final review_request")
     );
 
     const decisions = readJson(path.join(project.root, "coord", "decisions.json"));
     const gateDecision = decisions.find((entry) => entry.request_id === "agent-live-req-output-text");
-    assert.ok(gateDecision, "decisions.json should include the forced output-text question");
-    assert.strictEqual(gateDecision.disposition, "approved");
-    assert.ok(
-      fs.statSync(outputPath).mtimeMs >= new Date(gateDecision.resolved_at).getTime(),
-      "live-worker-output.txt should be written after the output-text approval decision"
-    );
+    assert.ok(gateDecision, protocolFailure("decisions.json should include the forced output-text question"));
+    assert.strictEqual(gateDecision.disposition, "approved", protocolFailure("forced output-text question should be approved"));
+    const gateDecisionBeforeOutput = fs.statSync(outputPath).mtimeMs >= new Date(gateDecision.resolved_at).getTime();
+    assert.ok(gateDecisionBeforeOutput, protocolFailure("live-worker-output.txt should be written after the output-text approval decision"));
 
     const audit = readJsonl(path.join(project.root, "coord", "decisions.jsonl"));
-    assert.ok(audit.some((entry) => entry.request_id === "agent-live-req-output-text"), "decisions.jsonl should audit the forced question");
-    assert.ok(audit.some((entry) => entry.request_id === reviewRequest.request_id), "decisions.jsonl should audit the final review request");
+    const gateQuestionAudited = audit.some((entry) => entry.request_id === "agent-live-req-output-text");
+    const finalReviewAudited = audit.some((entry) => entry.request_id === reviewRequest.request_id);
+    assert.ok(gateQuestionAudited, protocolFailure("decisions.jsonl should audit the forced question"));
+    assert.ok(finalReviewAudited, protocolFailure("decisions.jsonl should audit the final review request"));
 
     const summaryPath = path.join(project.root, "coord", "review-summary.txt");
     await waitFor(() => fs.existsSync(summaryPath) ? fs.readFileSync(summaryPath, "utf-8") : false, {
@@ -512,16 +557,21 @@ async function runAllLiveSmoke(t, providerName) {
 
     return {
       provider: providerName,
-      cli: provider.cli,
+      mixed_combo: isMixedTarget(providerName) ? selectedMixedCombo() : null,
+      roles: liveRoleMappings(providerName),
+      cli: roleProviderInfo(providerName, "worker").cli,
       reviewer: aliases.reviewer,
       review,
       gateRequest,
       gateDecision,
       reviewRequest,
+      gateDecisionBeforeOutput,
+      finalReviewAudited,
       outputPath,
     };
   } catch (err) {
     preserveArtifacts = true;
+    if (isMixedTarget(providerName)) recordLiveFailure(project.root, providerName, err);
     throw err;
   } finally {
     cleanupLiveProcesses(project.root, loopPid);
@@ -534,8 +584,8 @@ async function runAllLiveSmoke(t, providerName) {
 }
 
 function writeLiveProviderConfig(projectRoot, providerName) {
-  const provider = providerInfo(providerName);
   const aliases = providerAliases(providerName);
+  const roleConfig = buildLiveRoleConfig(projectRoot, providerName, configRoleNames(providerName, RUNTIME_ROLE_NAMES));
   const config = {
     default_cli: aliases.worker,
     orchestrator_cli: aliases.arbitrator,
@@ -552,17 +602,13 @@ function writeLiveProviderConfig(projectRoot, providerName) {
         review_focus: "Validate live lower-model reviewer output for a tiny single-worker decomposition plan.",
       },
     ],
-    cli_templates: {
-      [aliases.worker]: liveRoleTemplate(projectRoot, providerName, "worker"),
-      [aliases.arbitrator]: liveRoleTemplate(projectRoot, providerName, "arbitrator"),
-      [aliases.reviewer]: liveRoleTemplate(projectRoot, providerName, "reviewer"),
-    },
-    cli_health_checks: {
-      [aliases.worker]: provider.healthCheck,
-      [aliases.arbitrator]: provider.healthCheck,
-      [aliases.reviewer]: provider.healthCheck,
-    },
+    live_roles: roleConfig.live_roles,
+    cli_templates: roleConfig.cli_templates,
+    cli_health_checks: roleConfig.cli_health_checks,
   };
+  if (isMixedTarget(providerName)) {
+    config.mixed_combo = selectedMixedCombo();
+  }
 
   fs.writeFileSync(
     path.join(projectRoot, "orchestrator.config.js"),
@@ -573,8 +619,8 @@ function writeLiveProviderConfig(projectRoot, providerName) {
 }
 
 function writeAllLiveProviderConfig(projectRoot, providerName) {
-  const provider = providerInfo(providerName);
   const aliases = providerAliases(providerName);
+  const roleConfig = buildLiveRoleConfig(projectRoot, providerName, configRoleNames(providerName, RUNTIME_ROLE_NAMES));
   const config = {
     default_cli: aliases.worker,
     orchestrator_cli: aliases.arbitrator,
@@ -592,17 +638,13 @@ function writeAllLiveProviderConfig(projectRoot, providerName) {
         review_focus: "Validate the all-live lower-model protocol test: reviewer, arbitrator, and worker all use provider CLIs.",
       },
     ],
-    cli_templates: {
-      [aliases.worker]: liveRoleTemplate(projectRoot, providerName, "worker"),
-      [aliases.arbitrator]: liveRoleTemplate(projectRoot, providerName, "arbitrator"),
-      [aliases.reviewer]: liveRoleTemplate(projectRoot, providerName, "reviewer"),
-    },
-    cli_health_checks: {
-      [aliases.worker]: provider.healthCheck,
-      [aliases.arbitrator]: provider.healthCheck,
-      [aliases.reviewer]: provider.healthCheck,
-    },
+    live_roles: roleConfig.live_roles,
+    cli_templates: roleConfig.cli_templates,
+    cli_health_checks: roleConfig.cli_health_checks,
   };
+  if (isMixedTarget(providerName)) {
+    config.mixed_combo = selectedMixedCombo();
+  }
 
   fs.writeFileSync(
     path.join(projectRoot, "orchestrator.config.js"),
@@ -612,9 +654,13 @@ function writeAllLiveProviderConfig(projectRoot, providerName) {
   return config;
 }
 
+function writeMixedProviderConfig(projectRoot) {
+  return writeAllLiveProviderConfig(projectRoot, MIXED_PROVIDER_TARGET);
+}
+
 function writeLiveWorkerConfig(projectRoot, providerName) {
-  const provider = providerInfo(providerName);
   const aliases = providerAliases(providerName);
+  const roleConfig = buildLiveRoleConfig(projectRoot, providerName, ["worker"]);
   const fakeArbitratorPath = writeFakeArbitrator(projectRoot);
   const fakeArbitrator = "fake-live-arbitrator";
   const config = {
@@ -627,15 +673,16 @@ function writeLiveWorkerConfig(projectRoot, providerName) {
     poll_max_ms: 500,
     launch_dashboard: false,
     launch_review_terminal: false,
+    live_roles: roleConfig.live_roles,
     cli_templates: {
-      [aliases.worker]: liveRoleTemplate(projectRoot, providerName, "worker"),
+      ...roleConfig.cli_templates,
       [fakeArbitrator]: {
         cmd: process.execPath,
         args: [fakeArbitratorPath, { prompt_file: true }],
       },
     },
     cli_health_checks: {
-      [aliases.worker]: provider.healthCheck,
+      ...roleConfig.cli_health_checks,
       [fakeArbitrator]: `${process.execPath} --version`,
     },
   };
@@ -803,8 +850,43 @@ function writeAllLiveContext(projectRoot, providerName) {
   });
 }
 
+function configRoleNames(providerName, runtimeRoles) {
+  return isMixedTarget(providerName)
+    ? Array.from(new Set(["planner", ...runtimeRoles]))
+    : runtimeRoles;
+}
+
+function buildLiveRoleConfig(projectRoot, providerName, roles) {
+  const config = {
+    live_roles: {},
+    cli_templates: {},
+    cli_health_checks: {},
+  };
+
+  for (const role of roles) {
+    const alias = providerAliases(providerName)[role];
+    const provider = roleProviderInfo(providerName, role);
+    const template = liveRoleTemplate(projectRoot, providerName, role);
+    const model = roleModel(providerName, role);
+
+    config.live_roles[role] = {
+      alias,
+      cli: alias,
+      provider: roleProviderName(providerName, role),
+      provider_cli: provider.cli,
+      model,
+      cli_template: template,
+      health_check: provider.healthCheck,
+    };
+    config.cli_templates[alias] = template;
+    config.cli_health_checks[alias] = provider.healthCheck;
+  }
+
+  return config;
+}
+
 function liveRoleTemplate(projectRoot, providerName, role) {
-  const provider = providerInfo(providerName);
+  const provider = roleProviderInfo(providerName, role);
   const coordDir = path.join(projectRoot, "coord");
   fs.mkdirSync(coordDir, { recursive: true });
   return provider.template(roleModel(providerName, role), {
@@ -916,15 +998,24 @@ function stageQuestionRequest(projectRoot, request) {
 }
 
 function liveSkipReason(providerName) {
-  if (!PROVIDERS[providerName]) {
+  if (!isKnownLiveTarget(providerName)) {
     return `Unknown live provider '${providerName}'.`;
   }
   if (process.env.RUN_LIVE_MODEL_TESTS !== "1") {
     return "Set RUN_LIVE_MODEL_TESTS=1 to run live model tests.";
   }
+  if (isMixedTarget(providerName) && process.env.RUN_MIXED_LIVE_TESTS !== "1") {
+    return "Set RUN_MIXED_LIVE_TESTS=1 to run mixed-provider live model tests.";
+  }
   const selectedProvider = process.env.LIVE_PROVIDER;
   if (selectedProvider && selectedProvider !== "all" && selectedProvider !== providerName) {
     return `LIVE_PROVIDER=${selectedProvider} does not select ${providerName}.`;
+  }
+  try {
+    if (isMixedTarget(providerName)) selectedMixedCombo();
+    for (const role of liveMetadataRoles(providerName)) roleProviderName(providerName, role);
+  } catch (err) {
+    return err.message;
   }
   return "";
 }
@@ -945,6 +1036,28 @@ function probeProviderCli(providerName) {
     };
   }
   return { ok: true, output: (result.stdout || result.stderr || "").trim() };
+}
+
+function probeLiveRoleClis(providerName, roles) {
+  const probed = new Set();
+  for (const role of roles) {
+    let roleProvider;
+    try {
+      roleProvider = roleProviderName(providerName, role);
+    } catch (err) {
+      return { ok: false, message: err.message };
+    }
+    if (probed.has(roleProvider)) continue;
+    probed.add(roleProvider);
+    const probe = probeProviderCli(roleProvider);
+    if (!probe.ok) {
+      return {
+        ok: false,
+        message: `${role} provider ${roleProvider}: ${probe.message}`,
+      };
+    }
+  }
+  return { ok: true };
 }
 
 function writeFakeArbitrator(projectRoot) {
@@ -981,6 +1094,7 @@ function writeFakeArbitrator(projectRoot) {
 
 function providerAliases(providerName) {
   return {
+    planner: `${providerName}-live-planner`,
     worker: `${providerName}-live-worker`,
     arbitrator: `${providerName}-live-arbitrator`,
     reviewer: `${providerName}-live-reviewer`,
@@ -991,20 +1105,21 @@ function writeLiveSession(projectRoot, providerName, test) {
   const coordDir = path.join(projectRoot, "coord");
   fs.mkdirSync(coordDir, { recursive: true });
   const tailCommand = liveTailCommand(projectRoot, providerName, test);
+  const roles = liveRoleMappings(providerName);
   const session = {
     session_id: path.basename(projectRoot),
     provider: providerName,
     test,
     workspace: projectRoot,
     created_at: new Date().toISOString(),
-    models: {
-      worker: roleModel(providerName, "worker"),
-      arbitrator: roleModel(providerName, "arbitrator"),
-      reviewer: roleModel(providerName, "reviewer"),
-    },
+    roles,
+    models: Object.fromEntries(Object.entries(roles).map(([role, mapping]) => [role, mapping.model])),
     inspect_command: `node ${path.join(repoRoot(), "scripts", "inspect-live-test.js")} ${projectRoot}`,
     tail_command: tailCommand,
   };
+  if (isMixedTarget(providerName)) {
+    session.mixed_combo = selectedMixedCombo();
+  }
   fs.writeFileSync(path.join(coordDir, "live-test-session.json"), `${JSON.stringify(session, null, 2)}\n`, "utf-8");
   console.log(`[live-harness] Session ID: ${session.session_id}`);
   console.log(`[live-harness] Inspect: ${session.inspect_command}`);
@@ -1054,15 +1169,103 @@ function createLiveProject(providerName, prefix) {
 function liveTempDir(providerName) {
   if (process.env.LIVE_TEST_TMPDIR) return process.env.LIVE_TEST_TMPDIR;
   if (providerName === "opencode" && fs.existsSync("/private/tmp")) return "/private/tmp";
+  if (isMixedTarget(providerName) && fs.existsSync("/private/tmp")) {
+    try {
+      if (liveMetadataRoles(providerName).some((role) => roleProviderName(providerName, role) === "opencode")) {
+        return "/private/tmp";
+      }
+    } catch (_) {}
+  }
   return "";
 }
 
 function roleModel(providerName, role) {
+  validateRoleName(role);
+  if (isMixedTarget(providerName)) {
+    const mixedOverride = envValue(`LIVE_MIXED_${role.toUpperCase()}_MODEL`);
+    if (mixedOverride) return mixedOverride;
+    return providerRoleModel(roleProviderName(providerName, role), role);
+  }
+  return providerRoleModel(providerName, role);
+}
+
+function providerRoleModel(providerName, role) {
   const provider = providerInfo(providerName);
   const prefix = provider.envPrefix;
-  return process.env[`LIVE_${prefix}_${role.toUpperCase()}_MODEL`] ||
-    process.env[`LIVE_${prefix}_MODEL`] ||
+  return envValue(`LIVE_${prefix}_${role.toUpperCase()}_MODEL`) ||
+    envValue(`LIVE_${prefix}_MODEL`) ||
     provider.defaultModel;
+}
+
+function liveRoleMappings(providerName, roles = liveMetadataRoles(providerName)) {
+  const aliases = providerAliases(providerName);
+  return Object.fromEntries(roles.map((role) => {
+    const roleProvider = roleProviderName(providerName, role);
+    const provider = providerInfo(roleProvider);
+    return [role, {
+      alias: aliases[role],
+      cli: aliases[role],
+      provider: roleProvider,
+      provider_cli: provider.cli,
+      model: roleModel(providerName, role),
+    }];
+  }));
+}
+
+function roleProviderInfo(providerName, role) {
+  return providerInfo(roleProviderName(providerName, role));
+}
+
+function roleProviderName(providerName, role) {
+  validateRoleName(role);
+  if (isMixedTarget(providerName)) {
+    const envName = `LIVE_MIXED_${role.toUpperCase()}_PROVIDER`;
+    const configured = envValue(envName);
+    const roleProvider = configured ? configured.toLowerCase() : MIXED_ROLE_COMBOS[selectedMixedCombo()][role].provider;
+    if (!PROVIDERS[roleProvider]) {
+      throw new Error(`${envName} must be one of: ${Object.keys(PROVIDERS).join(", ")}.`);
+    }
+    return roleProvider;
+  }
+  providerInfo(providerName);
+  return providerName;
+}
+
+function selectedMixedCombo() {
+  const combo = envValue("LIVE_MIXED_COMBO") || DEFAULT_MIXED_COMBO;
+  if (!MIXED_ROLE_COMBOS[combo]) {
+    throw new Error(`LIVE_MIXED_COMBO must be one of: ${Object.keys(MIXED_ROLE_COMBOS).join(", ")}.`);
+  }
+  return combo;
+}
+
+function roleFailureDetails(providerName, roles) {
+  return roles.map((role) =>
+    `${role}: alias=${providerAliases(providerName)[role]} provider=${roleProviderName(providerName, role)} model=${roleModel(providerName, role)}`
+  );
+}
+
+function liveMetadataRoles(providerName) {
+  return isMixedTarget(providerName) ? LIVE_ROLE_NAMES : RUNTIME_ROLE_NAMES;
+}
+
+function isKnownLiveTarget(providerName) {
+  return isMixedTarget(providerName) || Boolean(PROVIDERS[providerName]);
+}
+
+function isMixedTarget(providerName) {
+  return providerName === MIXED_PROVIDER_TARGET;
+}
+
+function validateRoleName(role) {
+  if (!LIVE_ROLE_NAMES.includes(role)) {
+    throw new Error(`Unknown live role '${role}'.`);
+  }
+}
+
+function envValue(name) {
+  const value = process.env[name];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : "";
 }
 
 function liveTimeoutMs(role, fallback) {
@@ -1105,9 +1308,10 @@ function cleanupLiveProcesses(projectRoot, loopPid = null) {
   } catch {}
 }
 
-function liveFailureMessage(projectRoot, providerName, reason, agentName = "agent-live-worker") {
+function liveFailureMessage(projectRoot, providerName, reason, agentName = "agent-live-worker", roles = ["worker"]) {
   const details = [
     `${providerName} live smoke failed: ${reason}`,
+    `roles:\n${roleFailureDetails(providerName, roles).join("\n")}`,
     `artifacts: ${projectRoot}`,
   ];
   const logPath = path.join(projectRoot, "coord", "orchestrator.log");
@@ -1119,6 +1323,62 @@ function liveFailureMessage(projectRoot, providerName, reason, agentName = "agen
     details.push(`worker log:\n${tailText(workerLog, 120)}`);
   }
   return details.join("\n\n");
+}
+
+function processResultText(result) {
+  return [
+    result?.stdout || "",
+    result?.stderr || "",
+    result?.error?.message || "",
+  ].join("\n");
+}
+
+function transientProviderSkipReason(providerName, roles, text) {
+  if (process.env.LIVE_SKIP_TRANSIENT_PROVIDER_ERRORS === "0") return "";
+  const value = String(text || "");
+  const match = value.match(/\b(429|rate[ -]?limit(?:ed)?|too many requests|resource_exhausted|quota(?: exceeded)?|insufficient_quota|over quota|billing hard limit|temporarily unavailable|try again later)\b/i);
+  if (!match) return "";
+  return [
+    `${providerName} live smoke skipped due to transient provider capacity/quota signal: ${match[0]}`,
+    ...roleFailureDetails(providerName, roles),
+    "Set LIVE_SKIP_TRANSIENT_PROVIDER_ERRORS=0 to treat this condition as a failure.",
+  ].join("\n");
+}
+
+function transientProviderSkipReasonFromArtifacts(projectRoot, providerName, roles) {
+  return transientProviderSkipReason(providerName, roles, liveArtifactDiagnosticText(projectRoot));
+}
+
+function liveArtifactDiagnosticText(projectRoot) {
+  const coordDir = path.join(projectRoot, "coord");
+  const parts = [];
+  for (const file of [
+    path.join(coordDir, "orchestrator.log"),
+    path.join(coordDir, "review-summary.txt"),
+  ]) {
+    if (fs.existsSync(file)) parts.push(tailText(file, 200));
+  }
+  const logsDir = path.join(coordDir, "logs");
+  if (fs.existsSync(logsDir)) {
+    for (const entry of fs.readdirSync(logsDir, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith(".log")) {
+        parts.push(tailText(path.join(logsDir, entry.name), 200));
+      }
+    }
+  }
+  return parts.join("\n");
+}
+
+function recordLiveFailure(projectRoot, providerName, err) {
+  try {
+    updateLiveSession(projectRoot, {
+      preserved_artifacts: true,
+      failure: {
+        message: err && err.message ? err.message : String(err),
+        roles: liveRoleMappings(providerName),
+      },
+    });
+  } catch (_) {}
 }
 
 function tailText(file, maxLines) {
@@ -1155,20 +1415,31 @@ function skip(t, reason) {
 }
 
 module.exports = {
+  DEFAULT_MIXED_COMBO,
+  LIVE_ROLE_NAMES,
+  MIXED_PROVIDER_TARGET,
+  MIXED_ROLE_COMBOS,
+  MIXED_ROLE_DEFAULTS,
   PROVIDERS,
   assertValidReviewerJson,
+  liveRoleMappings,
   liveSkipReason,
   liveTailCommand,
   liveTempDir,
   probeProviderCli,
+  probeLiveRoleClis,
   providerAliases,
+  roleProviderName,
   roleModel,
   runAllLiveSmoke,
+  selectedMixedCombo,
+  transientProviderSkipReason,
   runLiveArbitratorSmoke,
   runLiveReviewerSmoke,
   runLiveWorkerSmoke,
   writeAllLiveProviderConfig,
   writeLiveProviderConfig,
   writeLiveWorkerConfig,
+  writeMixedProviderConfig,
   writeReviewerSmokeDraft,
 };

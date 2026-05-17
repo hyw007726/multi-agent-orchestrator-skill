@@ -16,6 +16,7 @@ describe("live test runner", () => {
     assert.deepStrictEqual(parseArgs(["--provider", "codex"]), { provider: "codex", help: false });
     assert.deepStrictEqual(parseArgs(["--provider", "kilo"]), { provider: "kilo", help: false });
     assert.deepStrictEqual(parseArgs(["--provider", "opencode"]), { provider: "opencode", help: false });
+    assert.deepStrictEqual(parseArgs(["--provider", "mixed"]), { provider: "mixed", help: false });
     assert.deepStrictEqual(parseArgs(["--help"]), { provider: "all", help: true });
     assert.throws(() => parseArgs(["--provider", "unknown"]), /provider must be one of/);
     assert.throws(() => parseArgs(["--provider"]), /requires a value/);
@@ -50,6 +51,10 @@ describe("live test runner", () => {
       path.join(root, "tests/live/opencode-arbitrator-smoke.test.js"),
       path.join(root, "tests/live/opencode-worker-smoke.test.js"),
       path.join(root, "tests/live/opencode-all-live-smoke.test.js"),
+    ]);
+    assert.deepStrictEqual(selectedTestFiles("mixed", root), [
+      path.join(root, "tests/live/mixed-provider-contract.test.js"),
+      path.join(root, "tests/live/mixed-provider-protocol-smoke.test.js"),
     ]);
   });
 
@@ -90,6 +95,46 @@ describe("live test runner", () => {
     assert.ok(call.args.includes("--test-concurrency=1"));
     assert.ok(call.args.some((arg) => arg.endsWith("tests/live/gemini-reviewer-smoke.test.js")));
     assert.strictEqual(call.options.env.LIVE_PROVIDER, "gemini");
+  });
+
+  it("requires explicit mixed-provider opt-in", () => {
+    let spawned = false;
+    const stderr = capture();
+    const status = runLiveTests(["--provider", "mixed"], {
+      env: { RUN_LIVE_MODEL_TESTS: "1" },
+      stderr,
+      stdout: capture(),
+      spawnSyncImpl: () => {
+        spawned = true;
+        return { status: 0 };
+      },
+    });
+
+    assert.strictEqual(status, 1);
+    assert.strictEqual(spawned, false);
+    assert.match(stderr.text(), /RUN_MIXED_LIVE_TESTS=1/);
+  });
+
+  it("passes the mixed target to node --test when explicitly enabled", () => {
+    let call = null;
+    const status = runLiveTests(["--provider", "mixed"], {
+      cwd: "/repo",
+      env: { RUN_LIVE_MODEL_TESTS: "1", RUN_MIXED_LIVE_TESTS: "1" },
+      stderr: capture(),
+      stdout: capture(),
+      spawnSyncImpl: (cmd, args, options) => {
+        call = { cmd, args, options };
+        return { status: 0 };
+      },
+    });
+
+    assert.strictEqual(status, 0);
+    assert.ok(call);
+    assert.strictEqual(call.args[0], "--test");
+    assert.ok(call.args.includes("--test-concurrency=1"));
+    assert.ok(call.args.some((arg) => arg.endsWith("tests/live/mixed-provider-contract.test.js")));
+    assert.ok(call.args.some((arg) => arg.endsWith("tests/live/mixed-provider-protocol-smoke.test.js")));
+    assert.strictEqual(call.options.env.LIVE_PROVIDER, "mixed");
   });
 });
 

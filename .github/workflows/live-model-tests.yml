@@ -14,6 +14,15 @@ on:
           - gemini
           - kilo
           - opencode
+          - mixed
+      mixed_combo:
+        description: Mixed provider combo, used only when provider is mixed
+        required: false
+        default: canonical
+        type: choice
+        options:
+          - canonical
+          - opencode-worker
       timeout_ms:
         description: Per-test timeout in milliseconds
         required: false
@@ -38,6 +47,8 @@ jobs:
     timeout-minutes: 45
     env:
       RUN_LIVE_MODEL_TESTS: "1"
+      RUN_MIXED_LIVE_TESTS: ${{ inputs.provider == 'mixed' && '1' || '0' }}
+      LIVE_MIXED_COMBO: ${{ inputs.mixed_combo }}
       LIVE_TEST_TIMEOUT_MS: ${{ inputs.timeout_ms }}
       LIVE_KEEP_ARTIFACTS: ${{ inputs.keep_artifacts && '1' || '0' }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

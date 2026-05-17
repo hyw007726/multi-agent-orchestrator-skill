@@ -329,11 +329,20 @@ RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider kilo
 RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider opencode
 ```
 
+Run the mixed-provider smoke suite:
+
+```bash
+RUN_LIVE_MODEL_TESTS=1 RUN_MIXED_LIVE_TESTS=1 node scripts/run-live-tests.js --provider mixed
+```
+
 The live harness writes provider-specific aliases for worker, arbitrator, and
 reviewer roles. Codex, Claude, and Gemini pin the configured lower-model
 defaults below. Kilo and OpenCode use their own configured default model unless
 `LIVE_KILO_MODEL`, `LIVE_OPENCODE_MODEL`, or a role-specific model override is
-set. The current live tests cover isolated roles and one all-live flow:
+set. Mixed-provider tests require the separate `RUN_MIXED_LIVE_TESTS=1` opt-in,
+remain outside `node scripts/run-tests.js`, and cover only named combos rather
+than an exhaustive provider matrix. The current live tests cover isolated roles,
+one all-live flow, and a mixed-provider protocol flow:
 
 - reviewer: runs the real `review-plan.js` path and asserts valid reviewer JSON.
 - arbitrator: stages a deterministic worker `question` request and asserts the
@@ -347,6 +356,11 @@ set. The current live tests cover isolated roles and one all-live flow:
   arbitrator. The worker must submit `agent-live-req-output-text`, wait for an
   approved decision, write `live-worker-output.txt`, submit a final
   `review_request`, pass validation, and reach `completed`.
+- mixed: runs the same protocol with role-specific provider aliases. The
+  canonical combo is planner Claude, reviewer Codex, arbitrator Gemini, and
+  worker Kilo. The second supported combo, selected with
+  `LIVE_MIXED_COMBO=opencode-worker`, keeps Claude as planner, uses Gemini as
+  reviewer, Codex as arbitrator, and OpenCode as worker.
 
 Default live model choices are:
 
@@ -366,6 +380,13 @@ LIVE_GEMINI_REVIEWER_MODEL=gemini-2.5-flash-lite RUN_LIVE_MODEL_TESTS=1 node scr
 LIVE_KILO_MODEL=anthropic/claude-sonnet-4-6 RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider kilo
 LIVE_OPENCODE_MODEL=moonshot/kimi-k2.6 RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider opencode
 LIVE_ALL_LIVE_TIMEOUT_MS=1200000 RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js --provider claude
+LIVE_MIXED_COMBO=opencode-worker RUN_LIVE_MODEL_TESTS=1 RUN_MIXED_LIVE_TESTS=1 node scripts/run-live-tests.js --provider mixed
+```
+
+Mixed provider and model overrides are role-specific. For example:
+
+```bash
+LIVE_MIXED_REVIEWER_PROVIDER=claude LIVE_MIXED_REVIEWER_MODEL=claude-sonnet-4-6 RUN_LIVE_MODEL_TESTS=1 RUN_MIXED_LIVE_TESTS=1 node scripts/run-live-tests.js --provider mixed
 ```
 
 Set `LIVE_KEEP_ARTIFACTS=1` to preserve the temporary project and review
@@ -399,7 +420,15 @@ Additional live-test environment variables:
 - `LIVE_<PROVIDER>_MODEL`: provider-wide model override, where provider is
   `CODEX`, `CLAUDE`, `GEMINI`, `KILO`, or `OPENCODE`.
 - `LIVE_<PROVIDER>_<ROLE>_MODEL`: role-specific model override, where role is
-  `WORKER`, `ARBITRATOR`, or `REVIEWER`.
+  `WORKER`, `ARBITRATOR`, `REVIEWER`, or `PLANNER`.
+- `LIVE_MIXED_COMBO`: named mixed combo. Supported values are `canonical` and
+  `opencode-worker`.
+- `LIVE_MIXED_<ROLE>_PROVIDER`: role-specific mixed provider override. Provider
+  values are `codex`, `claude`, `gemini`, `kilo`, or `opencode`.
+- `LIVE_MIXED_<ROLE>_MODEL`: role-specific mixed model override.
+- `LIVE_SKIP_TRANSIENT_PROVIDER_ERRORS`: defaults to skipping live assertions
+  when logs show rate-limit, quota, or temporary provider-capacity signals. Set
+  to `0` to make those conditions fail the test.
 
 Common expected live-test failures:
 
@@ -412,12 +441,29 @@ Common expected live-test failures:
 - a live worker writes the wrong file content, skips the required request, or
   fails to submit its final `review_request`.
 
+Mixed-provider troubleshooting notes:
+
+- Kilo and OpenCode can use their configured default model, so the exact model
+  is invisible unless you set `LIVE_KILO_MODEL`, `LIVE_OPENCODE_MODEL`, or a
+  mixed role-specific model override.
+- Gemini reviewer or arbitrator roles need the generated `coord` directory as
+  an include directory; the live harness writes absolute include paths.
+- OpenCode worker smoke tests use the local JSON-text wrapper so worker logs
+  are under the project `coord/logs/` directory even though the underlying CLI
+  may emit structured JSON.
+- Rate limits, exhausted quota, `429`, and temporary provider-capacity errors
+  are treated as skippable transient provider conditions by default. Inspect the
+  preserved workspace with `node scripts/inspect-live-test.js <workspace>` and
+  rerun with `LIVE_SKIP_TRANSIENT_PROVIDER_ERRORS=0` when you need a hard
+  failure.
+
 Live tests are intentionally outside default CI. The repository includes a
 manual GitHub Actions workflow at `.github/workflows/live-model-tests.yml` that
 can run one provider at a time through `workflow_dispatch`. The workflow sets
-`RUN_LIVE_MODEL_TESTS=1`, accepts `codex`, `claude`, `gemini`, `kilo`, or
-`opencode` as an input, and uploads preserved `/tmp/live-*` projects when
-artifact collection is enabled.
+`RUN_LIVE_MODEL_TESTS=1`, accepts `codex`, `claude`, `gemini`, `kilo`,
+`opencode`, or `mixed` as an input, sets `RUN_MIXED_LIVE_TESTS=1` only for the
+manual `mixed` provider selection, and uploads preserved `/tmp/live-*` projects
+when artifact collection is enabled.
 
 The workflow does not install or log in to provider CLIs because those setup
 steps are account-specific. Use a self-hosted runner with the CLIs already

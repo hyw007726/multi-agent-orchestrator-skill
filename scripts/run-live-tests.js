@@ -6,6 +6,7 @@ const { spawnSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..");
 const PROVIDERS = ["codex", "claude", "gemini", "kilo", "opencode"];
+const TARGETS = ["all", ...PROVIDERS, "mixed"];
 const LIVE_TEST_FILES = {
   codex: [
     "tests/live/codex-reviewer-smoke.test.js",
@@ -37,6 +38,10 @@ const LIVE_TEST_FILES = {
     "tests/live/opencode-worker-smoke.test.js",
     "tests/live/opencode-all-live-smoke.test.js",
   ],
+  mixed: [
+    "tests/live/mixed-provider-contract.test.js",
+    "tests/live/mixed-provider-protocol-smoke.test.js",
+  ],
 };
 
 if (require.main === module) {
@@ -67,6 +72,14 @@ function runLiveTests(argv = [], options = {}) {
     stderr.write([
       "Live model tests are disabled.",
       "Set RUN_LIVE_MODEL_TESTS=1 to acknowledge that these tests call authenticated CLIs and may use paid model calls.",
+      "",
+    ].join("\n"));
+    return 1;
+  }
+  if (args.provider === "mixed" && env.RUN_MIXED_LIVE_TESTS !== "1") {
+    stderr.write([
+      "Mixed-provider live model tests are disabled.",
+      "Set RUN_MIXED_LIVE_TESTS=1 to acknowledge that these tests may call multiple authenticated provider CLIs.",
       "",
     ].join("\n"));
     return 1;
@@ -115,8 +128,8 @@ function parseArgs(argv = []) {
     }
   }
 
-  if (out.provider !== "all" && !PROVIDERS.includes(out.provider)) {
-    throw new Error(`--provider must be one of: all, ${PROVIDERS.join(", ")}`);
+  if (!TARGETS.includes(out.provider)) {
+    throw new Error(`--provider must be one of: ${TARGETS.join(", ")}`);
   }
   return out;
 }
@@ -129,7 +142,7 @@ function selectedTestFiles(provider, root = ROOT) {
 function usage() {
   return [
     "Usage:",
-    "  RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js [--provider all|codex|claude|gemini|kilo|opencode]",
+    "  RUN_LIVE_MODEL_TESTS=1 node scripts/run-live-tests.js [--provider all|codex|claude|gemini|kilo|opencode|mixed]",
     "",
     "Runs opt-in live model tests. These tests are intentionally excluded from node scripts/run-tests.js.",
   ].join("\n");
@@ -146,6 +159,7 @@ function requireValue(argv, index, flag) {
 module.exports = {
   LIVE_TEST_FILES,
   PROVIDERS,
+  TARGETS,
   parseArgs,
   runLiveTests,
   selectedTestFiles,
