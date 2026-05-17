@@ -5,7 +5,7 @@ const path = require("path");
 const os = require("os");
 const { spawn, spawnSync } = require("child_process");
 const { loadConfig } = require("./lib/config");
-const { safeKill } = require("./lib/process");
+const { pidMatchesCli, safeKill } = require("./lib/process");
 const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL, appendJSONL } = require("./lib/locking");
 const { renderWorkerPrompt, renderWorkerRestartPrompt } = require("./lib/prompt-render");
 const { STATUS, transitionAgentStatus } = require("./lib/status");
@@ -102,7 +102,7 @@ async function runLoop() {
         const agent = snapshot[name];
 
         // Process gone? Check whether the agent requested completion first.
-        if (!isProcessAlive(agent.pid)) {
+        if (!isAgentProcessAlive(agent)) {
           const agentLogFile = path.join(config.coordDir, "logs", `${name}.log`);
           const stagedRequests = readStagedRequests(paths);
           const inLog = allRequests.some(
@@ -1227,9 +1227,8 @@ function shouldAutoLaunchDashboard(setting) {
 
 // ─── Process / git helpers ───────────────────────────────────────────────────
 
-function isProcessAlive(pid) {
-  if (!pid) return false;
-  try { process.kill(pid, 0); return true; } catch { return false; }
+function isAgentProcessAlive(agent) {
+  return pidMatchesCli(agent?.pid, agent?.cli || "kilo");
 }
 
 function killTimedOutChild(pid) {

@@ -22,7 +22,7 @@ Each item is tagged with a complexity rating:
 
 - **[C3]** Revisit default CLI prompt transport. Prefer prompt-file or stdin-backed templates where CLIs support them to avoid leaking full prompts in process listings and to reduce argument-length failures.
 
-- **[C1]** Make liveness PID checks use the same CLI-aware PID matching as `safeKill()` so recycled PIDs are not treated as still-running worker processes.
+- [x] **[C1]** Make liveness PID checks use the same CLI-aware PID matching as `safeKill()` so recycled PIDs are not treated as still-running worker processes.
 
 # Logging Consistency
 

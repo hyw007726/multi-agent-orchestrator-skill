@@ -222,7 +222,7 @@ describe('launch-all smoke test', () => {
       project = createTempProject('launch-all-resume-');
 
       const cliPath = writeResumeCli(project.root);
-      writeProjectConfig(project.root, cliPath);
+      writeNodeProjectConfig(project.root, cliPath);
       bootstrapProject(project.root, 'Launch-all resume test project');
 
       const contextPath = path.join(project.root, 'coord', 'context.json');
@@ -236,7 +236,7 @@ describe('launch-all smoke test', () => {
       context.tasks = {
         'agent-resume': {
           description: 'Initial resume assignment',
-          cli: 'fake',
+          cli: 'node',
           allowed_paths: ['resume-spawns.jsonl'],
           validation_command: null,
         },
@@ -416,4 +416,27 @@ function writeResumeCli(projectRoot) {
     'process.on("SIGINT", () => { clearInterval(timer); process.exit(0); });',
   ].join('\n') + '\n');
   return cliPath;
+}
+
+function writeNodeProjectConfig(projectRoot, cliPath) {
+  fs.writeFileSync(path.join(projectRoot, 'orchestrator.config.js'), [
+    'module.exports = {',
+    '  default_cli: "node",',
+    '  orchestrator_cli: "node",',
+    '  cli_templates: {',
+    `    node: { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(cliPath)}, { prompt_file: true }] },`,
+    '  },',
+    '  cli_health_checks: {',
+    `    node: ${JSON.stringify(`${shellQuote(process.execPath)} -e "process.exit(0)"`)},`,
+    '  },',
+    '  poll_min_ms: 250,',
+    '  poll_max_ms: 500,',
+    '  launch_dashboard: false,',
+    '  launch_review_terminal: false,',
+    '};',
+  ].join('\n') + '\n', 'utf-8');
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
 }

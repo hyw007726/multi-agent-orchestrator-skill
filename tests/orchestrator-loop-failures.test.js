@@ -4,7 +4,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const {
   repoRoot,
@@ -44,7 +44,7 @@ describe('orchestrator loop failure paths', () => {
         'setInterval(() => {}, 10000);',
         'process.on("SIGTERM", () => process.exit(0));',
       ]);
-      writeProjectConfig(project.root, cliPath, 'idlefake');
+      writeProjectConfig(project.root, cliPath, 'node');
       bootstrapProject(project.root, 'Liveness timeout test project');
       addKiloWorktree(project.root, 'agent-idle');
 
@@ -59,7 +59,7 @@ describe('orchestrator loop failure paths', () => {
         '--coord',
         './coord',
         '--cli',
-        'idlefake',
+        'node',
       ], { cwd: project.root, encoding: 'utf-8' });
       assert.strictEqual(spawnResult.status, 0, spawnResult.stderr);
 
@@ -78,6 +78,58 @@ describe('orchestrator loop failure paths', () => {
       assert.match(log, /liveness timeout/);
       assert.match(log, /Run ended incomplete/);
     } finally {
+      if (project) project.cleanup();
+    }
+  });
+
+  it('treats a live PID with a mismatched CLI as a vanished worker', () => {
+    let project;
+    let unrelated;
+    try {
+      project = createTempProject('recycled-pid-');
+      bootstrapProject(project.root, 'Recycled PID liveness test project');
+
+      unrelated = spawn(process.execPath, [
+        '-e',
+        'setInterval(() => {}, 10000); process.on("SIGTERM", () => process.exit(0));',
+      ], {
+        cwd: project.root,
+        detached: true,
+        stdio: 'ignore',
+      });
+      assert.ok(unrelated.pid, 'unrelated live process should have a pid');
+
+      const agentsPath = path.join(project.root, 'coord', 'agents.json');
+      const logPath = path.join(project.root, 'coord', 'logs', 'agent-recycled.log');
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.writeFileSync(logPath, 'old worker log line\n', 'utf-8');
+      fs.writeFileSync(agentsPath, JSON.stringify({
+        'agent-recycled': {
+          task: 'PID now belongs to an unrelated process.',
+          status: 'running',
+          worktree: path.join(project.root, 'missing-worktree'),
+          cli: 'definitely-not-node',
+          pid: unrelated.pid,
+          timeout_mins: 60,
+          progress_timeout_mins: 60,
+          started_at: new Date().toISOString(),
+          current_started_at: new Date().toISOString(),
+        },
+      }, null, 2), 'utf-8');
+
+      const result = runLoop(project.root);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      const agents = readJson(agentsPath);
+      assert.strictEqual(agents['agent-recycled'].status, 'exited');
+      assert.strictEqual(agents['agent-recycled'].exit_log_tail, 'old worker log line\n');
+      const log = fs.readFileSync(path.join(project.root, 'coord', 'orchestrator.log'), 'utf-8');
+      assert.match(log, /process vanished without review request/);
+    } finally {
+      if (unrelated?.pid) {
+        try { process.kill(-unrelated.pid, 'SIGTERM'); } catch {}
+        try { process.kill(unrelated.pid, 'SIGTERM'); } catch {}
+      }
       if (project) project.cleanup();
     }
   });
@@ -132,7 +184,7 @@ describe('orchestrator loop failure paths', () => {
         '  return match ? JSON.parse(match[0]) : [];',
         '}',
       ]);
-      writeProjectConfig(project.root, cliPath, 'stalefake');
+      writeProjectConfig(project.root, cliPath, 'node');
       bootstrapProject(project.root, 'Stale log respawn test project');
 
       const contextPath = path.join(project.root, 'coord', 'context.json');
@@ -140,7 +192,7 @@ describe('orchestrator loop failure paths', () => {
       context.tasks = {
         'agent-stale': {
           description: 'Test stale log refresh on respawn.',
-          cli: 'stalefake',
+          cli: 'node',
           allowed_paths: ['*.txt'],
         },
       };
@@ -154,7 +206,7 @@ describe('orchestrator loop failure paths', () => {
           task: 'Existing assignment before respawn.',
           status: 'running',
           worktree,
-          cli: 'stalefake',
+          cli: 'node',
           pid: 999999,
           started_at: '2020-01-01T00:00:00.000Z',
           current_started_at: '2020-01-01T00:00:00.000Z',
@@ -180,7 +232,7 @@ describe('orchestrator loop failure paths', () => {
         '--coord',
         './coord',
         '--cli',
-        'stalefake',
+        'node',
       ], { cwd: project.root, encoding: 'utf-8' });
       assert.strictEqual(spawnResult.status, 0, spawnResult.stderr);
       assert.ok(fs.statSync(logPath).mtimeMs > staleDate.getTime(),
@@ -270,7 +322,7 @@ describe('orchestrator loop failure paths', () => {
         '  return match ? JSON.parse(match[0]) : [];',
         '}',
       ]);
-      writeProjectConfig(project.root, cliPath, 'progressfake');
+      writeProjectConfig(project.root, cliPath, 'node');
       bootstrapProject(project.root, 'Progress timeout test project');
 
       const contextPath = path.join(project.root, 'coord', 'context.json');
@@ -278,7 +330,7 @@ describe('orchestrator loop failure paths', () => {
       context.tasks = {
         'agent-progress': {
           description: 'Test synthetic progress-timeout arbitration.',
-          cli: 'progressfake',
+          cli: 'node',
           read_first: ['README.md'],
           allowed_paths: ['*.txt'],
           forbidden_paths: ['package.json'],
@@ -299,7 +351,7 @@ describe('orchestrator loop failure paths', () => {
         '--coord',
         './coord',
         '--cli',
-        'progressfake',
+        'node',
         '--progress-timeout',
         '-1',
       ], { cwd: project.root, encoding: 'utf-8' });
@@ -387,7 +439,7 @@ describe('orchestrator loop failure paths', () => {
         '  return match ? JSON.parse(match[0]) : [];',
         '}',
       ]);
-      writeProjectConfig(project.root, cliPath, 'ladderfake');
+      writeProjectConfig(project.root, cliPath, 'node');
       bootstrapProject(project.root, 'Progress ladder test project');
 
       const contextPath = path.join(project.root, 'coord', 'context.json');
@@ -395,7 +447,7 @@ describe('orchestrator loop failure paths', () => {
       context.tasks = {
         'agent-ladder': {
           description: 'Test repeated progress timeout escalation.',
-          cli: 'ladderfake',
+          cli: 'node',
           allowed_paths: ['*.txt'],
         },
       };
@@ -435,7 +487,7 @@ describe('orchestrator loop failure paths', () => {
         '--coord',
         './coord',
         '--cli',
-        'ladderfake',
+        'node',
         '--progress-timeout',
         '-1',
       ], { cwd: project.root, encoding: 'utf-8' });
