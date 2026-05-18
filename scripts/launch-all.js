@@ -155,6 +155,10 @@ function launchAll() {
       spawnArgs.push('--timeout', String(agentRecord.timeout_mins));
     }
 
+    if (agentRecord.validation_timeout_mins !== undefined && agentRecord.validation_timeout_mins !== null) {
+      spawnArgs.push('--validation-timeout', String(agentRecord.validation_timeout_mins));
+    }
+
     if (agentRecord.progress_timeout_mins !== undefined && agentRecord.progress_timeout_mins !== null) {
       spawnArgs.push('--progress-timeout', String(agentRecord.progress_timeout_mins));
     }

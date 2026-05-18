@@ -347,7 +347,7 @@ async function runLoop() {
         const snapshot = readJSON(paths.agents)[action.agent];
         if (!snapshot) continue;
 
-        const validation = runValidation(snapshot, log);
+        const validation = runValidation(snapshot, log, parsedConfig);
         if (validation.passed) {
           const ownership = checkCompletionOwnership(action.agent, snapshot, paths, log);
           if (!ownership.ok) {
@@ -399,6 +399,7 @@ async function runLoop() {
             }
           }
 
+          resolveEndAgentApprovalBeforeSignal(action, arbitration, paths, log);
           safeKill({ pid: snapshot.pid, expectedCli: expectedProcessForAgent(snapshot, parsedConfig), log, coordDir: config.coordDir, agent: action.agent });
           updateJSON(paths.agents, (agents) => {
             if (!agents[action.agent]) return;
@@ -486,6 +487,7 @@ async function runLoop() {
         validateCmd: agent.validate_cmd,
         timeoutMins: agent.timeout_mins,
         progressTimeoutMins: agent.progress_timeout_mins,
+        validationTimeoutMins: agent.validation_timeout_mins,
         baseRef: agent.base_ref,
         attempt: nextCount,
       };
@@ -571,13 +573,14 @@ async function runLoop() {
       validateCmd: outcome.validateCmd,
       timeoutMins: outcome.timeoutMins,
       progressTimeoutMins: outcome.progressTimeoutMins,
+      validationTimeoutMins: outcome.validationTimeoutMins,
       baseRef: outcome.baseRef,
       paths,
       log,
     });
 
     // Single-use helper — only called from bumpRestartAndRespawn above.
-    function respawnAgent({ name, kiloMode, cliTool, attempt, maxAttempts, instruction, worktree, validateCmd, timeoutMins, progressTimeoutMins, baseRef, paths, log }) {
+    function respawnAgent({ name, kiloMode, cliTool, attempt, maxAttempts, instruction, worktree, validateCmd, timeoutMins, progressTimeoutMins, validationTimeoutMins, baseRef, paths, log }) {
       const promptsDir = path.join(path.dirname(paths.agents), "prompts");
       fs.mkdirSync(promptsDir, { recursive: true });
       const promptFile = path.join(promptsDir, `restart-${name}-${Date.now()}.txt`);
@@ -594,6 +597,7 @@ async function runLoop() {
       appendSpawnArg(spawnArgs, "--validate", validateCmd, serializeValidateCmd);
       appendSpawnArg(spawnArgs, "--timeout", timeoutMins, String);
       appendSpawnArg(spawnArgs, "--progress-timeout", progressTimeoutMins, String);
+      appendSpawnArg(spawnArgs, "--validation-timeout", validationTimeoutMins, String);
       appendSpawnArg(spawnArgs, "--base-ref", baseRef, String);
       try {
         const result = spawnSync("node", spawnArgs, { stdio: "inherit" });
@@ -662,9 +666,7 @@ async function runLoop() {
       });
     }
 
-    if (decisionsToAdd.length > 0) {
-      appendJSONL(paths.decisionsAudit, decisionsToAdd);
-    }
+    appendDecisionRecords(paths, decisionsToAdd, log);
 
     updateJSONL(paths.requests, (current) => {
       for (const approved of response.approved || []) {
@@ -680,9 +682,11 @@ async function runLoop() {
         }
       }
     });
+  }
 
+  function appendDecisionRecords(paths, decisionsToAdd, log) {
     if (decisionsToAdd.length === 0) return;
-
+    appendJSONL(paths.decisionsAudit, decisionsToAdd);
     updateJSON(paths.decisions, (decisions) => {
       decisions.push(...decisionsToAdd);
       if (decisions.length > RECENT_DECISION_LIMIT) {
@@ -691,6 +695,71 @@ async function runLoop() {
         decisions.splice(0, archive);
       }
     });
+  }
+
+  function resolveEndAgentApprovalBeforeSignal(action, arbitration, paths, log) {
+    const response = arbitration.response || {};
+    const pending = Array.isArray(arbitration.pending) ? arbitration.pending : [];
+    const approvedById = new Map();
+    for (const approved of response.approved || []) {
+      if (approved && approved.request_id && !approvedById.has(approved.request_id)) {
+        approvedById.set(approved.request_id, approved);
+      }
+    }
+    const rejectedIds = new Set((response.rejected || [])
+      .filter((rejected) => rejected && rejected.request_id)
+      .map((rejected) => rejected.request_id));
+
+    const completionRequests = pending.filter((request) =>
+      request &&
+      request.agent === action.agent &&
+      request.type === "review_request" &&
+      request.status === "pending" &&
+      request.request_id
+    );
+    const explicitlyApproved = completionRequests.filter((request) => approvedById.has(request.request_id));
+    const notRejected = completionRequests.filter((request) => !rejectedIds.has(request.request_id));
+    const toResolve = explicitlyApproved.length > 0
+      ? explicitlyApproved
+      : notRejected.length === 1
+        ? notRejected
+        : [];
+    if (toResolve.length === 0) return;
+
+    const ids = new Set(toResolve.map((request) => request.request_id));
+    const resolvedCounts = new Map();
+    updateJSONL(paths.requests, (current) => {
+      for (const request of current) {
+        if (
+          ids.has(request.request_id) &&
+          request.agent === action.agent &&
+          request.type === "review_request" &&
+          request.status === "pending"
+        ) {
+          request.status = "resolved";
+          resolvedCounts.set(request.request_id, (resolvedCounts.get(request.request_id) || 0) + 1);
+        }
+      }
+    });
+
+    const resolvedAt = new Date().toISOString();
+    const decisionsToAdd = [];
+    for (const request of toResolve) {
+      const count = resolvedCounts.get(request.request_id) || 0;
+      if (count === 0) continue;
+      const approved = approvedById.get(request.request_id);
+      const decision = approved?.decision || `Completion approved for ${action.agent}`;
+      const reason = approved?.reason || "The orchestrator returned end_agent for this completion review request.";
+      decisionsToAdd.push({
+        request_id: request.request_id,
+        disposition: "approved",
+        decision,
+        reason,
+        resolved_at: resolvedAt,
+      });
+      log(`Approved Request ${request.request_id}: ${decision}${count > 1 ? ` (${count} matching pending entries)` : ""}`);
+    }
+    appendDecisionRecords(paths, decisionsToAdd, log);
   }
 
   function markPendingRequestsById(requests, requestId, status) {
@@ -1405,33 +1474,72 @@ function captureRecoveryAndReset(worktree, agent, log) {
 //   • argv array (e.g. ["npm", "run", "test"]) — runs with shell:false, no expansion, no injection surface.
 //   • shell string (e.g. "npm run test -- src") — runs through /bin/sh -c, retained for ergonomics
 //     (pipes, &&, env vars). Logged as "(shell form)" so the trust requirement stays visible.
-function runValidation(agent, log) {
+function runValidation(agent, log, parsedConfig = {}) {
   const cmd = agent.validate_cmd;
   if (!cmd || cmd === "null") return { passed: true, log: "" };
   if (Array.isArray(cmd) && cmd.length === 0) return { passed: true, log: "" };
 
   const isArgv = Array.isArray(cmd);
-  log(`Running validation${isArgv ? "" : " (shell form)"}: ${isArgv ? cmd.join(" ") : cmd}`);
+  const timeout = validationTimeout(agent, parsedConfig);
+  log(`Running validation${isArgv ? "" : " (shell form)"}: ${isArgv ? cmd.join(" ") : cmd}${timeout ? ` (timeout ${formatValidationTimeout(timeout)})` : ""}`);
+
+  const options = {
+    cwd: agent.worktree,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: !isArgv,
+  };
+  if (timeout) options.timeout = timeout.ms;
 
   const result = isArgv
-    ? spawnSync(cmd[0], cmd.slice(1), {
-        cwd: agent.worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], shell: false,
-      })
-    : spawnSync(cmd, {
-        cwd: agent.worktree, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], shell: true,
-      });
+    ? spawnSync(cmd[0], cmd.slice(1), options)
+    : spawnSync(cmd, options);
 
   if (result.error) {
+    if (result.error.code === "ETIMEDOUT") {
+      const message = `Validation timed out after ${formatValidationTimeout(timeout)}.`;
+      const out = validationOutput(result);
+      log(message);
+      return { passed: false, log: out ? `${message}\n${out}` : message };
+    }
     log(`Validation invocation failed: ${result.error.message}`);
     return { passed: false, log: result.error.message };
   }
   if (result.status !== 0) {
-    const out = (result.stdout || "") + "\n" + (result.stderr || "");
-    log(`Validation failed (exit ${result.status}).`);
+    const out = validationOutput(result);
+    const exit = result.signal ? `signal ${result.signal}` : `exit ${result.status}`;
+    log(`Validation failed (${exit}).`);
     return { passed: false, log: out };
   }
   log(`Validation passed.`);
   return { passed: true, log: "" };
+}
+
+function validationTimeout(agent, parsedConfig = {}) {
+  const timeoutMins = firstPositiveNumber(agent.validation_timeout_mins, agent.timeout_mins, parsedConfig.default_timeout_mins);
+  if (timeoutMins === null) return null;
+  return {
+    mins: timeoutMins,
+    ms: Math.max(1, Math.ceil(timeoutMins * 60_000)),
+  };
+}
+
+function firstPositiveNumber(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") continue;
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) return number;
+  }
+  return null;
+}
+
+function formatValidationTimeout(timeout) {
+  if (!timeout) return "unbounded";
+  return `${timeout.ms}ms (${timeout.mins} minute${timeout.mins === 1 ? "" : "s"})`;
+}
+
+function validationOutput(result) {
+  return `${result.stdout || ""}\n${result.stderr || ""}`.trim();
 }
 
 function checkCompletionOwnership(agentName, agent, paths, log) {

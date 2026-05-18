@@ -157,6 +157,7 @@ function buildContextTasks(tasks) {
       cli: optionalString(task.cli),
       mode: optionalString(task.mode),
       timeout_mins: optionalNumber(task.timeout_mins),
+      validation_timeout_mins: optionalNumber(task.validation_timeout_mins),
       progress_timeout_mins: optionalNumber(task.progress_timeout_mins),
     });
   }

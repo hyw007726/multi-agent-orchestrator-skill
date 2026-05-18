@@ -124,6 +124,7 @@ function spawnAgent() {
       last_spawned_at: spawnedAt,
       last_heartbeat: spawnedAt,
       validate_cmd: firstDefined(config.validateCmd, existing.validate_cmd),
+      validation_timeout_mins: firstDefined(config.validationTimeoutMins, existing.validation_timeout_mins),
       timeout_mins: firstDefined(config.timeoutMins, existing.timeout_mins),
       progress_timeout_mins: firstDefined(config.progressTimeoutMins, existing.progress_timeout_mins),
       restart_count: existing.restart_count ?? 0,
@@ -190,6 +191,7 @@ function parseArgs() {
     cli: "", // resolved against `default_cli` from orchestrator config in spawnAgent if --cli is omitted.
     extraArgs: [],
     validateCmd: undefined,
+    validationTimeoutMins: undefined,
     timeoutMins: undefined,
     progressTimeoutMins: undefined,
     baseRef: undefined,
@@ -214,6 +216,7 @@ function parseArgs() {
       case "--coord":            config.coordDir           = args[++i]; break;
       case "--cli":              config.cli                = args[++i]; break;
       case "--validate":         config.validateCmd        = parseValidateArg(args[++i]); break;
+      case "--validation-timeout": config.validationTimeoutMins = parseFloat(args[++i]); break;
       case "--timeout":          config.timeoutMins        = parseInt(args[++i], 10); break;
       case "--progress-timeout": config.progressTimeoutMins = parseInt(args[++i], 10); break;
       case "--base-ref":         config.baseRef              = args[++i]; break;

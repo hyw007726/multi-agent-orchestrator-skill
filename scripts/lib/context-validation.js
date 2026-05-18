@@ -153,6 +153,7 @@ function validateTaskRecord(taskName, task, config, errors, warnings) {
 
   validateValidationCommand(task.validation_command, `tasks.${taskName}.validation_command`, errors, warnings);
   validatePositiveNumber(task.timeout_mins, `tasks.${taskName}.timeout_mins`, errors);
+  validatePositiveNumber(task.validation_timeout_mins, `tasks.${taskName}.validation_timeout_mins`, errors);
   validatePositiveNumber(task.progress_timeout_mins, `tasks.${taskName}.progress_timeout_mins`, errors);
 }
 

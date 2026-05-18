@@ -15,6 +15,7 @@ const {
   runLoop,
   readJson,
   readJsonl,
+  waitFor,
 } = require('./helpers/temp-project');
 
 describe('loop behavior', () => {
@@ -573,6 +574,257 @@ describe('loop behavior', () => {
         `Log should mention validation failure\nlog:\n${log}`);
       assert.ok(log.includes('Running validation: test -f done.txt'),
         `Log should contain the validation command\nlog:\n${log}`);
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
+  it('times out validation commands and parks the agent for attention', () => {
+    let project;
+    try {
+      project = createTempProject('val-timeout-');
+
+      const cliPath = path.join(project.root, 'val-timeout-cli.js');
+      fs.writeFileSync(cliPath, [
+        '#!/usr/bin/env node',
+        "'use strict';",
+        'const fs = require("fs");',
+        'const path = require("path");',
+        'const args = process.argv.slice(2);',
+        'if (args[0] === "--version") { console.log("val-timeout-cli 1.0"); process.exit(0); }',
+        'const promptFile = args[0];',
+        'if (!promptFile) { console.error("Error: prompt file required"); process.exit(1); }',
+        'const prompt = fs.readFileSync(promptFile, "utf-8");',
+        'const agentName = "agent-valtimeout";',
+        '',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  const start = prompt.indexOf("## New Requests from Agents");',
+        '  const end = prompt.indexOf("## Your Responsibilities", start + 1);',
+        '  const section = prompt.slice(start, end === -1 ? undefined : end);',
+        '  const match = section.match(/\\[[\\s\\S]*\\]/);',
+        '  const requests = match ? JSON.parse(match[0]) : [];',
+        '  const approved = requests.map(r => ({',
+        '    request_id: r.request_id,',
+        '    decision: "Approved " + r.request_id,',
+        '    reason: "Validation timeout test."',
+        '  }));',
+        '  const actions = requests.map(r => ({ type: "end_agent", agent: r.agent }));',
+        '  console.log(JSON.stringify({ approved, rejected: [], actions }, null, 2));',
+        '  process.exit(0);',
+        '}',
+        '',
+        'if (prompt.includes("reviewing the completed output")) {',
+        '  console.log("Validation timeout summary.");',
+        '  process.exit(0);',
+        '}',
+        '',
+        'function stageRequest(request) {',
+        '  const requestsDir = path.join("coord", "requests");',
+        '  fs.mkdirSync(requestsDir, { recursive: true });',
+        '  const tmpFile = path.join(requestsDir, request.request_id + ".tmp");',
+        '  const finalFile = path.join(requestsDir, request.request_id + ".json");',
+        '  fs.writeFileSync(tmpFile, JSON.stringify(request) + "\\n", "utf-8");',
+        '  fs.renameSync(tmpFile, finalFile);',
+        '}',
+        'stageRequest({',
+        '  request_id: agentName + "-ready",',
+        '  agent: agentName,',
+        '  type: "review_request",',
+        '  priority: "medium",',
+        '  status: "pending",',
+        '  content: "Ready for validation timeout test.",',
+        '  created_at: new Date().toISOString()',
+        '});',
+        'setInterval(() => {}, 1000);',
+        'process.on("SIGTERM", () => process.exit(0));',
+      ].join('\n'), 'utf-8');
+
+      const configPath = path.join(project.root, 'orchestrator.config.js');
+      fs.writeFileSync(configPath, [
+        'module.exports = {',
+        '  default_cli: "fake",',
+        '  orchestrator_cli: "fake",',
+        '  cli_templates: {',
+        `    fake: { cmd: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(cliPath)}, { prompt_file: true }] },`,
+        '  },',
+        '  cli_health_checks: {',
+        '    fake: "node -e \\"process.exit(0)\\"",',
+        '  },',
+        '  default_max_restarts: 0,',
+        '  poll_min_ms: 250,',
+        '  poll_max_ms: 500,',
+        '  launch_dashboard: false,',
+        '  launch_review_terminal: false,',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      bootstrapProject(project.root, 'Validation timeout test project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      const validateCmd = [process.execPath, '-e', 'setTimeout(() => {}, 5000);'];
+      context.tasks = {
+        'agent-valtimeout': {
+          description: 'Test validation timeout.',
+          cli: 'fake',
+          allowed_paths: ['*.txt'],
+          validation_command: validateCmd,
+          validation_timeout_mins: 0.001,
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2), 'utf-8');
+
+      addKiloWorktree(project.root, 'agent-valtimeout');
+
+      const promptFile = path.join(project.root, 'worker-prompt.txt');
+      fs.writeFileSync(promptFile, 'Start the validation timeout agent.', 'utf-8');
+
+      const spawnResult = spawnSync('node', [
+        path.join(repoRoot(), 'scripts', 'spawn-agent.js'),
+        '--agent', 'agent-valtimeout',
+        '--prompt-file', promptFile,
+        '--coord', './coord',
+        '--cli', 'fake',
+        '--validate', JSON.stringify(validateCmd),
+        '--validation-timeout', '0.001',
+      ], { cwd: project.root, encoding: 'utf-8' });
+      assert.strictEqual(spawnResult.status, 0, `spawn-agent.js failed: ${spawnResult.stderr}`);
+
+      const loop = runLoop(project.root);
+      assert.strictEqual(loop.status, 0,
+        `orchestrator loop failed\nstdout:\n${loop.stdout}\nstderr:\n${loop.stderr}`);
+
+      const agents = readJson(path.join(project.root, 'coord', 'agents.json'));
+      assert.strictEqual(agents['agent-valtimeout'].status, 'needs_attention');
+      assert.strictEqual(agents['agent-valtimeout'].validation_timeout_mins, 0.001);
+
+      const requests = readJsonl(path.join(project.root, 'coord', 'requests.jsonl'));
+      assert.strictEqual(requests.find((r) => r.request_id === 'agent-valtimeout-ready').status, 'resolved');
+
+      const log = fs.readFileSync(path.join(project.root, 'coord', 'orchestrator.log'), 'utf-8');
+      assert.match(log, /Validation timed out after 60ms \(0\.001 minutes\)\./);
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
+  it('resolves completion review requests before signaling the worker', async () => {
+    let project;
+    try {
+      project = createTempProject('end-agent-resolve-');
+
+      const cliPath = path.join(project.root, 'end-resolve-cli.js');
+      fs.writeFileSync(cliPath, [
+        '#!/usr/bin/env node',
+        "'use strict';",
+        'const fs = require("fs");',
+        'const path = require("path");',
+        'const args = process.argv.slice(2);',
+        'if (args[0] === "--version") { console.log("end-resolve-cli 1.0"); process.exit(0); }',
+        'const promptFile = args[0];',
+        'if (!promptFile) { console.error("Error: prompt file required"); process.exit(1); }',
+        'const prompt = fs.readFileSync(promptFile, "utf-8");',
+        'const agentName = "agent-endresolve";',
+        '',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  const start = prompt.indexOf("## New Requests from Agents");',
+        '  const end = prompt.indexOf("## Your Responsibilities", start + 1);',
+        '  const section = prompt.slice(start, end === -1 ? undefined : end);',
+        '  const match = section.match(/\\[[\\s\\S]*\\]/);',
+        '  const requests = match ? JSON.parse(match[0]) : [];',
+        '  const approved = requests.map(r => ({',
+        '    request_id: r.request_id,',
+        '    decision: "Approved " + r.request_id,',
+        '    reason: "End-agent resolution test."',
+        '  }));',
+        '  const actions = requests.map(r => ({ type: "end_agent", agent: r.agent }));',
+        '  console.log(JSON.stringify({ approved, rejected: [], actions }, null, 2));',
+        '  process.exit(0);',
+        '}',
+        '',
+        'if (prompt.includes("reviewing the completed output")) {',
+        '  console.log("End-agent resolution summary.");',
+        '  process.exit(0);',
+        '}',
+        '',
+        'function stageRequest(request) {',
+        '  const requestsDir = path.join("coord", "requests");',
+        '  fs.mkdirSync(requestsDir, { recursive: true });',
+        '  const tmpFile = path.join(requestsDir, request.request_id + ".tmp");',
+        '  const finalFile = path.join(requestsDir, request.request_id + ".json");',
+        '  fs.writeFileSync(tmpFile, JSON.stringify(request) + "\\n", "utf-8");',
+        '  fs.renameSync(tmpFile, finalFile);',
+        '}',
+        'function requestStatus() {',
+        '  try {',
+        '    const lines = fs.readFileSync(path.join("coord", "requests.jsonl"), "utf-8").trim().split(/\\n/).filter(Boolean);',
+        '    const requests = lines.map((line) => JSON.parse(line));',
+        '    const request = requests.find((entry) => entry.request_id === agentName + "-done");',
+        '    return request ? request.status : "missing";',
+        '  } catch (err) {',
+        '    return "error: " + err.message;',
+        '  }',
+        '}',
+        'stageRequest({',
+        '  request_id: agentName + "-done",',
+        '  agent: agentName,',
+        '  type: "review_request",',
+        '  priority: "medium",',
+        '  status: "pending",',
+        '  content: "Done and waiting for end_agent.",',
+        '  created_at: new Date().toISOString()',
+        '});',
+        'setInterval(() => {}, 1000);',
+        'process.on("SIGTERM", () => {',
+        '  fs.writeFileSync("sigterm-status.txt", requestStatus() + "\\n", "utf-8");',
+        '  process.exit(0);',
+        '});',
+      ].join('\n'), 'utf-8');
+
+      writeProjectConfig(project.root, cliPath);
+      bootstrapProject(project.root, 'End-agent resolution test project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.tasks = {
+        'agent-endresolve': {
+          description: 'Test end_agent request resolution ordering.',
+          cli: 'fake',
+          allowed_paths: ['*.txt'],
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2), 'utf-8');
+
+      addKiloWorktree(project.root, 'agent-endresolve');
+
+      const promptFile = path.join(project.root, 'worker-prompt.txt');
+      fs.writeFileSync(promptFile, 'Start the end-agent resolution agent.', 'utf-8');
+
+      const spawnResult = spawnSync('node', [
+        path.join(repoRoot(), 'scripts', 'spawn-agent.js'),
+        '--agent', 'agent-endresolve',
+        '--prompt-file', promptFile,
+        '--coord', './coord',
+        '--cli', 'fake',
+      ], { cwd: project.root, encoding: 'utf-8' });
+      assert.strictEqual(spawnResult.status, 0, `spawn-agent.js failed: ${spawnResult.stderr}`);
+
+      const loop = runLoop(project.root);
+      assert.strictEqual(loop.status, 0,
+        `orchestrator loop failed\nstdout:\n${loop.stdout}\nstderr:\n${loop.stderr}`);
+
+      const agents = readJson(path.join(project.root, 'coord', 'agents.json'));
+      assert.strictEqual(agents['agent-endresolve'].status, 'completed');
+
+      const requests = readJsonl(path.join(project.root, 'coord', 'requests.jsonl'));
+      assert.strictEqual(requests.find((r) => r.request_id === 'agent-endresolve-done').status, 'resolved');
+
+      const statusPath = path.join(project.root, '.agents', 'worktrees', 'agent-endresolve', 'sigterm-status.txt');
+      const statusAtSignal = await waitFor(
+        () => fs.existsSync(statusPath) ? fs.readFileSync(statusPath, 'utf-8').trim() : null,
+        { timeoutMs: 2000, intervalMs: 50 },
+      );
+      assert.strictEqual(statusAtSignal, 'resolved');
     } finally {
       if (project) project.cleanup();
     }

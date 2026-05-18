@@ -9,9 +9,9 @@ Each item is tagged with a complexity rating:
 
 ## Top 3 to fix first
 
-1. **Loop log path ignores `--coord`** — silent observability loss for any non-default coord directory.
-2. **Add `launch.lock` + `run_id`** — prevents double-launch orphaning workers and stops stale arbitration history from bleeding into resumed runs.
-3. **Stop destructively overwriting `agent.task` on restart** — the dashboard and `review-summary.txt` currently misrepresent every agent that ever restarted.
+1. **[C2] Add a `timeout` to `runValidation`** — a hanging validation suite freezes the loop's main cycle and starves every other agent. See *Critical* below.
+2. **[C2] Resolve `end_agent` approvals in the same write that signals the worker** — a crash mid-flow leaves completed agents with an unresolved `review_request` forever. See *Critical* below.
+3. **[C2] Add a `launch.lock` mutex for `launch-all.js`** — concurrent launches silently orphan worker sets (no recorded PID, no supervision). See *High* below.
 
 ---
 
