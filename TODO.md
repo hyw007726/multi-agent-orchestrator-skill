@@ -7,23 +7,7 @@ Each item is tagged with a complexity rating:
 
 > Items already on `Roadmap.md` (OpenCabinet rebrand, per-run cost tracking, native Windows support, frontend UI dashboard) are not duplicated here.
 
-## Top 3 to fix first
-
-1. **[C2] Add a `timeout` to `runValidation`** — a hanging validation suite freezes the loop's main cycle and starves every other agent. See *Critical* below.
-2. **[C2] Resolve `end_agent` approvals in the same write that signals the worker** — a crash mid-flow leaves completed agents with an unresolved `review_request` forever. See *Critical* below.
-3. **[C2] Add a `launch.lock` mutex for `launch-all.js`** — concurrent launches silently orphan worker sets (no recorded PID, no supervision). See *High* below.
-
 ---
-
-## Critical (correctness, data loss, security)
-
-- **[C2] Add a `timeout` to `runValidation`**
-  - `scripts/orchestrator-loop.js:1387-1414` calls `spawnSync` with `shell:true` and no timeout, inheriting the full loop environment. A hanging test suite blocks the loop's main cycle and starves every other agent.
-  - *Fix:* Pass `timeout: (agent.validation_timeout_mins ?? agent.timeout_mins) * 60_000`. Treat timeout as `passed: false` with a clear failure log. Document the shell-form trust requirement in `references/schemas.md`.
-
-- **[C2] Resolve `end_agent` request approval inside the same write that signals the worker**
-  - `scripts/orchestrator-loop.js:346-407, 268-269` signals the worker, then later applies approvals in `processApprovals`. A crash in between leaves a completed agent with an unresolved `review_request` forever.
-  - *Fix:* Inside the `updateJSONL` callback that resolves `end_agent`, mark the originating request approved before sending SIGTERM.
 
 ## High (reliability, observability, user trust)
 

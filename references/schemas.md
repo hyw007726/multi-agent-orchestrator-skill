@@ -37,9 +37,9 @@ encode anything the headless background loop won't otherwise know.
       "relevant_files": ["string — legacy alias for read_first; prefer read_first in new context files"],
       "allowed_paths": ["string — glob or path the agent may create/edit (e.g. 'scripts/launch-all.js', 'test/**')"],
       "forbidden_paths": ["string — glob or path the agent must NOT touch (e.g. 'SKILL.md', 'package.json')"],
-      "validation_command": "string[] | string | null — JSON argv preferred (no shell expansion); shell-string fallback runs through /bin/sh -c and must be trusted; null disables automated validation",
+      "validation_command": "string[] | string | null — JSON argv preferred (runs with shell:false). Shell-string form is evaluated by /bin/sh -c with the orchestrator's environment, so shell metacharacters in the string (`$( )`, backticks, `;`, `|`, redirects) execute as written — only set it to content you fully trust. null disables automated validation",
       "timeout_mins": "integer | omitted — overrides default_timeout_mins (liveness)",
-      "validation_timeout_mins": "number | omitted — overrides timeout_mins/default_timeout_mins for validation_command only",
+      "validation_timeout_mins": "number | omitted — overrides timeout_mins/default_timeout_mins for validation_command only. The loop always enforces a finite timeout: if every override is missing or 0 it falls back to a built-in 30-minute hard cap so a hung suite cannot freeze the main cycle",
       "progress_timeout_mins": "integer | omitted — overrides default_progress_timeout_mins"
     }
   }
@@ -468,8 +468,8 @@ shape — every field the loop actually depends on — is:
     "current_started_at": "ISO 8601 timestamp — start time of the currently running process; refreshed on every spawn/respawn and used as the liveness fallback before log output exists",
     "last_spawned_at": "ISO 8601 timestamp — alias of the latest spawn time for dashboards and diagnostics",
     "last_heartbeat": "ISO 8601 timestamp — loop-owned status-transition timestamp, distinct from optional worker progress heartbeat files",
-    "validate_cmd": "string | string[] | null — JSON argv array (preferred, runs with shell:false) or trusted shell-string fallback through /bin/sh -c; null disables validation",
-    "validation_timeout_mins": "number | null — validation command timeout; falls back to timeout_mins, then default_timeout_mins when omitted",
+    "validate_cmd": "string | string[] | null — JSON argv array (preferred, runs with shell:false) or shell-string fallback through /bin/sh -c. Shell strings execute every metacharacter against the orchestrator's environment, so only use them for fully trusted commands. null disables validation",
+    "validation_timeout_mins": "number | null — validation command timeout; falls back to timeout_mins, then default_timeout_mins. The loop always enforces a finite timeout — when every override is missing or 0 it uses a built-in 30-minute hard cap so a hung suite cannot starve the main cycle",
     "timeout_mins": "integer | null — liveness threshold (no log output); falls back to default_timeout_mins from orchestrator.config.jsonc",
     "progress_timeout_mins": "integer | null — progress threshold (no code change while logs flow); falls back to default_progress_timeout_mins",
     "restart_count": "integer — bumped on every respawn (validation failure, progress-timeout arbitration, explicit soft/hard restart); once it exceeds default_max_restarts the loop marks the agent `errored` instead of respawning",

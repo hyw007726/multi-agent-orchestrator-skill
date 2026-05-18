@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const { spawnSync, spawn } = require('child_process');
 const { loadConfig } = require('./lib/config');
+const { acquireLock } = require('./lib/locking');
 const { safeKill } = require('./lib/process');
 const { cliTemplateProcessMatch } = require('./lib/cli-template');
 const { renderWorkerPrompt } = require('./lib/prompt-render');
@@ -25,6 +26,22 @@ function launchAll() {
     process.exit(1);
   }
 
+  // Serialize concurrent launches against the same coord/. Without this, two
+  // parallel launch-all.js runs would race in spawn-agent.js (each overwrites
+  // the other's PID in agents.json) and orphan one worker set with no recorded
+  // PID and no supervision.
+  const releaseLaunchLock = acquireLaunchLock(args.coordDir);
+  process.once('exit', releaseLaunchLock);
+  process.once('SIGINT', () => { releaseLaunchLock(); process.exit(130); });
+  process.once('SIGTERM', () => { releaseLaunchLock(); process.exit(143); });
+  try {
+    runLaunch(args, projectRoot, contextPath);
+  } finally {
+    releaseLaunchLock();
+  }
+}
+
+function runLaunch(args, projectRoot, contextPath) {
   let context;
   try {
     context = JSON.parse(fs.readFileSync(contextPath, 'utf-8'));
@@ -240,6 +257,39 @@ function parseArgs() {
     else if (args[i] === '--resume' || args[i] === '--force-existing-worktrees') config.resume = true;
   }
   return config;
+}
+
+// Acquires an advisory mutex on the coord/ directory so two concurrent
+// launch-all.js invocations cannot race in spawn-agent.js. Auto-recovers if a
+// prior launch was SIGKILL'd before releasing (stale window + dead-PID check
+// live in acquireLock). Returns a release function that is safe to call twice.
+function acquireLaunchLock(coordDir) {
+  fs.mkdirSync(coordDir, { recursive: true });
+  const marker = path.join(coordDir, 'launch');
+  if (!fs.existsSync(marker)) fs.writeFileSync(marker, '');
+  let release;
+  try {
+    release = acquireLock(marker, { retries: 0, stale: 600_000 });
+  } catch (err) {
+    if (err && err.code === 'ELOCKED') {
+      console.error(
+        `Another launch-all is already running for '${coordDir}'.\n` +
+        `Refusing to start a second launch — concurrent launches would race in ` +
+        `spawn-agent.js and orphan one worker set (the second writer's PID ` +
+        `overwrites the first in agents.json).\n\n` +
+        `If you're certain no other launch is running (e.g. it crashed without ` +
+        `cleanup), remove the stale marker:  rm -rf '${marker}.lock'`,
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    try { release(); } catch {}
+  };
 }
 
 function validateExistingWorktree(projectRoot, worktreePath, agentName) {

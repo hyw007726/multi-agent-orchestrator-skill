@@ -19,6 +19,9 @@ const SAFE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const SAFE_AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const STAGED_REQUEST_TYPES = new Set(["question", "change", "conflict", "review_request"]);
 const REQUEST_PRIORITIES = new Set(["low", "medium", "high"]);
+// Hard cap on runValidation: even if every configurable timeout is missing or 0,
+// a hung validation suite must not freeze the main loop and starve other agents.
+const VALIDATION_HARD_CAP_MINS = 30;
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
@@ -399,12 +402,12 @@ async function runLoop() {
             }
           }
 
-          resolveEndAgentApprovalBeforeSignal(action, arbitration, paths, log);
+          // Atomic completion: resolve the approval and mark the agent COMPLETED
+          // back-to-back with no intervening I/O. A crash here cannot leave us with
+          // status=completed and an unresolved review_request — the COMPLETED write
+          // is unreachable unless the resolution write has already landed.
+          finalizeEndAgentCompletion(action, arbitration, paths, log);
           safeKill({ pid: snapshot.pid, expectedCli: expectedProcessForAgent(snapshot, parsedConfig), log, coordDir: config.coordDir, agent: action.agent });
-          updateJSON(paths.agents, (agents) => {
-            if (!agents[action.agent]) return;
-            transitionAgentStatus(agents[action.agent], action.agent, STATUS.COMPLETED, "validation passed, agent ended", log);
-          });
           appendEvent(config.coordDir, "agent_completed", { agent: action.agent });
         } else {
           log(`Validation failed for ${action.agent} — converting to soft_restart.`);
@@ -694,6 +697,18 @@ async function runLoop() {
         log(`Trimming ${archive} old decisions from decisions.json; full audit remains in decisions.jsonl.`);
         decisions.splice(0, archive);
       }
+    });
+  }
+
+  // Resolves the agent's pending completion approval and then immediately marks
+  // the agent COMPLETED. The two writes are issued back-to-back with nothing
+  // between them, so the invariant "status=completed ⇒ approval resolved" holds
+  // even if the orchestrator crashes mid-flow.
+  function finalizeEndAgentCompletion(action, arbitration, paths, log) {
+    resolveEndAgentApprovalBeforeSignal(action, arbitration, paths, log);
+    updateJSON(paths.agents, (agents) => {
+      if (!agents[action.agent]) return;
+      transitionAgentStatus(agents[action.agent], action.agent, STATUS.COMPLETED, "validation passed, agent ended", log);
     });
   }
 
@@ -1481,15 +1496,15 @@ function runValidation(agent, log, parsedConfig = {}) {
 
   const isArgv = Array.isArray(cmd);
   const timeout = validationTimeout(agent, parsedConfig);
-  log(`Running validation${isArgv ? "" : " (shell form)"}: ${isArgv ? cmd.join(" ") : cmd}${timeout ? ` (timeout ${formatValidationTimeout(timeout)})` : ""}`);
+  log(`Running validation${isArgv ? "" : " (shell form)"}: ${isArgv ? cmd.join(" ") : cmd} (timeout ${formatValidationTimeout(timeout)}${timeout.fromHardCap ? ", hard cap" : ""})`);
 
   const options = {
     cwd: agent.worktree,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "pipe"],
     shell: !isArgv,
+    timeout: timeout.ms,
   };
-  if (timeout) options.timeout = timeout.ms;
 
   const result = isArgv
     ? spawnSync(cmd[0], cmd.slice(1), options)
@@ -1516,11 +1531,14 @@ function runValidation(agent, log, parsedConfig = {}) {
 }
 
 function validationTimeout(agent, parsedConfig = {}) {
-  const timeoutMins = firstPositiveNumber(agent.validation_timeout_mins, agent.timeout_mins, parsedConfig.default_timeout_mins);
-  if (timeoutMins === null) return null;
+  const configured = firstPositiveNumber(agent.validation_timeout_mins, agent.timeout_mins, parsedConfig.default_timeout_mins);
+  // Never return null: a hung validation suite would block the whole loop and
+  // starve every other agent. Fall back to a generous hard cap if config is missing or 0.
+  const mins = configured ?? VALIDATION_HARD_CAP_MINS;
   return {
-    mins: timeoutMins,
-    ms: Math.max(1, Math.ceil(timeoutMins * 60_000)),
+    mins,
+    ms: Math.max(1, Math.ceil(mins * 60_000)),
+    fromHardCap: configured === null,
   };
 }
 
@@ -1534,7 +1552,6 @@ function firstPositiveNumber(...values) {
 }
 
 function formatValidationTimeout(timeout) {
-  if (!timeout) return "unbounded";
   return `${timeout.ms}ms (${timeout.mins} minute${timeout.mins === 1 ? "" : "s"})`;
 }
 
