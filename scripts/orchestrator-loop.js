@@ -44,6 +44,7 @@ async function runLoop() {
   // on every teardown path below. The stale option recovers automatically if a prior
   // loop was SIGKILL'd without running its teardown.
   const instanceLock = acquireInstanceLock(config.coordDir);
+  const runId = instanceLock.runId;
   const releaseInstanceLock = () => { instanceLock.release(); };
   process.once("SIGTERM", () => { releaseInstanceLock(); process.exit(0); });
   process.once("SIGINT",  () => { releaseInstanceLock(); process.exit(0); });
@@ -61,7 +62,7 @@ async function runLoop() {
     log(`Starting Orchestrator Loop (adaptive poll: ${parsedConfig.poll_min_ms}–${parsedConfig.poll_max_ms}ms; backs off when idle)`);
   }
   log(`Orchestrator CLI: '${parsedConfig.orchestrator_cli}'  |  max restarts: ${parsedConfig.default_max_restarts}  |  CLI failure threshold: ${parsedConfig.orchestrator_failure_threshold}`);
-  log(`Acquired singleton lock on ${instanceLock.markerPath} (PID ${process.pid}).`);
+  log(`Acquired singleton lock on ${instanceLock.markerPath} (PID ${process.pid}, run_id ${runId}).`);
   ensureDecisionAuditLog(paths, log);
 
   launchDashboard(config, parsedConfig, log);
@@ -260,7 +261,7 @@ async function runLoop() {
         const context = readJSON(paths.context);
         const durableDecisions = readTextIfExists(paths.decisionsMd);
         const callerContext = readTextIfExists(paths.callerContextMd);
-        const recentDecisions = readRecentDecisions(paths.decisions);
+        const recentDecisions = readRecentDecisions(paths.decisions, runId);
         const agentsForPrompt = readJSON(paths.agents);
 
         const worktreeStates = collectWorktreeStates(pending, agentsForPrompt);
@@ -533,7 +534,7 @@ async function runLoop() {
     // Worktree mutations (orthogonal to agents.json).
     if (fs.existsSync(outcome.worktree)) {
       if (mode === "hard") {
-        const recovery = captureRecoveryAndReset(outcome.worktree, name, log);
+        const recovery = captureRecoveryAndReset(outcome.worktree, name, log, runId);
         if (recovery.error) {
           log(`Hard restart: recovery/reset failed — ${recovery.error}. Parking for attention.`);
           const recoveryReason = `hard restart recovery failed: ${recovery.error}`;
@@ -556,9 +557,12 @@ async function runLoop() {
         }
         if (recovery.tag) {
           log(`Hard restart: wiped worktree but preserved state at tag ${recovery.tag}.`);
-          appendEvent(config.coordDir, "recovery_tag_created", { agent: name, data: { tag: recovery.tag } });
+          appendEvent(config.coordDir, "recovery_tag_created", { agent: name, data: { tag: recovery.tag, run_id: runId } });
           updateJSON(paths.agents, (agents) => {
-            if (agents[name]) agents[name].recovery_tag = recovery.tag;
+            if (agents[name]) {
+              agents[name].recovery_tag = recovery.tag;
+              agents[name].recovery_tag_run_id = runId;
+            }
           });
         } else {
           log(`Hard restart: worktree was already clean.`);
@@ -584,7 +588,7 @@ async function runLoop() {
       data: { attempt: outcome.attempt, maxAttempts: parsedConfig.default_max_restarts },
     });
 
-    return respawnAgent({
+    const respawned = respawnAgent({
       name,
       kiloMode: outcome.kiloMode,
       cliTool: outcome.cliTool,
@@ -600,6 +604,34 @@ async function runLoop() {
       paths,
       log,
     });
+
+    // Infrastructure-class respawn failures (spawn-agent.js exits non-zero, CLI
+    // binary missing, EAGAIN, etc.) used to leave the agent with status=running
+    // but a stale PID — the next loop cycle's vanished-worker check would then
+    // transition it to `exited` with a phantom +1 on restart_count. Park the
+    // agent for human attention instead, and refund the budget bump since this
+    // attempt never reached the worker.
+    if (!respawned) {
+      const respawnReason = `respawn failed during ${mode} restart (${reason})`;
+      let respawnNextSteps, respawnAttentionAt;
+      updateJSON(paths.agents, (agents) => {
+        if (!agents[name]) return;
+        if (Number.isInteger(agents[name].restart_count) && agents[name].restart_count > 0) {
+          agents[name].restart_count -= 1;
+        }
+        respawnNextSteps = parkRationale("respawn_failed");
+        parkAgentForAttention(agents[name], name, respawnReason, log, { nextSteps: respawnNextSteps });
+        respawnAttentionAt = agents[name].attention_at;
+      });
+      if (respawnAttentionAt) {
+        appendEvent(config.coordDir, "agent_parked", {
+          agent: name,
+          reason: respawnReason,
+          data: { attention_at: respawnAttentionAt, next_steps: respawnNextSteps },
+        });
+      }
+    }
+    return respawned;
 
     // Single-use helper — only called from bumpRestartAndRespawn above.
     function respawnAgent({ name, kiloMode, cliTool, attempt, maxAttempts, instruction, worktree, validateCmd, timeoutMins, progressTimeoutMins, validationTimeoutMins, baseRef, paths, log }) {
@@ -744,9 +776,13 @@ async function runLoop() {
 
   function appendDecisionRecords(paths, decisionsToAdd, log) {
     if (decisionsToAdd.length === 0) return;
-    appendJSONL(paths.decisionsAudit, decisionsToAdd);
+    // Stamp every decision with the current run_id so readRecentDecisions can skip
+    // prior-run history. Done here (rather than at each call site) so a missed
+    // call site can't silently emit unstamped decisions.
+    const stamped = decisionsToAdd.map((d) => (runId && d && d.run_id === undefined ? { ...d, run_id: runId } : d));
+    appendJSONL(paths.decisionsAudit, stamped);
     updateJSON(paths.decisions, (decisions) => {
-      decisions.push(...decisionsToAdd);
+      decisions.push(...stamped);
       if (decisions.length > RECENT_DECISION_LIMIT) {
         const archive = decisions.length - RECENT_DECISION_LIMIT;
         log(`Trimming ${archive} old decisions from decisions.json; full audit remains in decisions.jsonl.`);
@@ -909,10 +945,18 @@ function ensureDecisionAuditLog(paths, log) {
   }
 }
 
-function readRecentDecisions(decisionsPath) {
+// Filters out decisions from prior runs so a `--resume` (or non-`--force` rerun)
+// doesn't bleed stale arbitration history into the new run's prompts. Entries
+// without a run_id are treated as "pre-run_id" and excluded by the same logic —
+// any decision the orchestrator wants to surface to arbitration in this run
+// must have been stamped by appendDecisionRecords in this run.
+function readRecentDecisions(decisionsPath, currentRunId) {
   const decisions = readJSON(decisionsPath);
   if (!Array.isArray(decisions)) return [];
-  return decisions.slice(-RECENT_DECISION_LIMIT);
+  const filtered = currentRunId
+    ? decisions.filter((d) => d && d.run_id === currentRunId)
+    : decisions;
+  return filtered.slice(-RECENT_DECISION_LIMIT);
 }
 
 function hasPendingProgressTimeoutRequest(requests, agentName) {
@@ -1518,7 +1562,10 @@ function commitWorktree(worktree, message) {
 // Captures uncommitted+untracked state in a recovery tag, then resets the worktree.
 // Returns { tag: string | null, error: string | null }.
 // If error is set the worktree was NOT touched — the caller must abort the restart.
-function captureRecoveryAndReset(worktree, agent, log) {
+// `runId` (optional) is embedded in the tag name so tags from prior runs are
+// trivially distinguishable from this run's tags (matches the run_id stamped on
+// the recovery_tag_created event).
+function captureRecoveryAndReset(worktree, agent, log, runId) {
   try {
     const headBefore = gitStdout(worktree, ["rev-parse", "HEAD"]).trim();
     let createdRecovery = false;
@@ -1536,7 +1583,8 @@ function captureRecoveryAndReset(worktree, agent, log) {
       // Random suffix keeps the tag collision-safe even if two restarts land in
       // the same millisecond (the ISO timestamp alone is not unique enough).
       const suffix = Math.random().toString(36).slice(2, 8);
-      tag = `recovery/${agent}/${ts}-${suffix}`;
+      const runSegment = runId ? `${runId}/` : "";
+      tag = `recovery/${agent}/${runSegment}${ts}-${suffix}`;
       const tagResult = runGit(worktree, ["tag", tag], { allowFailure: true });
       if (tagResult.status !== 0) {
         const details = gitErrorDetails(tagResult);

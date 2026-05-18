@@ -4,7 +4,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const {
   repoRoot,
@@ -969,6 +969,150 @@ describe('loop behavior', () => {
       assert.match(log, /Completion rejected for agent-owner: file ownership violation/);
       assert.match(log, /Skipping soft-restart WIP commit for agent-owner/);
     } finally {
+      if (project) project.cleanup();
+    }
+  });
+
+  it('parks the agent and refunds restart budget when respawn fails', () => {
+    let project;
+    let workerChild;
+    try {
+      project = createTempProject('respawn-failure-park-');
+
+      // Orchestrator CLI: approves the pending question AND emits a soft_restart
+      // for the same agent. The soft_restart action is what triggers the respawn
+      // attempt that the agent's broken `cli` setting will fail.
+      const cliPath = path.join(project.root, 'respawn-fail-cli.js');
+      fs.writeFileSync(cliPath, [
+        '#!/usr/bin/env node',
+        "'use strict';",
+        'const fs = require("fs");',
+        'const args = process.argv.slice(2);',
+        'if (args[0] === "--version") { console.log("respawn-fail-cli 1.0"); process.exit(0); }',
+        'const prompt = fs.readFileSync(args[0], "utf-8");',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  const start = prompt.indexOf("## New Requests from Agents");',
+        '  const end = prompt.indexOf("## Your Responsibilities", start + 1);',
+        '  const section = prompt.slice(start, end === -1 ? undefined : end);',
+        '  const match = section.match(/\\[[\\s\\S]*\\]/);',
+        '  const requests = match ? JSON.parse(match[0]) : [];',
+        '  const approved = requests.map(r => ({ request_id: r.request_id, decision: "ok", reason: "test" }));',
+        '  const actions = requests.map(r => ({ type: "soft_restart", agent: r.agent, instruction: "retry" }));',
+        '  console.log(JSON.stringify({ approved, rejected: [], actions }, null, 2));',
+        '  process.exit(0);',
+        '}',
+        'if (prompt.includes("reviewing the completed output")) { console.log("ok"); process.exit(0); }',
+        'process.exit(0);',
+      ].join('\n') + '\n', 'utf-8');
+
+      fs.writeFileSync(path.join(project.root, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  default_cli: "respawn",',
+        '  orchestrator_cli: "respawn",',
+        // Only "respawn" is configured. The agent's `cli` is intentionally
+        // pointed at "broken-cli", which has no template — spawn-agent.js will
+        // exit 1 when bumpRestartAndRespawn invokes it.
+        `  cli_templates: { respawn: ${JSON.stringify({ cmd: process.execPath, args: [cliPath, { prompt_file: true }] })} },`,
+        '  cli_health_checks: { respawn: "node -e \\"process.exit(0)\\"" },',
+        '  default_max_restarts: 3,',
+        '  poll_min_ms: 250,',
+        '  poll_max_ms: 500,',
+        '  launch_dashboard: false,',
+        '  launch_review_terminal: false,',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      bootstrapProject(project.root, 'Respawn-failure parking regression project');
+
+      // Allowed paths is required, otherwise spawn-agent.js exits with the
+      // "ALLOWED PATHS: (unspecified)" error before reaching the cli_templates
+      // lookup — we'd still hit the respawn-failure branch, but for the wrong
+      // reason. Set it so the test fails for the reason we care about.
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.tasks = {
+        'agent-fail-respawn': {
+          description: 'Simulate respawn failure',
+          cli: 'broken-cli',
+          allowed_paths: ['out/**'],
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2), 'utf-8');
+
+      addKiloWorktree(project.root, 'agent-fail-respawn');
+      const worktree = path.join(project.root, '.agents', 'worktrees', 'agent-fail-respawn');
+
+      // Long-running node child stands in for the "running" worker. The loop's
+      // process-liveness check uses process_match='node', which matches both
+      // this child's cmdline and Node's safeKill expectations.
+      workerChild = spawn(process.execPath, ['-e', [
+        'setInterval(() => {}, 1000);',
+        'process.on("SIGTERM", () => process.exit(0));',
+      ].join('')], { stdio: 'ignore', detached: true });
+      workerChild.unref();
+
+      const agentsPath = path.join(project.root, 'coord', 'agents.json');
+      const nowIso = new Date().toISOString();
+      fs.writeFileSync(agentsPath, JSON.stringify({
+        'agent-fail-respawn': {
+          task: 'Simulate respawn failure',
+          status: 'running',
+          pid: workerChild.pid,
+          cli: 'broken-cli',
+          process_match: 'node',
+          worktree,
+          started_at: nowIso,
+          current_started_at: nowIso,
+          last_spawned_at: nowIso,
+          last_heartbeat: nowIso,
+          restart_count: 0,
+          base_ref: 'main',
+        },
+      }, null, 2) + '\n', 'utf-8');
+
+      // One pending question. The orchestrator CLI approves it AND emits a
+      // soft_restart for the same agent — the soft_restart action is what
+      // exercises bumpRestartAndRespawn's respawn step.
+      fs.writeFileSync(path.join(project.root, 'coord', 'requests.jsonl'), JSON.stringify({
+        request_id: 'agent-fail-respawn-trigger',
+        agent: 'agent-fail-respawn',
+        type: 'question',
+        priority: 'medium',
+        status: 'pending',
+        content: 'Should the orchestrator try to restart this agent?',
+        created_at: nowIso,
+      }) + '\n', 'utf-8');
+
+      const loop = runLoop(project.root);
+      assert.strictEqual(loop.status, 0,
+        `loop failed\nstdout:\n${loop.stdout}\nstderr:\n${loop.stderr}`);
+
+      const agents = readJson(agentsPath);
+      const parked = agents['agent-fail-respawn'];
+      assert.strictEqual(parked.status, 'needs_attention',
+        `Expected "needs_attention" but got "${parked.status}"`);
+      assert.match(parked.attention_reason, /respawn failed/);
+      assert.ok(parked.attention_at && !Number.isNaN(Date.parse(parked.attention_at)),
+        'attention_at is an ISO timestamp');
+      assert.ok(typeof parked.next_steps === 'string' && parked.next_steps.length > 0,
+        'next_steps populated');
+      assert.match(parked.next_steps, /spawn-agent\.js failed/);
+      // The crucial property: a respawn that never reached the worker must not
+      // consume the restart budget. The bump was refunded back to its prior
+      // value (0).
+      assert.strictEqual(parked.restart_count, 0,
+        `restart_count should have been refunded to 0 after the failed respawn, got ${parked.restart_count}`);
+
+      const events = readJsonl(path.join(project.root, 'coord', 'events.jsonl'));
+      const parkEvent = events.find((e) => e.event === 'agent_parked' && e.agent === 'agent-fail-respawn');
+      assert.ok(parkEvent, 'agent_parked event should be appended');
+      assert.match(parkEvent.reason, /respawn failed/);
+      assert.ok(parkEvent.data && parkEvent.data.attention_at && parkEvent.data.next_steps,
+        'parked event carries attention_at and next_steps');
+    } finally {
+      if (workerChild && !workerChild.killed) {
+        try { process.kill(workerChild.pid, 'SIGKILL'); } catch {}
+      }
       if (project) project.cleanup();
     }
   });

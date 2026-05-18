@@ -212,6 +212,7 @@ function runLaunch(args, projectRoot, contextPath) {
     if (spawnResult.status !== 0) {
       console.error(`Error: Failed to spawn agent ${agentName}:`);
       console.error(spawnResult.stderr || spawnResult.stdout);
+      recoverOrphanForRollback(spawnedPids, args.coordDir, agentName, cli, config);
       rollback(spawnedPids, createdWorktrees, projectRoot);
       process.exit(1);
     }
@@ -220,6 +221,7 @@ function runLaunch(args, projectRoot, contextPath) {
     if (!result || !Number.isInteger(result.pid) || result.pid <= 0) {
       console.error(`Error: Could not capture a PID for agent ${agentName} from spawn-agent.js output.`);
       console.error(spawnResult.stdout);
+      recoverOrphanForRollback(spawnedPids, args.coordDir, agentName, cli, config);
       rollback(spawnedPids, createdWorktrees, projectRoot);
       process.exit(1);
     }
@@ -247,6 +249,25 @@ function runLaunch(args, projectRoot, contextPath) {
 
   console.log(`Orchestrator loop backgrounded (PID: ${loop.pid})`);
   console.log(`Dashboard: node ${path.join(__dirname, 'dashboard.js')} --coord ${args.coordDir}`);
+
+  // Single-use helper — only called from the spawn loop above.
+  // If spawn-agent.js panicked between its agents.json write and the
+  // __SPAWN_RESULT__ print line (e.g. EAGAIN on console.log, signal between
+  // statements), the worker CLI is already running with a detached PID but
+  // launch-all never received it. lookupOrphanedAgentRecord reads the PID
+  // back from agents.json — push it onto spawnedPids here so rollback can
+  // kill the orphan instead of leaving it running.
+  function recoverOrphanForRollback(spawnedPids, coordDir, agentName, fallbackCli, parsedConfig) {
+    const orphan = lookupOrphanedAgentRecord(coordDir, agentName, fallbackCli, parsedConfig);
+    if (!orphan) return;
+    if (orphan.error) {
+      console.error(`Warning: could not read agents.json to look for an orphaned ${agentName} PID: ${orphan.error}`);
+      return;
+    }
+    if (spawnedPids.some((entry) => entry.pid === orphan.pid)) return;
+    console.error(`Recovered orphaned PID ${orphan.pid} for ${agentName} from agents.json; queuing it for rollback.`);
+    spawnedPids.push({ ...orphan, name: agentName });
+  }
 
   // Single-use helper — only called from launchAll above.
   // Copies the prior run's orchestrator-loop.out into loop-runs/<timestamp>.out
@@ -443,8 +464,13 @@ function rollbackIfNeeded(spawnedPids, createdWorktrees, projectRoot) {
 
 function rollback(spawnedPids, createdWorktrees, projectRoot) {
   console.error('\nRolling back partial launch...');
-  for (const { pid, cli, processMatch, name } of spawnedPids) {
-    safeKill({ pid, expectedCli: processMatch || cli || 'kilo', log: (msg) => console.error(`  [${name}] ${msg}`) });
+  for (const { pid, cli, processMatch, name, recordedCmdline } of spawnedPids) {
+    safeKill({
+      pid,
+      expectedCli: processMatch || cli || 'kilo',
+      recordedCmdline,
+      log: (msg) => console.error(`  [${name}] ${msg}`),
+    });
   }
   for (const { name, path: wtPath } of createdWorktrees) {
     try {
@@ -456,6 +482,31 @@ function rollback(spawnedPids, createdWorktrees, projectRoot) {
     } catch {}
   }
   console.error('Rollback complete.');
+}
+
+// Shared — used by recoverOrphanForRollback (inside runLaunch) and the
+// launch-all test suite. Reads agents.json and returns the orphan kill
+// descriptor for `agentName` (pid, cli, processMatch, recordedCmdline) if
+// spawn-agent.js wrote a valid PID before crashing. Returns null when no
+// record exists or the PID is missing/invalid, and `{ error: string }` when
+// agents.json itself is unreadable so the caller can surface a warning.
+function lookupOrphanedAgentRecord(coordDir, agentName, fallbackCli, parsedConfig) {
+  let agentsRecord;
+  try {
+    const agentsPath = path.resolve(coordDir, 'agents.json');
+    if (!fs.existsSync(agentsPath)) return null;
+    const agents = JSON.parse(fs.readFileSync(agentsPath, 'utf-8'));
+    agentsRecord = agents && agents[agentName];
+  } catch (err) {
+    return { error: err.message };
+  }
+  if (!agentsRecord) return null;
+  const pid = Number(agentsRecord.pid);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const cli = agentsRecord.cli || fallbackCli;
+  const cliTemplate = parsedConfig && parsedConfig.cli_templates ? parsedConfig.cli_templates[cli] : undefined;
+  const processMatch = agentsRecord.process_match || cliTemplateProcessMatch(cli, cliTemplate);
+  return { pid, cli, processMatch, recordedCmdline: agentsRecord.spawned_cmdline };
 }
 
 // Shared — used by launchAll (PID capture from spawn-agent.js) and the
@@ -488,4 +539,4 @@ function captureBaseBranch(projectRoot, config) {
   return 'main';
 }
 
-module.exports = { parseSpawnResult };
+module.exports = { parseSpawnResult, lookupOrphanedAgentRecord };

@@ -6,7 +6,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
-const { acquireLock, updateJSON, updateJSONL, writeAtomic } = require('../scripts/lib/locking');
+const { spawn, spawnSync } = require('node:child_process');
+
+const { acquireLock, acquireInstanceLock, readCurrentRunId, updateJSON, updateJSONL, writeAtomic } = require('../scripts/lib/locking');
 
 describe('locking primitives', () => {
   let tmpDir;
@@ -180,5 +182,79 @@ describe('locking primitives', () => {
     const after = fs.readdirSync(tmpDir);
     const tmpFiles = after.filter(f => f.includes('.tmp.'));
     assert.strictEqual(tmpFiles.length, 0, `tmp files left behind: ${tmpFiles.join(', ')}`);
+  });
+});
+
+describe('acquireInstanceLock run_id and live-loop detection', () => {
+  let coordDir;
+
+  beforeEach(() => {
+    coordDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instance-lock-coord-'));
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(coordDir, { recursive: true, force: true }); } catch {}
+  });
+
+  it('mints a run_id, persists it to coord/current_run.json, and readCurrentRunId returns it', () => {
+    const handle = acquireInstanceLock(coordDir);
+    try {
+      assert.ok(handle.runId, 'runId should be returned');
+      assert.match(handle.runId, /^run-\d{4}-\d{2}-\d{2}T/, 'runId should be ISO-stamped');
+
+      const persisted = JSON.parse(fs.readFileSync(path.join(coordDir, 'current_run.json'), 'utf-8'));
+      assert.strictEqual(persisted.run_id, handle.runId);
+      assert.strictEqual(typeof persisted.started_at, 'string');
+      assert.strictEqual(persisted.pid, process.pid);
+
+      assert.strictEqual(readCurrentRunId(coordDir), handle.runId);
+    } finally {
+      handle.release();
+    }
+  });
+
+  it('refuses to acquire when a sibling orchestrator-loop is running on the same coord (lock dir removed)', async () => {
+    // Stand up a fake orchestrator-loop.js binary that just sleeps. We need the
+    // command line to literally contain "orchestrator-loop.js --coord <coord>" so
+    // the ps scan matches it the same way it would match a real loop.
+    const fakeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-loop-'));
+    const fakeLoop = path.join(fakeDir, 'orchestrator-loop.js');
+    fs.writeFileSync(fakeLoop, 'setInterval(() => {}, 1000);\n', 'utf-8');
+
+    const child = spawn(process.execPath, [fakeLoop, '--coord', coordDir], {
+      stdio: 'ignore',
+      detached: false,
+    });
+
+    try {
+      // Give ps a moment to see the process.
+      await new Promise((r) => setTimeout(r, 150));
+
+      // Sanity: make sure ps can actually see it; otherwise the test is meaningless.
+      const ps = spawnSync('ps', ['-eo', 'pid=,command='], { encoding: 'utf-8' });
+      const visible = (ps.stdout || '').split('\n').some((line) =>
+        line.includes('orchestrator-loop.js') &&
+        line.includes(`--coord ${coordDir}`) &&
+        line.match(new RegExp(`\\b${child.pid}\\b`)),
+      );
+      if (!visible) return; // ps doesn't see it (e.g. unusual env); skip without failing.
+
+      // No instance.lock dir exists — the "user deleted a stale lock" scenario.
+      // Spawn a subprocess that calls acquireInstanceLock so its process.exit(1)
+      // doesn't take down the test runner.
+      const probe = spawnSync(process.execPath, [
+        '-e',
+        `const { acquireInstanceLock } = require(${JSON.stringify(path.resolve(__dirname, '..', 'scripts', 'lib', 'locking'))});` +
+        `acquireInstanceLock(${JSON.stringify(coordDir)});`,
+      ], { encoding: 'utf-8' });
+
+      assert.strictEqual(probe.status, 1, `expected exit 1, got ${probe.status}. stderr:\n${probe.stderr}`);
+      assert.match(probe.stderr, /Another orchestrator loop is already running/);
+      assert.match(probe.stderr, new RegExp(`PID ${child.pid}`));
+      assert.match(probe.stderr, /Detected via ps scan/);
+    } finally {
+      try { child.kill('SIGKILL'); } catch {}
+      try { fs.rmSync(fakeDir, { recursive: true, force: true }); } catch {}
+    }
   });
 });

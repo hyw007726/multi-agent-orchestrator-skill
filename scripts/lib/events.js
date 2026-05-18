@@ -1,5 +1,5 @@
 const path = require("path");
-const { appendJSONL } = require("./locking");
+const { appendJSONL, readCurrentRunId } = require("./locking");
 
 /**
  * Lightweight structured event logger.
@@ -48,6 +48,8 @@ function appendEvent(coordDir, event, { agent, reason, pid, data } = {}) {
     timestamp: new Date().toISOString(),
     event,
   };
+  const runId = cachedRunId(coordDir);
+  if (runId) record.run_id = runId;
   if (agent !== undefined) record.agent = agent;
   if (reason !== undefined) record.reason = reason;
   if (pid !== undefined) record.pid = pid;
@@ -60,6 +62,20 @@ function appendEvent(coordDir, event, { agent, reason, pid, data } = {}) {
   } catch {
     // Best-effort: never let logging break the loop.
   }
+}
+
+// Single-use helper — used only by appendEvent above.
+// Caches the run_id per coordDir for the lifetime of this process. The
+// orchestrator-loop writes current_run.json once at startup; subprocesses
+// (spawn-agent, resume-agent) read it once and reuse it. Cache miss ⇒ re-read,
+// so a subprocess spawned after the file lands still picks up the value.
+const runIdCache = new Map();
+function cachedRunId(coordDir) {
+  if (!coordDir) return null;
+  if (runIdCache.has(coordDir)) return runIdCache.get(coordDir);
+  const runId = readCurrentRunId(coordDir);
+  if (runId) runIdCache.set(coordDir, runId);
+  return runId;
 }
 
 module.exports = { appendEvent };

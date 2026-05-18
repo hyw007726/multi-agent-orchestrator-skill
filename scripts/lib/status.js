@@ -69,12 +69,12 @@ function parkAgentForAttention(agent, name, reason, log, fields = {}) {
   return agent;
 }
 
-// Shared — used by the liveness-timeout, restart-budget-exhausted, and
-// hard-restart-recovery-failed park sites in scripts/orchestrator-loop.js
-// (`:161`, `:464`, `:517`). Site-keyed so the human recovery guidance written
-// into `next_steps` is owned by the status domain and stays decoupled from
-// buildProgressEscalation, which is structurally about progress timeouts. All
-// three are Class B "no cheap recovery" failures
+// Shared — used by the liveness-timeout, restart-budget-exhausted,
+// hard-restart-recovery-failed, and respawn-failed park sites in
+// scripts/orchestrator-loop.js. Site-keyed so the human recovery guidance
+// written into `next_steps` is owned by the status domain and stays decoupled
+// from buildProgressEscalation, which is structurally about progress timeouts.
+// All four are Class B "no cheap recovery" failures
 // (docs/manual-intervention-policy.md).
 const PARK_RATIONALES = Object.freeze({
   liveness_timeout:
@@ -94,6 +94,14 @@ const PARK_RATIONALES = Object.freeze({
     "failed, so there is no further automatic fallback. Inspect the worktree " +
     "state and the recovery error in the log, repair the worktree by hand if " +
     "needed, then resume or restart the worker manually.",
+  respawn_failed:
+    "The orchestrator killed the previous worker process and tried to relaunch " +
+    "it, but spawn-agent.js failed before the replacement could be registered " +
+    "(missing CLI binary, EAGAIN, disk pressure, transient OS error, etc.). " +
+    "This is an infrastructure problem rather than a worker-code issue, so the " +
+    "restart budget was refunded. Inspect the orchestrator log, fix the " +
+    "underlying spawn issue (CLI installation, env vars, disk space, fd " +
+    "limits), then resume or restart the worker manually.",
 });
 
 /**

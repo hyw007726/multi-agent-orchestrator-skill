@@ -328,4 +328,124 @@ describe('decision history', () => {
       }
     }
   });
+
+  it('stamps run_id on decisions/events and filters prior-run decisions out of the arbitration prompt', () => {
+    let project;
+    try {
+      project = createTempProject('decision-run-id-');
+
+      const runIdCliPath = path.join(project.root, 'run-id-cli.js');
+      // The fake CLI asserts that "## Existing Decisions" in the arbitration
+      // prompt does NOT include the pre-seeded stale-run decision. If it does,
+      // exit non-zero so the loop bubbles the failure up to the test.
+      fs.writeFileSync(runIdCliPath, [
+        '#!/usr/bin/env node',
+        "'use strict';",
+        'const fs = require("fs");',
+        'const args = process.argv.slice(2);',
+        'if (args[0] === "--version") { console.log("run-id-cli 1.0"); process.exit(0); }',
+        'const prompt = fs.readFileSync(args[0], "utf-8");',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  if (prompt.includes("stale-decision-from-prior-run")) {',
+        '    console.error("Arbitration prompt leaked a prior-run decision");',
+        '    process.exit(2);',
+        '  }',
+        '  console.log(JSON.stringify({',
+        '    approved: [{ request_id: "agent-run-id-req", decision: "approved", reason: "ok" }],',
+        '    rejected: [], actions: []',
+        '  }));',
+        '  process.exit(0);',
+        '}',
+        'process.exit(0);',
+      ].join('\n'), 'utf-8');
+
+      fs.writeFileSync(path.join(project.root, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  default_cli: "runid",',
+        '  orchestrator_cli: "runid",',
+        `  cli_templates: { runid: ${JSON.stringify({ cmd: process.execPath, args: [runIdCliPath, { prompt_file: true }] })} },`,
+        '  cli_health_checks: { runid: "node -e \\"process.exit(0)\\"" },',
+        '  poll_min_ms: 250,',
+        '  poll_max_ms: 500,',
+        '  launch_dashboard: false,',
+        '  launch_review_terminal: false,',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      bootstrapProject(project.root, 'run_id stamping regression test project');
+
+      // Pre-seed a decision from a prior run — it must NOT bleed into this run's
+      // arbitration prompt (the fake CLI exits 2 if it does).
+      const priorRunDecision = {
+        request_id: 'stale-decision-from-prior-run',
+        disposition: 'approved',
+        decision: 'Stale approval from a previous run.',
+        reason: 'Should not appear in this run.',
+        resolved_at: new Date().toISOString(),
+        run_id: 'run-from-a-previous-loop',
+      };
+      fs.writeFileSync(
+        path.join(project.root, 'coord', 'decisions.json'),
+        JSON.stringify([priorRunDecision], null, 2) + '\n',
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(project.root, 'coord', 'decisions.jsonl'),
+        JSON.stringify(priorRunDecision) + '\n',
+        'utf-8',
+      );
+
+      fs.writeFileSync(path.join(project.root, 'coord', 'agents.json'), JSON.stringify({
+        'agent-run-id': {
+          task: 'run_id stamping',
+          status: 'completed',
+          worktree: project.root,
+          cli: 'runid',
+        },
+      }, null, 2) + '\n', 'utf-8');
+
+      fs.writeFileSync(
+        path.join(project.root, 'coord', 'requests.jsonl'),
+        JSON.stringify({
+          request_id: 'agent-run-id-req',
+          agent: 'agent-run-id',
+          type: 'question',
+          priority: 'medium',
+          status: 'pending',
+          content: 'Trigger one arbitration cycle.',
+          created_at: new Date().toISOString(),
+        }) + '\n',
+        'utf-8',
+      );
+
+      const loop = runLoop(project.root);
+      assert.strictEqual(loop.status, 0,
+        `orchestrator loop failed\nstdout:\n${loop.stdout}\nstderr:\n${loop.stderr}`);
+
+      const currentRun = readJson(path.join(project.root, 'coord', 'current_run.json'));
+      assert.match(currentRun.run_id, /^run-/);
+      const currentRunId = currentRun.run_id;
+      assert.notStrictEqual(currentRunId, 'run-from-a-previous-loop');
+
+      const audit = readJsonl(path.join(project.root, 'coord', 'decisions.jsonl'));
+      const newDecision = audit.find((d) => d.request_id === 'agent-run-id-req');
+      assert.ok(newDecision, 'new decision should be in the audit log');
+      assert.strictEqual(newDecision.run_id, currentRunId, 'new decision should carry this run\'s run_id');
+
+      const staleStillPersisted = audit.find((d) => d.request_id === 'stale-decision-from-prior-run');
+      assert.ok(staleStillPersisted, 'audit log preserves the stale decision (history is append-only)');
+      assert.strictEqual(staleStillPersisted.run_id, 'run-from-a-previous-loop');
+
+      // Not every test scenario emits events (a single approved question may
+      // trigger none), but every event that IS emitted must carry the run_id.
+      const events = readJsonl(path.join(project.root, 'coord', 'events.jsonl'));
+      for (const e of events) {
+        assert.strictEqual(e.run_id, currentRunId, `event ${e.event} should carry run_id ${currentRunId}, got ${e.run_id}`);
+      }
+    } finally {
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
 });
