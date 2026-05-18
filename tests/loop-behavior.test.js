@@ -274,7 +274,7 @@ describe('loop behavior', () => {
   });
 
   // 3. Hard-restart recovery fails closed without resetting worktree.
-  it('hard restart recovery failure parks agent for attention and preserves worktree', () => {
+  it('hard restart recovery failure parks agent and rolls back the orphaned RECOVERY commit', () => {
     let project;
     try {
       project = createTempProject('hard-reset-fail-');
@@ -397,10 +397,16 @@ describe('loop behavior', () => {
       assert.ok(!Number.isNaN(Date.parse(parked.attention_at)), 'attention_at is an ISO timestamp');
       assert.ok(parked.next_steps && parked.next_steps.length > 0, 'next_steps populated');
 
-      // Dirty worktree content must still exist — the worktree was NOT reset.
-      assert.ok(fs.existsSync(dirtyFile),
-        `Dirty worktree file should still exist: ${dirtyFile}`);
-      assert.strictEqual(fs.readFileSync(dirtyFile, 'utf-8'), 'dirty worktree content\n');
+      // The RECOVERY commit was created on HEAD but tagging failed. It must be
+      // rolled back (git reset --hard HEAD~1) so it can't later be merged into
+      // main as an unlabeled pollutant — so the dirty content does NOT survive.
+      assert.ok(!fs.existsSync(dirtyFile),
+        `Orphaned RECOVERY commit (and its dirty file) should be rolled back: ${dirtyFile}`);
+      const headSubject = spawnSync('git', ['log', '-1', '--format=%s'], {
+        cwd: worktree, encoding: 'utf-8',
+      }).stdout.trim();
+      assert.notStrictEqual(headSubject, 'RECOVERY: pre-hard-restart',
+        'the untagged RECOVERY commit must not remain on the branch');
 
       const events = readJsonl(path.join(project.root, 'coord', 'events.jsonl'));
       const parkEvent = events.find((e) => e.event === 'agent_parked' && e.agent === 'agent-hardfail');

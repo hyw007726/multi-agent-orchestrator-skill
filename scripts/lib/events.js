@@ -1,5 +1,5 @@
-const fs = require("fs");
 const path = require("path");
+const { appendJSONL } = require("./locking");
 
 /**
  * Lightweight structured event logger.
@@ -54,7 +54,9 @@ function appendEvent(coordDir, event, { agent, reason, pid, data } = {}) {
   if (data !== undefined) record.data = data;
 
   try {
-    fs.appendFileSync(filePath, JSON.stringify(record) + "\n", "utf-8");
+    // Route through the locked append so records over PIPE_BUF can't interleave
+    // and corrupt events.jsonl during restart bursts.
+    appendJSONL(filePath, [record]);
   } catch {
     // Best-effort: never let logging break the loop.
   }

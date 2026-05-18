@@ -50,11 +50,53 @@ function extractJsonObjectFromText(text) {
     if (parsed) return parsed;
   }
 
+  // Fast path: the orchestrator's JSON verdict is almost always the last object
+  // in verbose stream-json output. Try the final balanced object first so we
+  // don't JSON.parse every {...} substring from the top on the common case.
+  const lastObject = lastBalancedObject(text);
+  if (lastObject) {
+    const parsed = tryParseObject(lastObject);
+    if (parsed) return parsed;
+  }
+
   for (const candidate of balancedObjectCandidates(text)) {
     const parsed = tryParseObject(candidate);
     if (parsed) return parsed;
   }
   return null;
+}
+
+// Scans from the last `}` backward to its matching `{` (string-aware) and
+// returns that substring, or null if no balanced object closes the text.
+function lastBalancedObject(text) {
+  const end = text.lastIndexOf("}");
+  if (end === -1) return null;
+  let depth = 0;
+  let inString = false;
+  for (let i = end; i >= 0; i--) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === "\"" && !isEscaped(text, i)) inString = false;
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "}") {
+      depth++;
+    } else if (ch === "{") {
+      depth--;
+      if (depth === 0) return text.slice(i, end + 1);
+    }
+  }
+  return null;
+
+  function isEscaped(s, idx) {
+    let backslashes = 0;
+    for (let j = idx - 1; j >= 0 && s[j] === "\\"; j--) backslashes++;
+    return backslashes % 2 === 1;
+  }
 }
 
 function collectText(value, out) {

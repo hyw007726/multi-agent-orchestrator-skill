@@ -341,11 +341,18 @@ verbatim (`{NAME}`) and replaced once.
 | `{ALLOWED_PATHS_LIST}`   | comma-joined `tasks[<agent>].allowed_paths`                     |
 | `{FORBIDDEN_PATHS_LIST}` | comma-joined `tasks[<agent>].forbidden_paths`                   |
 | `{READ_FIRST_LIST}`      | comma-joined `tasks[<agent>].read_first`; `relevant_files` is accepted as a legacy alias |
-| `{WORKER_CONCISION_PROMPT}` | built-in concise response-style instructions                 |
+| `{WORKER_CONCISION_PROMPT}` | constant supplied by the renderer (`scripts/lib/prompt-render.js`), **not** a caller-substitutable value — the caller cannot override it |
+
+Substitution is performed by `scripts/lib/prompt-render.js`
+(`renderWorkerPrompt`), which `launch-all.js` calls. All rows except
+`{WORKER_CONCISION_PROMPT}` come from the per-agent record / derived values;
+`{WORKER_CONCISION_PROMPT}` is a fixed string baked into the renderer.
 
 Any placeholder whose source field is missing is replaced with the literal
 string `"(unspecified)"` so the worker still receives a syntactically intact
-prompt and can ask via `coord/requests/` for clarification.
+prompt and can ask via `coord/requests/` for clarification. (`spawn-agent.js`
+refuses to launch if `ALLOWED PATHS` resolves to `(unspecified)` — a worker
+with no path scope has no boundary to respect.)
 
 ## DECISIONS.md
 
@@ -447,7 +454,8 @@ shape — every field the loop actually depends on — is:
 ```json
 {
   "agent-frontend": {
-    "task": "string — current task description (rewritten on every restart with the new instruction)",
+    "task": "string — immutable original task description; mirrors context.json tasks[<name>].description and is NOT rewritten on restart (the dashboard and review-summary render the context.json description, falling back to this)",
+    "last_instruction": "string | omitted — the most recent restart/resume instruction payload; rotates on every respawn. Kept separate from `task` so restart instructions never masquerade as the original task",
     "status": "running | completed | terminated | errored | exited",
     "worktree": "string — absolute path to the agent's git worktree (`.kilocode/worktrees/<name>` for kilo, `.agents/worktrees/<name>` otherwise)",
     "cli": "string — which worker CLI or configured CLI alias was used; the loop reads this to pick the respawn template and to validate the PID's cmdline before signalling",
@@ -463,7 +471,7 @@ shape — every field the loop actually depends on — is:
     "progress_timeout_mins": "integer | null — progress threshold (no code change while logs flow); falls back to default_progress_timeout_mins",
     "restart_count": "integer — bumped on every respawn (validation failure, progress-timeout arbitration, explicit soft/hard restart); once it exceeds default_max_restarts the loop marks the agent `errored` instead of respawning",
     "base_ref": "string — the Git ref (branch or tag) this agent's worktree was branched from; used for diff computation (defaults to 'main' if not recorded)",
-    "recovery_tag": "string | omitted — Git tag name (e.g. `recovery/agent-frontend/2025-01-01T00-00-00-000Z`) holding pre-hard-restart state; set by the loop when a hard restart successfully creates a recovery tag",
+    "recovery_tag": "string | omitted — Git tag name (e.g. `recovery/agent-frontend/2025-01-01T00-00-00-000Z-a1b2c3`, timestamp plus a random suffix for collision safety) holding pre-hard-restart state; set by the loop when a hard restart successfully creates a recovery tag",
     "exit_log_tail": "string | null — last 50 lines of worker logs captured when the process vanished without a review_request"
   }
 }

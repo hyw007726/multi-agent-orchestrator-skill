@@ -156,6 +156,7 @@ function normalizeConfig(parsed = {}) {
     merged.orchestrator_failure_threshold = normalizePositiveInteger(parsed.orchestrator_failure_threshold, "orchestrator_failure_threshold");
   }
   if (hasDeprecatedFailureThreshold) {
+    console.error("Warning: config key 'claude_failure_threshold' is deprecated; rename it to 'orchestrator_failure_threshold'.");
     const aliasValue = normalizePositiveInteger(parsed.claude_failure_threshold, "claude_failure_threshold");
     if (!hasFailureThreshold) merged.orchestrator_failure_threshold = aliasValue;
   }

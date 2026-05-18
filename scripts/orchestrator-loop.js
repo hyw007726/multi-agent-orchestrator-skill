@@ -147,7 +147,7 @@ async function runLoop() {
 
         // Liveness ("Killer") timeout: no log output for `timeout_mins`.
         const logFile = path.join(config.coordDir, "logs", `${name}.log`);
-        let lastActivity = readAgentCurrentStartMs(agent);
+        let lastActivity = readAgentCurrentStartMs(agent, { name, log });
         if (fs.existsSync(logFile)) lastActivity = fs.statSync(logFile).mtime.getTime();
 
         const timeoutMins = agent.timeout_mins || parsedConfig.default_timeout_mins;
@@ -252,7 +252,7 @@ async function runLoop() {
 
         const worktreeStates = collectWorktreeStates(pending, agentsForPrompt);
         const prompt = buildOrchestratorPrompt(pending, context, durableDecisions, recentDecisions, worktreeStates, callerContext);
-        const response = await callOrchestratorCli(prompt, parsedConfig, config.maxRetries, log);
+        const response = await callOrchestratorCli(prompt, parsedConfig, config.maxRetries, log, path.join(config.coordDir, "abort.flag"));
 
         if (!response) {
           consecutiveCliFailures++;
@@ -459,7 +459,9 @@ async function runLoop() {
       const nextCount = (agent.restart_count ?? 0) + 1;
       const maxRestarts = parsedConfig.default_max_restarts;
       if (nextCount > maxRestarts) {
-        agent.task = `Exhausted ${maxRestarts} restart attempts (${reason}). Last instruction: ${instruction.slice(0, 200)}`;
+        // Keep agent.task as the immutable original description; the rotating
+        // restart payload lives in last_instruction.
+        agent.last_instruction = instruction;
         const attentionReason = `max restarts (${maxRestarts}) exhausted`;
         const nextSteps = parkRationale("restart_budget_exhausted");
         parkAgentForAttention(agent, name, attentionReason, log, { nextSteps });
@@ -473,7 +475,7 @@ async function runLoop() {
       }
 
       agents[name].restart_count = nextCount;
-      agents[name].task = instruction;
+      agents[name].last_instruction = instruction;
       outcomeRef.value = {
         kind: "respawn",
         pid: agent.pid,
@@ -726,12 +728,14 @@ function parseArgs() {
   const config = {
     coordDir: "./coord",
     maxRetries: 3,
-    logFile: "coord/orchestrator.log",
   };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--coord") config.coordDir = args[++i];
     if (args[i] === "--poll-interval") config.fixedPollIntervalMs = parseInt(args[++i], 10);
   }
+  // Derive the log path from --coord so a non-default coord directory keeps its
+  // own orchestrator.log instead of writing to (or ENOENT-ing on) ./coord.
+  config.logFile = path.join(config.coordDir, "orchestrator.log");
   return config;
 }
 
@@ -1275,10 +1279,19 @@ function readTail(filePath, lines) {
   } catch { return ""; }
 }
 
-function readAgentCurrentStartMs(agent) {
+// Returns the agent's current-process start time in ms. When every stored
+// timestamp is missing or unparseable we return 0 (epoch) rather than Date.now():
+// resetting the clock to "now" every cycle makes a wedged agent immortal. An
+// epoch start trips the liveness-timeout branch, which parks the agent for a
+// human instead of treating it as freshly spawned.
+function readAgentCurrentStartMs(agent, { name, log } = {}) {
   const raw = agent.current_started_at || agent.last_spawned_at || agent.started_at;
   const parsed = raw ? new Date(raw).getTime() : NaN;
-  return Number.isFinite(parsed) ? parsed : Date.now();
+  if (Number.isFinite(parsed)) return parsed;
+  if (typeof log === "function") {
+    log(`Agent ${name || "(unknown)"}: unparseable liveness timestamp (${JSON.stringify(raw)}); treating as stale (needs attention) rather than newly-started.`);
+  }
+  return 0;
 }
 
 function stageAllChanges(worktree) {
@@ -1360,13 +1373,21 @@ function captureRecoveryAndReset(worktree, agent, log) {
     let tag = null;
     if (createdRecovery) {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
-      tag = `recovery/${agent}/${ts}`;
+      // Random suffix keeps the tag collision-safe even if two restarts land in
+      // the same millisecond (the ISO timestamp alone is not unique enough).
+      const suffix = Math.random().toString(36).slice(2, 8);
+      tag = `recovery/${agent}/${ts}-${suffix}`;
       const tagResult = runGit(worktree, ["tag", tag], { allowFailure: true });
       if (tagResult.status !== 0) {
         const details = gitErrorDetails(tagResult);
         log(`Failed to create recovery tag: ${details}`);
-        // Recovery commit is on HEAD but the tag is missing — abort before
-        // the destructive reset, otherwise the commit is orphaned (reflog-only).
+        // The RECOVERY commit is on HEAD but unlabeled. Discard it before bailing
+        // so it can't later be merged into main as an unlabeled pollutant.
+        try {
+          runGit(worktree, ["reset", "--hard", "HEAD~1"]);
+        } catch (resetErr) {
+          log(`Failed to roll back orphaned RECOVERY commit: ${resetErr.message}`);
+        }
         return { tag: null, error: `recovery commit created but tag failed: ${details}` };
       }
     }
@@ -1718,7 +1739,7 @@ Apply the responsibilities and response format above to these new requests.
 
 // Calls the orchestrator CLI for arbitration. Honors `orchestrator_cli` + `cli_templates`
 // in orchestrator config so monitoring runs through a configurable (often cheap) model.
-async function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
+async function callOrchestratorCli(prompt, parsedConfig, maxRetries, log, abortFlagPath) {
   const cli = parsedConfig.orchestrator_cli;
   const template = parsedConfig.cli_templates[cli];
   const timeoutMs = parsedConfig.orchestrator_cli_timeout_ms;
@@ -1759,13 +1780,40 @@ async function callOrchestratorCli(prompt, parsedConfig, maxRetries, log) {
       let stderr = "";
       const maxBuffer = 1024 * 1024 * 10;
 
+      let abortWatcher = null;
+
       const finish = (value) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
+        try { abortWatcher?.close(); } catch {}
         try { fs.unlinkSync(promptFile); } catch {}
         resolve(value);
       };
+
+      // Watch for abort.flag while the CLI runs so Ctrl+C (which writes the
+      // flag) cancels the in-flight subprocess promptly instead of feeling
+      // unresponsive for up to timeoutMs. The top-of-loop handler then runs
+      // the real abort path on the next cycle.
+      if (abortFlagPath) {
+        const watchAbort = () => {
+          if (settled || !fs.existsSync(abortFlagPath)) return;
+          const pid = child?.pid;
+          if (pid) {
+            log(`Abort flag detected; cancelling in-flight orchestrator CLI (PID ${pid}).`);
+            killTimedOutChild(pid);
+          }
+          try { child?.stdout?.destroy(); } catch {}
+          try { child?.stderr?.destroy(); } catch {}
+          finish({ stdout, error: "Aborted by abort.flag" });
+        };
+        try {
+          abortWatcher = fs.watch(path.dirname(abortFlagPath), (_event, filename) => {
+            if (!filename || filename === path.basename(abortFlagPath)) watchAbort();
+          });
+        } catch {}
+        watchAbort(); // Catch a flag written before the watch was armed.
+      }
 
       const timeout = setTimeout(() => {
         const pid = child?.pid;
@@ -1849,8 +1897,12 @@ function clearStalledFlag(coordDir, log) {
 function finalize(config, paths, parsedConfig, log) {
   const agents = readJSON(paths.agents);
   const requests = readJSONL(paths.requests);
+  let tasks = {};
+  try {
+    tasks = readJSON(paths.context).tasks || {};
+  } catch {}
   const summaryFile = path.join(config.coordDir, "review-summary.txt");
-  const summaryOutput = buildFinalSummary(agents, requests);
+  const summaryOutput = buildFinalSummary(agents, requests, tasks);
   fs.writeFileSync(summaryFile, summaryOutput, "utf-8");
 
   // Deliberately excludes needs_attention: a parked agent is awaiting a human,
@@ -1906,7 +1958,7 @@ function runSummaryTerminal(cmd, args) {
   }
 }
 
-function buildFinalSummary(agents = {}, requests = []) {
+function buildFinalSummary(agents = {}, requests = [], tasks = {}) {
   const names = Object.keys(agents).sort();
   // This filter drives task-succeeded semantics (the RUN INCOMPLETE title and
   // the failed-agents list), not loop-can-exit semantics — so needs_attention
@@ -1936,7 +1988,8 @@ function buildFinalSummary(agents = {}, requests = []) {
     lines.push("Some agents failed or vanished before completing their work:");
     for (const name of failedAgents) {
       const agent = agents[name];
-      lines.push(`- ${name} (${agent.status}): ${truncate(agent.task || "Initial prompt", 120)}`);
+      const description = tasks[name]?.description || agent.task || "Initial prompt";
+      lines.push(`- ${name} (${agent.status}): ${truncate(description, 120)}`);
     }
     lines.push("");
   }
@@ -1965,7 +2018,10 @@ function buildFinalSummary(agents = {}, requests = []) {
     if ((agent.current_started_at || agent.last_spawned_at) && (agent.current_started_at || agent.last_spawned_at) !== agent.started_at) {
       lines.push(`  Current process started: ${agent.current_started_at || agent.last_spawned_at}`);
     }
-    lines.push(`  Task: ${truncate(agent.task || "Initial prompt", 180)}`);
+    lines.push(`  Task: ${truncate(tasks[name]?.description || agent.task || "Initial prompt", 180)}`);
+    if (agent.last_instruction) {
+      lines.push(`  Last restart instruction: ${truncate(agent.last_instruction, 180)}`);
+    }
     lines.push(`  Validation: ${agent.status === STATUS.COMPLETED ? "passed before completion" : "not confirmed"}`);
     lines.push(`  Worker report: ${reviewRequest ? truncate(reviewRequest.content || "(empty)", 500) : "(no review_request recorded)"}`);
   }
@@ -2005,4 +2061,6 @@ module.exports = {
   pathPatternMatches,
   stageAllChanges,
   readAgentCurrentStartMs,
+  consolidateStagedRequests,
+  getPaths,
 };

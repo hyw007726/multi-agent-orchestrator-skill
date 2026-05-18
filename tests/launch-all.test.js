@@ -11,12 +11,15 @@ const {
   createTempProject,
   writeProjectConfig,
   bootstrapProject,
+  addKiloWorktree,
   runLoop,
   waitFor,
   readJson,
   readJsonl,
   cleanupProcess,
 } = require('./helpers/temp-project');
+
+const { parseSpawnResult } = require(path.join(repoRoot(), 'scripts', 'launch-all.js'));
 
 const fakeCliPath = path.join(repoRoot(), 'tests/helpers/fake-cli.js');
 
@@ -357,6 +360,61 @@ describe('launch-all smoke test', () => {
       if (project) {
         project.cleanup();
       }
+    }
+  });
+});
+
+describe('spawn-agent.js __SPAWN_RESULT__ capture', () => {
+  it('parseSpawnResult extracts the JSON payload and rejects missing/garbled lines', () => {
+    const ok = parseSpawnResult(
+      'Spawned agent x (PID: 4242)\n__SPAWN_RESULT__ {"pid":4242,"logFile":"/tmp/x.log","templateMode":"argv"}\n',
+    );
+    assert.deepStrictEqual(ok, { pid: 4242, logFile: '/tmp/x.log', templateMode: 'argv' });
+
+    // No marker at all → null (launch-all treats this as a spawn failure).
+    assert.strictEqual(parseSpawnResult('Spawned agent x (PID: 4242)\n'), null);
+    // Marker present but payload is not JSON → null.
+    assert.strictEqual(parseSpawnResult('__SPAWN_RESULT__ not-json\n'), null);
+    assert.strictEqual(parseSpawnResult(''), null);
+  });
+
+  it('spawn-agent.js emits a parseable __SPAWN_RESULT__ line whose pid matches agents.json', () => {
+    let project;
+    try {
+      project = createTempProject('spawn-result-');
+      writeProjectConfig(project.root, fakeCliPath);
+      bootstrapProject(project.root, 'Spawn result contract project');
+      addKiloWorktree(project.root, 'agent-result');
+
+      const promptFile = path.join(project.root, 'worker-prompt.txt');
+      fs.writeFileSync(
+        promptFile,
+        'ALLOWED PATHS: result/**\nDo the work.',
+        'utf-8',
+      );
+
+      const spawnResult = spawnSync('node', [
+        path.join(repoRoot(), 'scripts', 'spawn-agent.js'),
+        '--agent', 'agent-result',
+        '--prompt-file', promptFile,
+        '--coord', './coord',
+        '--cli', 'fake',
+      ], { cwd: project.root, encoding: 'utf-8' });
+
+      assert.strictEqual(spawnResult.status, 0, spawnResult.stderr);
+
+      const parsed = parseSpawnResult(spawnResult.stdout);
+      assert.ok(parsed, 'a __SPAWN_RESULT__ line must be present');
+      assert.ok(Number.isInteger(parsed.pid) && parsed.pid > 0, 'pid must be a positive integer');
+      assert.ok(typeof parsed.logFile === 'string' && parsed.logFile.length > 0);
+      assert.ok(typeof parsed.templateMode === 'string' && parsed.templateMode.length > 0);
+
+      const agents = readJson(path.join(project.root, 'coord', 'agents.json'));
+      assert.strictEqual(agents['agent-result'].pid, parsed.pid);
+
+      cleanupProcess(parsed.pid);
+    } finally {
+      if (project) project.cleanup();
     }
   });
 });

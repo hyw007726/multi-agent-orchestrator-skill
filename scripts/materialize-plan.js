@@ -128,6 +128,9 @@ function buildContextFromDraftPlan(draftPlan, options = {}) {
     requirements: compactList(draftPlan.user_requirements || []),
     constraints: compactList(draftPlan.constraints || []),
     created_at: existingContext.created_at || generatedAt,
+    // Unlike created_at, this is NOT preserved across iterations — it records
+    // when the *current* decomposition was decided.
+    materialized_at: generatedAt,
     tasks: executionMode === "direct" ? {} : buildContextTasks(draftPlan.tasks || {}),
   };
 }

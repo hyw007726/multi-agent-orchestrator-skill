@@ -610,6 +610,89 @@ describe('orchestrator loop failure paths', () => {
     }
   });
 
+  it('survives N consecutive non-JSON arbitration responses; stalled flag fires at the threshold then clears', () => {
+    let project;
+    try {
+      project = createTempProject('cli-nonjson-threshold-');
+      const cliPath = writeScript(project.root, 'nonjson-cli.js', [
+        'const fs = require("node:fs");',
+        'const path = require("node:path");',
+        'const promptFile = process.argv[2];',
+        'const prompt = promptFile ? fs.readFileSync(promptFile, "utf-8") : "";',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  const countFile = path.join(process.cwd(), "orchestrator-count.txt");',
+        '  const count = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, "utf-8")) : 0;',
+        '  fs.writeFileSync(countFile, String(count + 1), "utf-8");',
+        // callOrchestratorCli retries 3x internally before counting one
+        // consecutive failure, so 3 failed loop cycles (threshold: 3) = 9
+        // non-JSON invocations. The 10th invocation returns a valid verdict so
+        // the loop recovers and clears the flag.
+        '  if (count < 9) { console.log("prose, not a JSON object at all"); process.exit(0); }',
+        '  const requests = [{ request_id: "req-nonjson", agent: "agent-nonjson" }];',
+        '  const approved = requests.map((r) => ({ request_id: r.request_id, decision: "approved", reason: "recovered" }));',
+        '  const actions = requests.map((r) => ({ type: "end_agent", agent: r.agent }));',
+        '  console.log(JSON.stringify({ approved, rejected: [], actions }));',
+        '  process.exit(0);',
+        '}',
+        'if (prompt.includes("reviewing the completed output")) { console.log("Recovered summary."); process.exit(0); }',
+        'console.log("worker noop");',
+      ]);
+      writeProjectConfig(project.root, cliPath, 'nonjsonfake', [
+        '  orchestrator_failure_threshold: 3,',
+      ]);
+      bootstrapProject(project.root, 'CLI non-JSON threshold test project');
+      writeAgents(project.root, {
+        'agent-nonjson': {
+          status: 'completed',
+          task: 'Await orchestration.',
+          pid: 0,
+          cli: 'nonjsonfake',
+          worktree: path.join(project.root, 'missing-worktree'),
+        },
+      });
+      writeRequests(project.root, [{
+        request_id: 'req-nonjson',
+        agent: 'agent-nonjson',
+        type: 'review_request',
+        priority: 'high',
+        status: 'pending',
+        content: 'Please end this agent.',
+      }]);
+
+      const result = runLoop(project.root);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      const log = fs.readFileSync(path.join(project.root, 'coord', 'orchestrator.log'), 'utf-8');
+
+      // The loop kept polling through every non-JSON response.
+      assert.match(log, /No JSON object in CLI output/);
+      assert.match(log, /consecutive: 1\/3/);
+      assert.match(log, /consecutive: 2\/3/);
+      assert.match(log, /consecutive: 3\/3/);
+
+      // Stalled flag fires only once the threshold is reached, not before.
+      const firstStalledAt = log.indexOf('Wrote stalled flag');
+      const reachedThresholdAt = log.indexOf('consecutive: 3/3');
+      assert.notStrictEqual(firstStalledAt, -1);
+      assert.notStrictEqual(reachedThresholdAt, -1);
+      assert.ok(firstStalledAt > reachedThresholdAt, 'stalled flag must not be written before the threshold');
+      const beforeThreshold = log.slice(0, reachedThresholdAt);
+      assert.doesNotMatch(beforeThreshold, /Wrote stalled flag/);
+
+      // Recovered: flag cleared and removed.
+      assert.match(log, /Cleared stalled flag/);
+      assert.strictEqual(fs.existsSync(path.join(project.root, 'coord', 'orchestrator-stalled.flag')), false);
+
+      // Pending state not leaked: the single request resolved exactly once.
+      const requests = readJsonl(path.join(project.root, 'coord', 'requests.jsonl'));
+      const matching = requests.filter((r) => r.request_id === 'req-nonjson');
+      assert.strictEqual(matching.length, 1);
+      assert.strictEqual(matching[0].status, 'resolved');
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
   it('times out hanging orchestrator CLI calls and still writes the stalled flag', () => {
     let project;
     try {

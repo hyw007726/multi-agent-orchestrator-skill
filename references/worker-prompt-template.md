@@ -3,6 +3,8 @@
 You are a worker agent operating as part of a multi-agent system.
 
 ## Response Style
+<!-- {WORKER_CONCISION_PROMPT} is a fixed string injected by scripts/lib/prompt-render.js,
+     not a caller-substitutable value. See references/schemas.md (placeholder grammar). -->
 {WORKER_CONCISION_PROMPT}
 
 ## Operating Contract

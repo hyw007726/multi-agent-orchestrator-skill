@@ -8,6 +8,7 @@ const { STATUS } = require("./lib/status");
 
 const coordDir = process.argv[2] === "--coord" ? process.argv[3] : "./coord";
 const agentsFile = path.join(coordDir, "agents.json");
+const contextFile = path.join(coordDir, "context.json");
 const requestsFile = path.join(coordDir, "requests.jsonl");
 const stalledFlagFile = path.join(coordDir, "orchestrator-stalled.flag");
 const abortFlagFile = path.join(coordDir, "abort.flag");
@@ -79,10 +80,16 @@ function renderAgents() {
       console.log("No agents running yet.");
       return;
     }
+    // The immutable task description lives in context.json; agents.json's
+    // `task` is a fallback for runs bootstrapped before context.json existed.
+    let tasks = {};
+    try {
+      tasks = JSON.parse(fs.readFileSync(contextFile, "utf-8")).tasks || {};
+    } catch {}
     console.table(
       agentNames.map((name) => {
         const a = agents[name];
-        const taskText = String(a.task || "Initial prompt");
+        const taskText = String(tasks[name]?.description || a.task || "Initial prompt");
         let info = taskText.slice(0, 40) + (taskText.length > 40 ? "..." : "");
         if (a.status === STATUS.NEEDS_ATTENTION) {
           // Parked for a human. The reason lives on the agent record, not the

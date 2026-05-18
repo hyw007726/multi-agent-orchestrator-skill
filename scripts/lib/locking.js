@@ -96,9 +96,18 @@ function readJSON(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf-8"));
 }
 
+// Skips malformed lines (log+continue) rather than throwing — one bad line in
+// requests.jsonl must not wedge the loop forever. Mirrors updateJSONL's policy.
 function readJSONL(filePath) {
   if (!fs.existsSync(filePath)) return [];
-  return fs.readFileSync(filePath, "utf-8").split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
+  return fs.readFileSync(filePath, "utf-8").split("\n").map((l) => l.trim()).filter((l) => l !== "").reduce((acc, l) => {
+    try {
+      acc.push(JSON.parse(l));
+    } catch {
+      console.error(`Warning: readJSONL skipping malformed line in ${filePath}: ${l}`);
+    }
+    return acc;
+  }, []);
 }
 
 // Shared — used by acquireInstanceLock, updateJSON, and updateJSONL.

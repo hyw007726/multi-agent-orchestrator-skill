@@ -36,6 +36,20 @@ function spawnAgent() {
 
   const prompt = fs.readFileSync(config.promptFile, "utf-8");
 
+  // validate-context.js requires non-empty allowed_paths for context.json, but an
+  // in-flight edit can still produce a rendered prompt where prompt-render.js
+  // substituted "(unspecified)". Spawning a worker with no path scope is unsafe
+  // (it has no boundary to respect), so hard-fail here for initial and restart
+  // prompts alike.
+  if (/ALLOWED PATHS\*{0,2}:?\*{0,2}\s*\(unspecified\)/.test(prompt)) {
+    console.error(
+      `Error: rendered prompt for agent '${config.agent}' has ALLOWED PATHS: (unspecified).\n` +
+      `Refusing to spawn a worker with no path scope. Set a non-empty allowed_paths for ` +
+      `'${config.agent}' in context.json and re-run.`,
+    );
+    process.exit(1);
+  }
+
   const logsDir = path.resolve(config.coordDir, "logs");
   if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
   const logFile = path.join(logsDir, `${config.agent}.log`);
@@ -83,6 +97,10 @@ function spawnAgent() {
   console.log(`Spawned agent '${config.agent}' in background (PID: ${child.pid})`);
   console.log(`Template mode: ${templateMode}`);
   console.log(`Logging output to ${logFile}`);
+  // Machine-readable result line. launch-all.js parses this single JSON object
+  // rather than regex-scraping the human-readable lines above, so wording
+  // changes can't silently break PID capture (which gates rollback).
+  console.log(`__SPAWN_RESULT__ ${JSON.stringify({ pid: child.pid, logFile, templateMode })}`);
 
   const agentsFile = path.resolve(config.coordDir, "agents.json");
   if (!fs.existsSync(agentsFile)) fs.writeFileSync(agentsFile, "{}\n");
@@ -180,6 +198,12 @@ function parseArgs() {
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--") {
+      // Power-user passthrough: every argument after a literal `--` is appended
+      // verbatim to the resolved CLI template's argv (see spawnCliTemplate's
+      // extraArgs). Intended for ad-hoc, manually-invoked spawns that need an
+      // extra CLI flag without editing cli_templates. Neither launch-all.js nor
+      // the orchestrator loop's respawn path passes `--`, so it is inert during
+      // a normal run. It is NOT sanitized — only pass trusted args.
       config.extraArgs.push(...args.slice(i + 1));
       break;
     }

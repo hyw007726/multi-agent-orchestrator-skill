@@ -11,7 +11,9 @@ const { renderWorkerPrompt } = require('./lib/prompt-render');
 const { formatModelHeadsUp } = require('./lib/model-headsup');
 const { validateContext, formatValidationReport } = require('./lib/context-validation');
 
-launchAll();
+if (require.main === module) {
+  launchAll();
+}
 
 function launchAll() {
   const args = parseArgs();
@@ -173,20 +175,27 @@ function launchAll() {
       process.exit(1);
     }
 
-    const pidMatch = spawnResult.stdout.match(/PID:\s*(\d+)/);
-    const pid = pidMatch ? pidMatch[1] : '?';
-    const logMatch = spawnResult.stdout.match(/Logging output to\s+(.+)/);
-    const logPath = logMatch ? logMatch[1] : 'coord/logs/';
-    const modeMatch = spawnResult.stdout.match(/Template mode:\s*(\w+)/);
-    const templateMode = modeMatch ? modeMatch[1] : 'unknown';
+    const result = parseSpawnResult(spawnResult.stdout);
+    if (!result || !Number.isInteger(result.pid) || result.pid <= 0) {
+      console.error(`Error: Could not capture a PID for agent ${agentName} from spawn-agent.js output.`);
+      console.error(spawnResult.stdout);
+      rollback(spawnedPids, createdWorktrees, projectRoot);
+      process.exit(1);
+    }
+    const { pid, logFile: logPath = 'coord/logs/', templateMode = 'unknown' } = result;
 
     spawnedAgents.push({ name: agentName, pid, logPath, templateMode });
-    if (pid !== '?') spawnedPids.push({ pid: parseInt(pid, 10), cli, processMatch: cliTemplateProcessMatch(cli, config.cli_templates[cli]), name: agentName });
+    spawnedPids.push({ pid, cli, processMatch: cliTemplateProcessMatch(cli, config.cli_templates[cli]), name: agentName });
     console.log(`Agent '${agentName}' spawned (PID: ${pid}, template: ${templateMode}, log: ${logPath})`);
   }
 
   const loopOutPath = path.join(args.coordDir, 'orchestrator-loop.out');
-  const cmd = `nohup node ${JSON.stringify(path.join(__dirname, 'orchestrator-loop.js'))} --coord ${JSON.stringify(args.coordDir)} > ${JSON.stringify(loopOutPath)} 2>&1 &`;
+  // Append rather than overwrite: when the loop dies before opening its own log
+  // (config error, missing PATH entry) the previous run's startup diagnostics
+  // are the only trace. Snapshot per-run copies under loop-runs/ and keep the
+  // last N so the appended file can't grow unbounded.
+  retainLoopOutSnapshot(args.coordDir, loopOutPath);
+  const cmd = `nohup node ${JSON.stringify(path.join(__dirname, 'orchestrator-loop.js'))} --coord ${JSON.stringify(args.coordDir)} >> ${JSON.stringify(loopOutPath)} 2>&1 &`;
   const loop = spawn(cmd, [], {
     cwd: projectRoot,
     shell: true,
@@ -197,6 +206,26 @@ function launchAll() {
 
   console.log(`Orchestrator loop backgrounded (PID: ${loop.pid})`);
   console.log(`Dashboard: node ${path.join(__dirname, 'dashboard.js')} --coord ${args.coordDir}`);
+
+  // Single-use helper — only called from launchAll above.
+  // Copies the prior run's orchestrator-loop.out into loop-runs/<timestamp>.out
+  // before this run appends to it, and prunes to the most recent KEEP snapshots.
+  function retainLoopOutSnapshot(coordDir, outPath) {
+    const KEEP = 10;
+    try {
+      if (!fs.existsSync(outPath) || fs.statSync(outPath).size === 0) return;
+      const runsDir = path.join(coordDir, 'loop-runs');
+      fs.mkdirSync(runsDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      fs.copyFileSync(outPath, path.join(runsDir, `${stamp}.out`));
+      const snapshots = fs.readdirSync(runsDir).filter((f) => f.endsWith('.out')).sort();
+      for (const stale of snapshots.slice(0, Math.max(0, snapshots.length - KEEP))) {
+        try { fs.unlinkSync(path.join(runsDir, stale)); } catch {}
+      }
+    } catch (err) {
+      console.error(`Warning: could not snapshot previous orchestrator-loop.out: ${err.message}`);
+    }
+  }
 }
 
 function parseArgs() {
@@ -307,6 +336,24 @@ function rollback(spawnedPids, createdWorktrees, projectRoot) {
   console.error('Rollback complete.');
 }
 
+// Shared — used by launchAll (PID capture from spawn-agent.js) and the
+// launch-all test suite. Parses spawn-agent.js's machine-readable
+// __SPAWN_RESULT__ line; returns the parsed { pid, logFile, templateMode }
+// object, or null if the marker is absent or its payload is unparseable.
+function parseSpawnResult(stdout) {
+  const marker = '__SPAWN_RESULT__';
+  for (const line of String(stdout || '').split('\n')) {
+    const idx = line.indexOf(marker);
+    if (idx === -1) continue;
+    try {
+      return JSON.parse(line.slice(idx + marker.length).trim());
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 function captureBaseBranch(projectRoot, config) {
   try {
     const result = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
@@ -318,3 +365,5 @@ function captureBaseBranch(projectRoot, config) {
   } catch {}
   return 'main';
 }
+
+module.exports = { parseSpawnResult };

@@ -173,7 +173,11 @@ describe('restart contract preservation', () => {
       assert.ok(agent, 'agents.json should contain agent-contract');
       assert.strictEqual(agent.status, 'completed',
         `agent-contract should complete after restart\nagent:\n${JSON.stringify(agent, null, 2)}\nlog:\n${log}`);
-      assert.strictEqual(agent.task, 'Continue after hard restart.');
+      // task is the immutable original description (no --task-description was
+      // passed to spawn-agent, so it defaults to "Initial prompt"); the rotating
+      // restart payload lives in last_instruction, never overwriting task.
+      assert.strictEqual(agent.task, 'Initial prompt');
+      assert.strictEqual(agent.last_instruction, 'Continue after hard restart.');
       assert.strictEqual(agent.restart_count, 1);
       assert.strictEqual(agent.started_at, initialStartedAt);
       assert.ok(agent.current_started_at, 'current_started_at should be recorded');
