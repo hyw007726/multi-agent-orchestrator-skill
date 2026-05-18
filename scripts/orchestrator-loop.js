@@ -12,6 +12,7 @@ const { STATUS, transitionAgentStatus, parkAgentForAttention, parkRationale } = 
 const { appendEvent } = require("./lib/events");
 const { cliTemplateMode, cliTemplateProcessMatch, spawnCliTemplate } = require("./lib/cli-template");
 const { extractJsonObject } = require("./lib/provider-output");
+const { tailLines } = require("./lib/log-tail");
 
 const RECENT_DECISION_LIMIT = 30;
 const HEARTBEAT_GRACE_PHASES = new Set(["starting", "reading", "planning", "testing", "running_tests", "building", "installing", "debugging"]);
@@ -83,13 +84,18 @@ async function runLoop() {
         updateJSON(paths.agents, (agents) => {
           for (const name in agents) {
             if (agents[name].status === "running") {
-              toKill.push({ pid: agents[name].pid, expectedProcess: expectedProcessForAgent(agents[name], parsedConfig), name });
+              toKill.push({
+                pid: agents[name].pid,
+                expectedProcess: expectedProcessForAgent(agents[name], parsedConfig),
+                recordedCmdline: agents[name].spawned_cmdline,
+                name,
+              });
               transitionAgentStatus(agents[name], name, STATUS.TERMINATED, "abort signal", log);
             }
           }
         });
         // Kill outside the lock — the lock's job is to protect agents.json, not gate signals.
-        for (const { pid, expectedProcess, name } of toKill) safeKill({ pid, expectedCli: expectedProcess, log, coordDir: config.coordDir, agent: name });
+        for (const { pid, expectedProcess, recordedCmdline, name } of toKill) safeKill({ pid, expectedCli: expectedProcess, recordedCmdline, log, coordDir: config.coordDir, agent: name });
         log("All running agents stopped. Worktree contents preserved (run `git status` in each worktree to inspect/discard).");
         try { fs.unlinkSync(path.join(config.coordDir, "abort.flag")); } catch {}
         aborted = true;
@@ -156,7 +162,7 @@ async function runLoop() {
         const timeoutMins = agent.timeout_mins || parsedConfig.default_timeout_mins;
         if (Date.now() - lastActivity > timeoutMins * 60 * 1000) {
           log(`Agent ${name} idle (no log output) for ${timeoutMins} mins. Killing.`);
-          safeKill({ pid: agent.pid, expectedCli: expectedProcessForAgent(agent, parsedConfig), log, coordDir: config.coordDir, agent: name });
+          safeKill({ pid: agent.pid, expectedCli: expectedProcessForAgent(agent, parsedConfig), recordedCmdline: agent.spawned_cmdline, log, coordDir: config.coordDir, agent: name });
           const livenessReason = `liveness timeout - idle ${timeoutMins} mins`;
           let livenessNextSteps, livenessAttentionAt;
           updateJSON(paths.agents, (agents) => {
@@ -193,6 +199,10 @@ async function runLoop() {
           tracker.last_progress_time = Date.now();
           tracker.last_heartbeat_mtime = heartbeat.mtimeMs || tracker.last_heartbeat_mtime || 0;
           tracker.heartbeat_grace_count = 0;
+          // Real code change ⇒ any prior progress_timeout history is no longer
+          // load-bearing for escalation. Persist the reset to agents.json so
+          // the windowing survives loop restarts.
+          stampProgressMilestone(paths, name, "code_change");
         } else {
           if (heartbeatChanged(heartbeat, tracker)) {
             tracker.last_heartbeat_mtime = heartbeat.mtimeMs;
@@ -254,7 +264,15 @@ async function runLoop() {
         const agentsForPrompt = readJSON(paths.agents);
 
         const worktreeStates = collectWorktreeStates(pending, agentsForPrompt);
-        const prompt = buildOrchestratorPrompt(pending, context, durableDecisions, recentDecisions, worktreeStates, callerContext);
+        const prompt = buildBoundedArbitrationPrompt({
+          pending,
+          context,
+          durableDecisions,
+          recentDecisions,
+          worktreeStates,
+          callerContext,
+          log,
+        });
         const response = await callOrchestratorCli(prompt, parsedConfig, config.maxRetries, log, path.join(config.coordDir, "abort.flag"));
 
         if (!response) {
@@ -269,7 +287,7 @@ async function runLoop() {
             clearStalledFlag(config.coordDir, log);
           }
           processActions(response.actions || [], paths, parsedConfig, log, { response, pending });
-          processApprovals(response, paths, log);
+          processApprovals(response, paths, log, { pending });
         }
       } else {
         // ── All-done check ────────────────────────────────────────────────
@@ -407,7 +425,7 @@ async function runLoop() {
           // status=completed and an unresolved review_request — the COMPLETED write
           // is unreachable unless the resolution write has already landed.
           finalizeEndAgentCompletion(action, arbitration, paths, log);
-          safeKill({ pid: snapshot.pid, expectedCli: expectedProcessForAgent(snapshot, parsedConfig), log, coordDir: config.coordDir, agent: action.agent });
+          safeKill({ pid: snapshot.pid, expectedCli: expectedProcessForAgent(snapshot, parsedConfig), recordedCmdline: snapshot.spawned_cmdline, log, coordDir: config.coordDir, agent: action.agent });
           appendEvent(config.coordDir, "agent_completed", { agent: action.agent });
         } else {
           log(`Validation failed for ${action.agent} — converting to soft_restart.`);
@@ -455,7 +473,7 @@ async function runLoop() {
 
       if (!instruction) {
         transitionAgentStatus(agent, name, STATUS.TERMINATED, "no follow-up instruction", log);
-        outcomeRef.value = { kind: "terminated", pid: agent.pid, cliTool, processMatch: expectedProcessForAgent(agent, parsedConfig), worktree: agent.worktree };
+        outcomeRef.value = { kind: "terminated", pid: agent.pid, cliTool, processMatch: expectedProcessForAgent(agent, parsedConfig), recordedCmdline: agent.spawned_cmdline, worktree: agent.worktree };
         appendEvent(config.coordDir, "restart_aborted", { agent: name, reason: "no instruction" });
         return;
       }
@@ -469,7 +487,7 @@ async function runLoop() {
         const attentionReason = `max restarts (${maxRestarts}) exhausted`;
         const nextSteps = parkRationale("restart_budget_exhausted");
         parkAgentForAttention(agent, name, attentionReason, log, { nextSteps });
-        outcomeRef.value = { kind: "errored", pid: agent.pid, cliTool, processMatch: expectedProcessForAgent(agent, parsedConfig), worktree: agent.worktree };
+        outcomeRef.value = { kind: "errored", pid: agent.pid, cliTool, processMatch: expectedProcessForAgent(agent, parsedConfig), recordedCmdline: agent.spawned_cmdline, worktree: agent.worktree };
         appendEvent(config.coordDir, "agent_parked", {
           agent: name,
           reason: attentionReason,
@@ -485,6 +503,7 @@ async function runLoop() {
         pid: agent.pid,
         cliTool,
         processMatch: expectedProcessForAgent(agent, parsedConfig),
+        recordedCmdline: agent.spawned_cmdline,
         worktree: agent.worktree,
         kiloMode: agent.kilo_mode,
         validateCmd: agent.validate_cmd,
@@ -500,7 +519,7 @@ async function runLoop() {
     if (outcome.kind === "missing") return false;
 
     // Side effects below the lock — none of these should re-enter updateJSON on the same file.
-    safeKill({ pid: outcome.pid, expectedCli: outcome.processMatch || processMatchForCli(outcome.cliTool, parsedConfig), log, coordDir: config.coordDir, agent: name });
+    safeKill({ pid: outcome.pid, expectedCli: outcome.processMatch || processMatchForCli(outcome.cliTool, parsedConfig), recordedCmdline: outcome.recordedCmdline, log, coordDir: config.coordDir, agent: name });
 
     if (outcome.kind === "terminated") {
       log(`Agent ${name} terminated (no follow-up instruction).`);
@@ -631,7 +650,7 @@ async function runLoop() {
   // audit log, and keeps decisions.json as a bounded recent window for prompts/dashboard.
   // Workers never write this file directly; new staged requests are consolidated before
   // arbitration, and status updates are serialized through updateJSONL.
-  function processApprovals(response, paths, log) {
+  function processApprovals(response, paths, log, { pending = [] } = {}) {
     const decisionsToAdd = [];
     const resolvedAt = new Date().toISOString();
     const currentRequests = readJSONL(paths.requests);
@@ -685,6 +704,42 @@ async function runLoop() {
         }
       }
     });
+
+    resetMilestonesOnWaitResolutions(response, pending, paths, log);
+  }
+
+  // Single-use helper — called from processApprovals above. A progress_timeout
+  // request that is approved without a soft/hard restart action targeting the
+  // same agent counts as a "wait" resolution: the orchestrator chose to let
+  // the agent continue. Treat that as a milestone so subsequent stalls don't
+  // immediately escalate based on the stale history.
+  function resetMilestonesOnWaitResolutions(response, pending, paths, log) {
+    const approvedIds = new Set(
+      (response.approved || [])
+        .map((entry) => entry && entry.request_id)
+        .filter(Boolean),
+    );
+    if (approvedIds.size === 0) return;
+
+    const restartActionAgents = new Set(
+      (response.actions || [])
+        .filter((action) => action && (action.type === "soft_restart" || action.type === "hard_restart" || action.type === "restart_agent" || action.type === "end_agent"))
+        .map((action) => action.agent)
+        .filter(Boolean),
+    );
+
+    const waitAgents = new Set();
+    for (const request of pending) {
+      if (!request || request.type !== "progress_timeout") continue;
+      if (!approvedIds.has(request.request_id)) continue;
+      if (restartActionAgents.has(request.agent)) continue;
+      waitAgents.add(request.agent);
+    }
+
+    for (const agentName of waitAgents) {
+      const stamp = stampProgressMilestone(paths, agentName, "wait_resolution");
+      if (stamp) log(`Agent ${agentName}: arbitration approved progress_timeout without a restart; resetting progress-timeout window at ${stamp}.`);
+    }
   }
 
   function appendDecisionRecords(paths, decisionsToAdd, log) {
@@ -871,7 +926,7 @@ function hasPendingProgressTimeoutRequest(requests, agentName) {
 
 function buildProgressTimeoutRequest({ agentName, agent, progressMins, logFile, diffSnapshot, heartbeat, paths, allRequests, parsedConfig }) {
   const task = readTaskContext(paths.context, agentName);
-  const history = progressTimeoutHistory(allRequests, agentName);
+  const history = progressTimeoutHistory(allRequests, agentName, agent.progress_timeout_reset_at);
   const escalation = buildProgressEscalation({
     previousProgressTimeouts: history.previousCount,
     restartCount: agent.restart_count || 0,
@@ -921,13 +976,41 @@ function buildProgressTimeoutRequest({ agentName, agent, progressMins, logFile, 
   };
 }
 
-function progressTimeoutHistory(requests, agentName) {
-  const previousCount = requests.filter((request) =>
-    request &&
-    request.agent === agentName &&
-    request.type === "progress_timeout"
-  ).length;
+// Counts progress_timeout requests filed against this agent since the last
+// "milestone" — a real code change, a wait-style arbitration resolution, or a
+// resume-agent.js run. Without a reset_at we fall back to counting the whole
+// history, which keeps fresh loop boots responsive to a backlog of prior
+// stalls (and preserves the legacy behavior for agents that have never made
+// progress).
+function progressTimeoutHistory(requests, agentName, resetAt) {
+  const resetMs = parseIsoMs(resetAt);
+  const previousCount = requests.filter((request) => {
+    if (!request || request.agent !== agentName || request.type !== "progress_timeout") return false;
+    if (!Number.isFinite(resetMs)) return true;
+    const createdMs = parseIsoMs(request.created_at);
+    return Number.isFinite(createdMs) && createdMs >= resetMs;
+  }).length;
   return { previousCount, timeoutCount: previousCount + 1 };
+}
+
+function parseIsoMs(value) {
+  if (typeof value !== "string" || value.trim() === "") return NaN;
+  return Date.parse(value);
+}
+
+// Shared — called from the per-cycle progress tracker and from processApprovals
+// (wait-style resolutions). Updates the agent's progress_timeout_reset_at
+// timestamp so progressTimeoutHistory only counts new stalls when the agent
+// next stalls. No-op if the agent has vanished from agents.json.
+function stampProgressMilestone(paths, agentName, kind) {
+  const stamp = new Date().toISOString();
+  updateJSON(paths.agents, (agents) => {
+    const agent = agents[agentName];
+    if (!agent) return;
+    agent.progress_timeout_reset_at = stamp;
+    agent.progress_timeout_reset_kind = kind;
+  });
+  return stamp;
 }
 
 function buildProgressEscalation({ previousProgressTimeouts, restartCount, maxRestarts, hasRecoveryTag, progressMins }) {
@@ -1311,7 +1394,7 @@ function shouldAutoLaunchDashboard(setting) {
 // ─── Process / git helpers ───────────────────────────────────────────────────
 
 function isAgentProcessAlive(agent, parsedConfig) {
-  return pidMatchesCli(agent?.pid, expectedProcessForAgent(agent, parsedConfig));
+  return pidMatchesCli(agent?.pid, expectedProcessForAgent(agent, parsedConfig), { recordedCmdline: agent?.spawned_cmdline });
 }
 
 function expectedProcessForAgent(agent, parsedConfig) {
@@ -1349,18 +1432,11 @@ function readDiffSnapshot(worktree) {
   } catch { return ""; }
 }
 
+// Thin wrapper around lib/log-tail.tailLines. Workers emit stream-json that
+// can balloon to hundreds of MB on long runs; we never want to slurp the whole
+// file just to grab the trailing 50 lines.
 function readTail(filePath, lines) {
-  if (!fs.existsSync(filePath)) return "";
-  try {
-    const limit = Math.max(0, Math.floor(Number(lines) || 0));
-    if (limit === 0) return "";
-    const content = fs.readFileSync(filePath, "utf-8");
-    const hadTrailingNewline = content.endsWith("\n");
-    const split = content.split(/\r?\n/);
-    if (hadTrailingNewline) split.pop();
-    const tail = split.slice(-limit).join("\n");
-    return tail ? `${tail}${hadTrailingNewline ? "\n" : ""}` : "";
-  } catch { return ""; }
+  return tailLines(filePath, lines);
 }
 
 // Returns the agent's current-process start time in ms. When every stored
@@ -1804,6 +1880,53 @@ function collectWorktreeStates(pending, agents) {
 
 // ─── Orchestrator CLI invocation ─────────────────────────────────────────────
 
+// Cap-aware wrapper around buildOrchestratorPrompt. Smaller-context arbitration
+// CLIs silently degrade once their input drifts past ~30 KB, so when several
+// stalled agents each contribute a 50-line log tail + diff snapshot we compact
+// per-request content (and worktree state blobs) before re-rendering. The first
+// render is still attempted at full fidelity; only blobs are truncated on
+// overflow, never structural fields like request_id / type.
+const ARBITRATION_PROMPT_CAP_BYTES = 32 * 1024;
+const ARBITRATION_PER_REQUEST_CAP_BYTES = 4 * 1024;
+const ARBITRATION_PER_STATE_CAP_BYTES = 2 * 1024;
+
+function buildBoundedArbitrationPrompt({ pending, context, durableDecisions, recentDecisions, worktreeStates, callerContext, log }) {
+  const fullPrompt = buildOrchestratorPrompt(pending, context, durableDecisions, recentDecisions, worktreeStates, callerContext);
+  if (Buffer.byteLength(fullPrompt, "utf-8") <= ARBITRATION_PROMPT_CAP_BYTES) return fullPrompt;
+
+  const compactedPending = pending.map((req) => {
+    if (!req || typeof req.content !== "string") return req;
+    return { ...req, content: truncateMiddle(req.content, ARBITRATION_PER_REQUEST_CAP_BYTES) };
+  });
+  const compactedStates = {};
+  for (const [agent, state] of Object.entries(worktreeStates || {})) {
+    compactedStates[agent] = typeof state === "string"
+      ? truncateMiddle(state, ARBITRATION_PER_STATE_CAP_BYTES)
+      : state;
+  }
+
+  const compactPrompt = buildOrchestratorPrompt(compactedPending, context, durableDecisions, recentDecisions, compactedStates, callerContext);
+  const originalKb = (Buffer.byteLength(fullPrompt, "utf-8") / 1024).toFixed(1);
+  const cappedKb = (Buffer.byteLength(compactPrompt, "utf-8") / 1024).toFixed(1);
+  log?.(`Arbitration prompt exceeded ${(ARBITRATION_PROMPT_CAP_BYTES / 1024).toFixed(0)} KB (was ${originalKb} KB) — compacted per-request and worktree-state blobs to ${cappedKb} KB.`);
+  return compactPrompt;
+}
+
+// Keeps the head and tail of a long blob and inserts a marker between them.
+// Useful for log tails + diff snapshots where both early structure (headers)
+// and recent content (most recent log lines / diff endings) carry signal.
+function truncateMiddle(text, maxBytes) {
+  const buf = Buffer.from(text, "utf-8");
+  if (buf.length <= maxBytes) return text;
+  const marker = `\n[...truncated ${buf.length - maxBytes} bytes...]\n`;
+  const markerBytes = Buffer.byteLength(marker, "utf-8");
+  if (maxBytes <= markerBytes) return marker.trim();
+  const keep = maxBytes - markerBytes;
+  const head = Math.floor(keep / 2);
+  const tail = keep - head;
+  return `${buf.slice(0, head).toString("utf-8")}${marker}${buf.slice(buf.length - tail).toString("utf-8")}`;
+}
+
 // Builds the arbitration prompt sent to the orchestrator CLI for each pending-request cycle.
 function buildOrchestratorPrompt(requests, context, durableDecisions, decisions, worktreeStates, callerContext = "") {
   return `You are the system orchestrator for a multi-agent project.
@@ -2179,6 +2302,8 @@ function truncate(value, max) {
 
 module.exports = {
   buildOrchestratorPrompt,
+  buildBoundedArbitrationPrompt,
+  ARBITRATION_PROMPT_CAP_BYTES,
   buildFinalSummary,
   checkCompletionOwnership,
   collectOwnershipChangedFiles,
@@ -2188,4 +2313,5 @@ module.exports = {
   readAgentCurrentStartMs,
   consolidateStagedRequests,
   getPaths,
+  progressTimeoutHistory,
 };

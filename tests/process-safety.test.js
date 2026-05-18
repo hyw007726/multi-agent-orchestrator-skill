@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { pidMatchesCli, safeKill } = require('../scripts/lib/process');
+const { pidMatchesCli, safeKill, REFUSAL_FALLBACK_THRESHOLD, _resetRefusalCounts } = require('../scripts/lib/process');
 const { waitFor, cleanupProcess } = require('./helpers/temp-project');
 
 describe('process safety helpers', () => {
@@ -153,6 +153,120 @@ describe('process safety helpers', () => {
         try { process.kill(-parent.pid, 'SIGKILL'); } catch {}
         try { process.kill(parent.pid, 'SIGKILL'); } catch {}
       }
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  // 6. pidMatchesCli accepts the recorded cmdline as a stronger signal.
+  it('pidMatchesCli matches when expectedCli is wrong but recordedCmdline shares the binary path', async () => {
+    const child = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    try {
+      // expectedCli intentionally wrong; recordedCmdline shares the binary path
+      // (the node executable) so the match should succeed via the recorded fallback.
+      const liveCmdline = spawn('node', ['-e', 'process.stdout.write(process.argv0)']) ? null : null;
+      // Compute the recorded cmdline from the spawned PID via /proc-like ps; reuse our helper.
+      const { getProcessCommand } = require('../scripts/lib/process');
+      const recorded = getProcessCommand(child.pid);
+      assert.ok(recorded, 'expected ps to return a cmdline');
+      const result = pidMatchesCli(child.pid, 'absolutely-not-the-process', { recordedCmdline: recorded });
+      assert.strictEqual(result, true);
+    } finally {
+      cleanupProcess(child);
+    }
+  });
+
+  // 7. After REFUSAL_FALLBACK_THRESHOLD refused checks, safeKill signals anyway
+  //    when events.jsonl shows the orchestrator spawned the PID.
+  it(`falls back to signalling after ${REFUSAL_FALLBACK_THRESHOLD} refused checks if events.jsonl confirms we spawned the PID`, async () => {
+    _resetRefusalCounts();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-kill-fallback-'));
+    const child = spawn('node', ['-e', [
+      'process.title = "definitely-not-our-cli";',
+      'setInterval(() => {}, 1000);',
+      'process.on("SIGTERM", () => process.exit(0));',
+    ].join('')], { stdio: 'ignore' });
+
+    try {
+      // Wait until ps reflects the new process title (process.title takes a tick).
+      await waitFor(() => {
+        const { getProcessCommand } = require('../scripts/lib/process');
+        const live = getProcessCommand(child.pid);
+        return live && !live.includes('node');
+      }, { timeoutMs: 2000, intervalMs: 25 }).catch(() => null);
+
+      // Seed events.jsonl with an agent_spawned event for this PID.
+      const eventsPath = path.join(tempDir, 'events.jsonl');
+      fs.writeFileSync(eventsPath, JSON.stringify({
+        timestamp: new Date().toISOString(),
+        event: 'agent_spawned',
+        agent: 'test-agent',
+        pid: child.pid,
+      }) + '\n', 'utf-8');
+
+      const logs = [];
+      const log = (msg) => logs.push(msg);
+
+      // First N-1 calls should refuse without signalling.
+      for (let i = 1; i < REFUSAL_FALLBACK_THRESHOLD; i++) {
+        const result = safeKill({
+          pid: child.pid,
+          expectedCli: 'absolutely-not-the-process',
+          coordDir: tempDir,
+          agent: 'test-agent',
+          log,
+        });
+        assert.strictEqual(result, false, `call ${i} should have refused`);
+      }
+      // On the threshold call, safeKill should fall back and signal.
+      const result = safeKill({
+        pid: child.pid,
+        expectedCli: 'absolutely-not-the-process',
+        coordDir: tempDir,
+        agent: 'test-agent',
+        log,
+      });
+      assert.strictEqual(result, true);
+      assert.ok(
+        logs.some((msg) => msg.includes('safeKill fallback') && msg.includes('events.jsonl')),
+        `expected fallback log, got:\n${logs.join('\n')}`,
+      );
+      // signal_sent event with fallback marker should be appended.
+      const events = fs.readFileSync(eventsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+      const signalEvent = events.find((e) => e.event === 'signal_sent' && e.pid === child.pid);
+      assert.ok(signalEvent, 'expected a signal_sent event for the fallback');
+      assert.match(String(signalEvent.reason), /fallback/);
+    } finally {
+      cleanupProcess(child);
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  // 8. Without an agent_spawned event for the PID, the fallback declines.
+  it('does not fall back when events.jsonl has no record of spawning the PID', async () => {
+    _resetRefusalCounts();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-kill-no-fallback-'));
+    const child = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+
+    try {
+      // Empty events.jsonl ⇒ no proof we spawned this PID ⇒ no fallback.
+      fs.writeFileSync(path.join(tempDir, 'events.jsonl'), '', 'utf-8');
+
+      const logs = [];
+      const log = (msg) => logs.push(msg);
+      for (let i = 0; i < REFUSAL_FALLBACK_THRESHOLD + 2; i++) {
+        const result = safeKill({
+          pid: child.pid,
+          expectedCli: 'absolutely-not-the-process',
+          coordDir: tempDir,
+          agent: 'test-agent',
+          log,
+        });
+        assert.strictEqual(result, false, `call ${i + 1} should still refuse without spawn evidence`);
+      }
+      // Process must still be alive.
+      assert.strictEqual(child.exitCode, null);
+    } finally {
+      cleanupProcess(child);
       try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
     }
   });

@@ -96,6 +96,26 @@ function runLaunch(args, projectRoot, contextPath) {
   console.log(formatModelHeadsUp(config, { workerClis }));
   console.log('');
 
+  // Without this check, `git worktree add -b <agentName>` later in the spawn
+  // loop would fail mid-iteration if a branch from a prior aborted run still
+  // exists, leaving a half-spawned run plus a partial rollback. Detect those
+  // stale branches up front and refuse with actionable cleanup instructions.
+  const staleBranches = collectStaleAgentBranches(projectRoot, tasks);
+  if (staleBranches.length > 0) {
+    const list = staleBranches.map(({ agent, reason }) => `  - ${agent} (${reason})`).join('\n');
+    const names = staleBranches.map((entry) => entry.agent).join(' ');
+    console.error(
+      `Error: Stale agent branches from a prior run are blocking launch:\n${list}\n\n` +
+      `Each branch has no matching worktree at the path this launch would use, so ` +
+      `'git worktree add -b <agent>' would fail mid-iteration. Clean them up and retry:\n` +
+      `  git worktree prune\n` +
+      `  git branch -D ${names}\n\n` +
+      `If you intended to resume a preserved worktree, ensure the worktree directory ` +
+      `still exists and rerun with --resume.`,
+    );
+    process.exit(1);
+  }
+
   for (const [agentName, agentRecord] of Object.entries(tasks)) {
     const cli = agentRecord.cli || config.default_cli;
     const worktreeBase = cli === 'kilo' ? '.kilocode/worktrees' : '.agents/worktrees';
@@ -290,6 +310,54 @@ function acquireLaunchLock(coordDir) {
     released = true;
     try { release(); } catch {}
   };
+}
+
+// Returns the subset of agent names whose branch already exists locally but is
+// NOT registered to the worktree path this launch would use. Those are the ones
+// that would crash `git worktree add -b <agentName>` mid-iteration.
+function collectStaleAgentBranches(projectRoot, tasks) {
+  const config = loadConfig();
+  const worktrees = listGitWorktrees(projectRoot);
+  if (worktrees.error) {
+    console.error(`Warning: stale-branch pre-check skipped: ${worktrees.error}`);
+    return [];
+  }
+  const branchToWorktree = new Map();
+  for (const record of worktrees.records) {
+    if (!record.branch) continue;
+    branchToWorktree.set(record.branch, normalizeExistingPath(record.worktree));
+  }
+
+  const stale = [];
+  for (const [agentName, agentRecord] of Object.entries(tasks)) {
+    const cli = agentRecord.cli || config.default_cli;
+    const worktreeBase = cli === 'kilo' ? '.kilocode/worktrees' : '.agents/worktrees';
+    const expectedAbs = normalizeExistingPath(path.join(projectRoot, worktreeBase, agentName));
+    const branchRef = `refs/heads/${agentName}`;
+
+    if (!branchExists(projectRoot, agentName)) continue;
+
+    const registeredAt = branchToWorktree.get(branchRef);
+    if (!registeredAt) {
+      stale.push({ agent: agentName, reason: 'branch exists with no checked-out worktree' });
+      continue;
+    }
+    if (registeredAt !== expectedAbs) {
+      stale.push({
+        agent: agentName,
+        reason: `branch checked out at ${registeredAt}, but this launch expects ${expectedAbs}`,
+      });
+    }
+  }
+  return stale;
+}
+
+function branchExists(projectRoot, agentName) {
+  const result = spawnSync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${agentName}`], {
+    cwd: projectRoot,
+    stdio: 'ignore',
+  });
+  return result.status === 0;
 }
 
 function validateExistingWorktree(projectRoot, worktreePath, agentName) {

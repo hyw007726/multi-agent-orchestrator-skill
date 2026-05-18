@@ -4,6 +4,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { tailLines } = require("./lib/log-tail");
 
 if (require.main === module) {
   try {
@@ -363,10 +364,7 @@ function readTextIfExists(file) {
 }
 
 function tailFile(file, maxLines) {
-  const text = readTextIfExists(file);
-  if (!text) return "";
-  const lines = text.split("\n");
-  return lines.slice(Math.max(0, lines.length - maxLines)).join("\n");
+  return tailLines(file, maxLines).replace(/\n+$/, "");
 }
 
 function walkFiles(root, maxDepth, depth = 0) {

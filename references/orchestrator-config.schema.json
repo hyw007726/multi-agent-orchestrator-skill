@@ -115,6 +115,12 @@
       "type": "boolean",
       "description": "Whether to open a terminal with the deterministic review summary after all workers finish.",
       "default": false
+    },
+    "worker_log_max_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Cap (in bytes) for a worker's coord/logs/<agent>.log before spawn-agent rotates it to <agent>.log.1. 0 disables rotation.",
+      "default": 268435456
     }
   },
   "$defs": {

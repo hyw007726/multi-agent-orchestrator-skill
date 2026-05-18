@@ -5,6 +5,12 @@ const path = require("path");
 const readline = require("readline");
 const { parseAgentState } = require("./lib/agent-log-parser");
 const { STATUS } = require("./lib/status");
+const { tailLines } = require("./lib/log-tail");
+
+// Per-agent cache so an idle log isn't re-read every render tick. Keyed by log
+// path. We invalidate when the file's mtime or size changes; a shrink means
+// the spawn-agent rotation kicked in and we should refresh.
+const logTailCache = new Map();
 
 const coordDir = process.argv[2] === "--coord" ? process.argv[3] : "./coord";
 const agentsFile = path.join(coordDir, "agents.json");
@@ -98,8 +104,8 @@ function renderAgents() {
           info = `${colorAttention("ATTENTION:")} ${reason}`;
         } else try {
           const logPath = path.join(coordDir, "logs", `${name}.log`);
-          if (fs.existsSync(logPath)) {
-            const logs = fs.readFileSync(logPath, "utf-8").trim().split("\n");
+          const logs = readLogTailLines(logPath, 50);
+          if (logs) {
             const lastLine = logs[logs.length - 1] || "";
             if (a.status === "errored") {
               info = `ERROR: ${lastLine.slice(0, 40)}`;
@@ -108,7 +114,7 @@ function renderAgents() {
               const exitLastLine = exitTail ? exitTail.trim().split("\n").pop() || "" : "";
               info = `VANISHED: ${exitLastLine.slice(0, 40)}`;
             } else if (a.status === "running") {
-              const parsedState = parseAgentState(logs.slice(-50));
+              const parsedState = parseAgentState(logs);
               info = parsedState ? `> ${parsedState}` : `[Log] ${lastLine.slice(0, 40)}`;
             }
           }
@@ -138,6 +144,35 @@ function renderAgents() {
     if (!process.stdout.isTTY || process.env.NO_COLOR) return text;
     return `\x1b[33m${text}\x1b[0m`;
   }
+}
+
+// Shared — used by renderAgents for both `running` and `errored` rows.
+// Returns the trailing N lines as an array (no trailing-newline element), or
+// null when the log file doesn't exist. Caches the parsed array per-path and
+// re-uses it when the file's stat hasn't changed since the last call.
+function readLogTailLines(logPath, lineCount) {
+  let stat;
+  try {
+    stat = fs.statSync(logPath);
+  } catch {
+    logTailCache.delete(logPath);
+    return null;
+  }
+  if (!stat.isFile()) {
+    logTailCache.delete(logPath);
+    return null;
+  }
+  const cached = logTailCache.get(logPath);
+  // Same mtime AND same or larger size → safe to return cached lines. A shrink
+  // (size < cached.size) implies log rotation; refresh.
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.lines;
+  }
+  const tail = tailLines(logPath, lineCount);
+  const trimmed = tail.replace(/\n+$/, "");
+  const lines = trimmed === "" ? [] : trimmed.split("\n");
+  logTailCache.set(logPath, { mtimeMs: stat.mtimeMs, size: stat.size, lines });
+  return lines;
 }
 
 function formatTimestamp(value) {

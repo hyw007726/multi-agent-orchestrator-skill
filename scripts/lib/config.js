@@ -30,6 +30,7 @@ const SUPPORTED_CONFIG_KEYS = new Set([
   "poll_max_ms",
   "launch_dashboard",
   "launch_review_terminal",
+  "worker_log_max_bytes",
 ]);
 
 const REVIEWER_KEYS = new Set([
@@ -68,6 +69,10 @@ const DEFAULT_CLI_TEMPLATES = {
   opencode: { cmd: "opencode", args: ["run", "--dangerously-skip-permissions", "--file", { prompt_file: true }, "Follow the instructions in the attached prompt file."] },
 };
 
+// 256 MB matches scripts/lib/log-tail.js's DEFAULT_MAX_LOG_BYTES. Keep them in
+// sync (the helper exports its default for callers that need raw access).
+const DEFAULT_WORKER_LOG_MAX_BYTES = 256 * 1024 * 1024;
+
 const DEFAULTS = {
   default_cli: "kilo",
   // If omitted, request arbitration uses the same CLI as workers. Projects that
@@ -85,6 +90,7 @@ const DEFAULTS = {
   poll_max_ms: 15000,
   launch_dashboard: "auto",
   launch_review_terminal: false,
+  worker_log_max_bytes: DEFAULT_WORKER_LOG_MAX_BYTES,
   reviewers: [],
   max_plan_review_iterations: "auto",
 };
@@ -178,6 +184,9 @@ function normalizeConfig(parsed = {}) {
       throw new Error("launch_review_terminal must be a boolean. Set it to true, false, or remove it to use false.");
     }
     merged.launch_review_terminal = parsed.launch_review_terminal;
+  }
+  if (hasOwn(parsed, "worker_log_max_bytes")) {
+    merged.worker_log_max_bytes = normalizeWorkerLogMaxBytes(parsed.worker_log_max_bytes);
   }
   merged.max_plan_review_iterations = normalizeMaxPlanReviewIterations(parsed.max_plan_review_iterations);
   merged.reviewers = normalizeReviewers(parsed.reviewers, merged);
@@ -465,6 +474,16 @@ function normalizeNonNegativeInteger(value, label) {
 function normalizeLaunchDashboard(value) {
   if (value === "auto" || typeof value === "boolean") return value;
   throw new Error('launch_dashboard must be "auto", true, or false. Use "auto" for local macOS auto-launch behavior, or remove it to use "auto".');
+}
+
+// 0 disables rotation entirely (keep appending forever); any positive integer
+// caps the live log before spawn-agent.js rotates `.log` → `.log.1`.
+function normalizeWorkerLogMaxBytes(value) {
+  if (value === 0) return 0;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("worker_log_max_bytes must be a non-negative integer (bytes). Use 0 to disable rotation, or remove the key to use the default.");
+  }
+  return value;
 }
 
 function normalizeNonEmptyString(value, label) {

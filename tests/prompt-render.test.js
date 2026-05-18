@@ -10,7 +10,11 @@ const {
   renderWorkerPrompt,
   renderWorkerRestartPrompt,
 } = require('../scripts/lib/prompt-render');
-const { buildOrchestratorPrompt } = require('../scripts/orchestrator-loop');
+const {
+  buildOrchestratorPrompt,
+  buildBoundedArbitrationPrompt,
+  ARBITRATION_PROMPT_CAP_BYTES,
+} = require('../scripts/orchestrator-loop');
 const { renderReviewerPrompt } = require('../scripts/review-plan');
 
 describe('worker prompt rendering', () => {
@@ -108,6 +112,62 @@ describe('orchestrator arbitration prompt rendering', () => {
     assert.ok(prompt.indexOf('req-1') > dynamicStart);
     assert.ok(prompt.indexOf('## Caller Session Context from coord/CALLER_CONTEXT.md') > dynamicStart);
     assert.ok(prompt.indexOf('Caller nuance from the starter session') > dynamicStart);
+  });
+
+  it('compacts the arbitration prompt once the full render exceeds the byte cap', () => {
+    const bigBlob = 'A'.repeat(40 * 1024);
+    const pending = [
+      { request_id: 'req-1', agent: 'agent-a', content: `header\n${bigBlob}\nfooter` },
+      { request_id: 'req-2', agent: 'agent-b', content: `another header\n${'B'.repeat(20 * 1024)}\nend` },
+    ];
+    const states = {
+      'agent-a': `STATUS: clean\nDIFF:\n${'C'.repeat(10 * 1024)}`,
+      'agent-b': `STATUS: dirty\nDIFF:\n${'D'.repeat(10 * 1024)}`,
+    };
+    const captured = [];
+    const log = (msg) => captured.push(msg);
+
+    const prompt = buildBoundedArbitrationPrompt({
+      pending,
+      context: { project: 'cap test' },
+      durableDecisions: '',
+      recentDecisions: [],
+      worktreeStates: states,
+      callerContext: '',
+      log,
+    });
+
+    assert.ok(
+      Buffer.byteLength(prompt, 'utf-8') < ARBITRATION_PROMPT_CAP_BYTES * 1.5,
+      `expected capped prompt to stay near ${ARBITRATION_PROMPT_CAP_BYTES} bytes, got ${Buffer.byteLength(prompt, 'utf-8')}`,
+    );
+    // Structural fields survive compaction.
+    assert.ok(prompt.includes('req-1'));
+    assert.ok(prompt.includes('req-2'));
+    assert.ok(prompt.includes('agent-a'));
+    assert.ok(prompt.includes('agent-b'));
+    // Truncation marker fires for the blob fields.
+    assert.match(prompt, /\[\.\.\.truncated \d+ bytes\.\.\.\]/);
+    // Log line is emitted exactly once.
+    assert.strictEqual(captured.length, 1);
+    assert.match(captured[0], /Arbitration prompt exceeded/);
+  });
+
+  it('skips compaction when the prompt is already under the byte cap', () => {
+    const captured = [];
+    const prompt = buildBoundedArbitrationPrompt({
+      pending: [{ request_id: 'req-1', agent: 'agent-a', content: 'short message' }],
+      context: { project: 'small' },
+      durableDecisions: '',
+      recentDecisions: [],
+      worktreeStates: { 'agent-a': 'STATUS: clean' },
+      callerContext: '',
+      log: (msg) => captured.push(msg),
+    });
+
+    assert.ok(prompt.includes('short message'));
+    assert.doesNotMatch(prompt, /\[\.\.\.truncated/);
+    assert.strictEqual(captured.length, 0);
   });
 });
 

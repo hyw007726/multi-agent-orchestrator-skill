@@ -71,6 +71,12 @@ function resumeAgent() {
     const now = new Date().toISOString();
     agent.current_started_at = now;
     agent.last_heartbeat = now;
+    // Manual intervention is itself a milestone: it means a human looked at
+    // the agent and decided to keep going, so the next stall should start
+    // counting from `first_timeout` again rather than chaining into the prior
+    // history.
+    agent.progress_timeout_reset_at = now;
+    agent.progress_timeout_reset_kind = "resume";
 
     outcomeRef.value = {
       kind: "resume",

@@ -10,6 +10,8 @@ const { loadConfig } = require("./lib/config");
 const { updateJSON } = require("./lib/locking");
 const { appendEvent } = require("./lib/events");
 const { cliTemplateProcessMatch, spawnCliTemplate } = require("./lib/cli-template");
+const { rotateLogIfTooLarge } = require("./lib/log-tail");
+const { getProcessCommand } = require("./lib/process");
 
 spawnAgent();
 
@@ -53,6 +55,11 @@ function spawnAgent() {
   const logsDir = path.resolve(config.coordDir, "logs");
   if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
   const logFile = path.join(logsDir, `${config.agent}.log`);
+  // Rotate before opening the new fd: a running worker holds the log fd open
+  // in append mode, so an in-flight rename would silently redirect its writes
+  // to the rotated path. Doing it here, between processes, keeps the fresh fd
+  // bound to a fresh file. 0 disables rotation.
+  rotateLogIfTooLarge(logFile, parsedConfig.worker_log_max_bytes);
   const out = fs.openSync(logFile, "a");
   const err = out;
 
@@ -86,6 +93,11 @@ function spawnAgent() {
   // shells and child CLIs are stopped together.
   child.unref();
   const spawnedAt = new Date().toISOString();
+  // Capture the live cmdline. Some CLIs mutate `process.title` later, which
+  // breaks the basename substring rule pidMatchesCli falls back to; recording
+  // the spawn-time cmdline gives safeKill a stronger reference to compare
+  // against. Best-effort — `ps` may race the brand-new child or be absent.
+  const spawnedCmdline = getProcessCommand(child.pid) || "";
   writeSpawnMarker(out, {
     agent: config.agent,
     pid: child.pid,
@@ -119,6 +131,7 @@ function spawnAgent() {
       template_mode: templateMode,
       kilo_mode: config.mode,
       pid: child.pid,
+      spawned_cmdline: spawnedCmdline,
       started_at: existing.started_at ?? spawnedAt,
       current_started_at: spawnedAt,
       last_spawned_at: spawnedAt,
@@ -138,7 +151,15 @@ function spawnAgent() {
   appendEvent(config.coordDir, "agent_spawned", {
     agent: config.agent,
     pid: child.pid,
-    data: { cli: config.cli, mode: config.mode, process_match: processMatch, template_mode: templateMode, worktree, current_started_at: spawnedAt },
+    data: {
+      cli: config.cli,
+      mode: config.mode,
+      process_match: processMatch,
+      template_mode: templateMode,
+      worktree,
+      current_started_at: spawnedAt,
+      spawned_cmdline: spawnedCmdline || undefined,
+    },
   });
 
   // Single-use helper — creates the coord/ symlink inside the worktree so workers can

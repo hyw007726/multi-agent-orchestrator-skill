@@ -362,6 +362,120 @@ describe('launch-all smoke test', () => {
       }
     }
   });
+
+  it('refuses to launch when another launch-all is already holding the launch.lock', () => {
+    let project;
+    try {
+      project = createTempProject('launch-all-lock-');
+
+      writeProjectConfig(project.root, fakeCliPath);
+      bootstrapProject(project.root, 'Launch-all mutex pre-check project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.execution_topology = {
+        execution_mode: 'parallel',
+        reason: 'Fake workers own separate paths.',
+        dependency_notes: [],
+      };
+      context.foundation = { status: 'not_required', paths: [] };
+      context.tasks = {
+        'agent-alpha': {
+          description: 'alpha task',
+          cli: 'fake',
+          allowed_paths: ['alpha/**'],
+          forbidden_paths: ['beta/**', '.gitignore', 'orchestrator.config.js', 'coord/'],
+          validation_command: null,
+        },
+        'agent-beta': {
+          description: 'beta task',
+          cli: 'fake',
+          allowed_paths: ['beta/**'],
+          forbidden_paths: ['alpha/**', '.gitignore', 'orchestrator.config.js', 'coord/'],
+          validation_command: null,
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2) + '\n');
+
+      // Simulate another launch-all holding the lock. acquireLock treats a PID
+      // file pointing at a live process as a valid holder; we use this test
+      // runner's own PID so the holder check sees an "alive" process.
+      const lockMarker = path.join(project.root, 'coord', 'launch');
+      fs.writeFileSync(lockMarker, '');
+      const lockDir = `${lockMarker}.lock`;
+      fs.mkdirSync(lockDir);
+      fs.writeFileSync(path.join(lockDir, 'pid'), String(process.pid));
+
+      const launchScript = path.join(repoRoot(), 'scripts', 'launch-all.js');
+      const result = runLaunchAllRaw(launchScript, project.root);
+
+      assert.notStrictEqual(result.status, 0);
+      assert.match(result.stderr, /Another launch-all is already running/);
+      assert.match(result.stderr, /remove the stale marker/);
+      // No worktrees were created — refusal happens before any spawn work.
+      assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees', 'agent-alpha')));
+      assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees', 'agent-beta')));
+    } finally {
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
+
+  it('refuses to launch when a stale agent branch from a prior aborted run is present', () => {
+    let project;
+    try {
+      project = createTempProject('launch-all-stale-branch-');
+
+      writeProjectConfig(project.root, fakeCliPath);
+      bootstrapProject(project.root, 'Launch-all stale-branch pre-check project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.execution_topology = {
+        execution_mode: 'parallel',
+        reason: 'Fake workers own separate paths.',
+        dependency_notes: [],
+      };
+      context.foundation = { status: 'not_required', paths: [] };
+      context.tasks = {
+        'agent-alpha': {
+          description: 'alpha task',
+          cli: 'fake',
+          allowed_paths: ['alpha/**'],
+          forbidden_paths: ['beta/**', '.gitignore', 'orchestrator.config.js', 'coord/'],
+          validation_command: null,
+        },
+        'agent-beta': {
+          description: 'beta task',
+          cli: 'fake',
+          allowed_paths: ['beta/**'],
+          forbidden_paths: ['alpha/**', '.gitignore', 'orchestrator.config.js', 'coord/'],
+          validation_command: null,
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2) + '\n');
+
+      // Simulate the post-abort state: branches survive but their worktrees are gone.
+      const orphan = spawnSync('git', ['branch', 'agent-alpha'], { cwd: project.root, encoding: 'utf-8' });
+      assert.strictEqual(orphan.status, 0, orphan.stderr || orphan.stdout);
+
+      const launchScript = path.join(repoRoot(), 'scripts', 'launch-all.js');
+      const result = runLaunchAllRaw(launchScript, project.root);
+
+      assert.notStrictEqual(result.status, 0);
+      assert.match(result.stderr, /Stale agent branches/);
+      assert.match(result.stderr, /agent-alpha/);
+      assert.doesNotMatch(result.stderr, /agent-beta \(/);
+      assert.match(result.stderr, /git branch -D agent-alpha/);
+      assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees', 'agent-alpha')));
+      assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees', 'agent-beta')));
+    } finally {
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
 });
 
 describe('spawn-agent.js __SPAWN_RESULT__ capture', () => {

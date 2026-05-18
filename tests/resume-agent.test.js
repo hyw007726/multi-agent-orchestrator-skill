@@ -39,6 +39,11 @@ describe('resume-agent primitive', () => {
       assert.strictEqual(resumed.restart_count, 0, 'restart_count reset to 0 by default');
       assert.notStrictEqual(resumed.pid, parkedBefore.pid, 'spawn-agent re-registered with a fresh pid');
       assert.ok(resumed.worktree && fs.existsSync(resumed.worktree), 'worktree preserved');
+      assert.strictEqual(resumed.progress_timeout_reset_kind, 'resume', 'progress-timeout window reset on resume');
+      assert.ok(
+        !Number.isNaN(Date.parse(resumed.progress_timeout_reset_at)),
+        'progress_timeout_reset_at is an ISO timestamp',
+      );
 
       const events = readJsonl(path.join(project.root, 'coord', 'events.jsonl'));
       const resumeEvent = events.find((e) => e.event === 'agent_resumed' && e.agent === 'agent-park');
