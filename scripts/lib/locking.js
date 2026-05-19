@@ -241,9 +241,18 @@ function readJSONL(filePath) {
 }
 
 // Shared — used by acquireInstanceLock, updateJSON, and updateJSONL.
-// Acquires a .lock directory (mkdirSync is atomic on POSIX: EEXIST if already held).
-// Detects stale locks by checking if the holder PID is still alive; falls back to
-// mtime-based staleness if the PID file is unreadable.
+// Acquires a .lock directory and guarantees that, from the perspective of any
+// concurrent acquirer, the dir either does not exist or contains a fully
+// written `pid` file. Stale locks are detected by checking if the holder PID is
+// still alive; the mtime fallback covers genuinely corrupted lock dirs.
+//
+// Atomicity model: stage the lock content (mkdir + write pid) into a sibling
+// staging dir, then rename it onto the target. POSIX `rename` of a dir onto a
+// non-empty dir fails with ENOTEMPTY/EEXIST, which is the "lock already held"
+// signal. Crucially, a concurrent acquirer can never observe a freshly-minted
+// lock dir whose pid file hasn't landed yet — the previous mkdir-then-write
+// shape allowed exactly that window, which let mtime-fallback nuke a brand-new
+// valid lock.
 function acquireLock(filePath, opts = {}) {
   const { retries = 20, factor = 1.3, minTimeout = 50, maxTimeout = 1000, stale = 30000 } = opts;
   const lockDir = `${filePath}.lock`;
@@ -254,22 +263,31 @@ function acquireLock(filePath, opts = {}) {
     if (fs.existsSync(lockDir)) {
       try {
         const lockPid = parseInt(fs.readFileSync(pidFile, "utf-8"), 10);
-        if (!processAlive(lockPid)) fs.rmSync(lockDir, { recursive: true, force: true });
+        if (!processAlive(lockPid)) atomicRemoveLock(lockDir);
       } catch {
         try {
-          if (Date.now() - fs.statSync(lockDir).mtimeMs > stale) {
-            fs.rmSync(lockDir, { recursive: true, force: true });
-          }
+          if (Date.now() - fs.statSync(lockDir).mtimeMs > stale) atomicRemoveLock(lockDir);
         } catch {}
       }
     }
 
+    const stagingDir = `${lockDir}.staging.${process.pid}.${Date.now()}.${crypto.randomBytes(3).toString("hex")}`;
     try {
-      fs.mkdirSync(lockDir);
-      fs.writeFileSync(pidFile, String(process.pid));
-      return () => { try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch {} };
+      fs.mkdirSync(stagingDir);
+      fs.writeFileSync(path.join(stagingDir, "pid"), String(process.pid));
     } catch (err) {
-      if (err.code !== "EEXIST") throw err;
+      try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch {}
+      throw err;
+    }
+
+    try {
+      fs.renameSync(stagingDir, lockDir);
+      return () => atomicRemoveLock(lockDir);
+    } catch (err) {
+      // `rename` onto a populated dir fails with ENOTEMPTY (Linux) or EEXIST
+      // (macOS/BSD on some setups) — both mean someone else got the lock first.
+      try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch {}
+      if (err.code !== "ENOTEMPTY" && err.code !== "EEXIST") throw err;
       if (i === retries) throw Object.assign(new Error(`Lock already held: ${lockDir}`), { code: "ELOCKED" });
       sleepSync(Math.min(delay, maxTimeout));
       delay = Math.min(delay * factor, maxTimeout);
@@ -283,6 +301,24 @@ function acquireLock(filePath, opts = {}) {
   function sleepSync(ms) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.round(ms));
   }
+}
+
+// Shared — used by acquireLock's release callback and its stale-cleanup branch.
+// Atomically removes a lock directory so concurrent acquirers never observe a
+// half-removed dir (which `rmSync(..., recursive: true)` produces because it
+// unlinks the pid file before removing the directory itself). Rename is atomic;
+// the subsequent recursive delete happens on a path no one else is watching.
+function atomicRemoveLock(lockDir) {
+  const releasing = `${lockDir}.releasing.${process.pid}.${Date.now()}.${crypto.randomBytes(3).toString("hex")}`;
+  try {
+    fs.renameSync(lockDir, releasing);
+  } catch {
+    // Rename failed (likely already gone). Fall back to best-effort cleanup
+    // on the original path; if it really is gone, this is a no-op.
+    try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch {}
+    return;
+  }
+  try { fs.rmSync(releasing, { recursive: true, force: true }); } catch {}
 }
 
 // Shared — used by updateJSON and updateJSONL.

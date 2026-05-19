@@ -183,6 +183,85 @@ describe('locking primitives', () => {
     const tmpFiles = after.filter(f => f.includes('.tmp.'));
     assert.strictEqual(tmpFiles.length, 0, `tmp files left behind: ${tmpFiles.join(', ')}`);
   });
+
+  // 7. acquireLock never exposes a half-formed lock dir (mkdir-without-pid).
+  // Regression: the previous mkdir-then-write-pid sequence let a concurrent
+  // acquirer read between the two writes, fall into the mtime-stale branch,
+  // and rm a brand-new valid lock.
+  it('exposes a complete pid file every time the lock dir is observed', async () => {
+    // Spawn N parallel subprocesses that each acquire+hold-briefly+release the
+    // same lock, while a watcher peeks at the lock dir on every iteration. If
+    // the watcher ever sees the lock dir without a parseable pid file, the
+    // half-formed window is back.
+    const lockTarget = path.join(tmpDir, 'race.lock');
+    fs.writeFileSync(lockTarget, '');
+
+    const lockingModule = path.resolve(__dirname, '..', 'scripts', 'lib', 'locking');
+    const workerSrc = `
+      const { acquireLock } = require(${JSON.stringify(lockingModule)});
+      const release = acquireLock(${JSON.stringify(lockTarget)}, { retries: 100, minTimeout: 5, maxTimeout: 20 });
+      // Hold briefly so peers race against a live holder.
+      const end = Date.now() + 10;
+      while (Date.now() < end) {}
+      release();
+    `;
+
+    let halfFormed = 0;
+    let peeks = 0;
+    let stop = false;
+    const peeker = (async () => {
+      const lockDirPath = `${lockTarget}.lock`;
+      while (!stop) {
+        // Atomically observe lockDir contents via readdirSync. If the dir was
+        // renamed/removed between calls (concurrent release), we get ENOENT —
+        // that's a peeker TOCTOU, not a half-formed lock. Only count it as
+        // half-formed when readdir succeeds AND pid is missing.
+        let entries;
+        try {
+          entries = fs.readdirSync(lockDirPath);
+        } catch (err) {
+          if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
+            await new Promise((r) => setImmediate(r));
+            continue;
+          }
+          throw err;
+        }
+        peeks++;
+        if (!entries.includes('pid')) {
+          halfFormed++;
+        } else {
+          // pid file is listed — its contents must be parseable. Reading can
+          // still race with cleanup; treat ENOENT as a TOCTOU and skip.
+          try {
+            const raw = fs.readFileSync(path.join(lockDirPath, 'pid'), 'utf-8');
+            const pid = parseInt(raw, 10);
+            if (!Number.isInteger(pid) || pid <= 0) halfFormed++;
+          } catch (err) {
+            if (err.code !== 'ENOENT') halfFormed++;
+          }
+        }
+        await new Promise((r) => setImmediate(r));
+      }
+    })();
+
+    const workers = Array.from({ length: 8 }, () => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['-e', workerSrc], { stdio: 'pipe' });
+      let stderr = '';
+      child.stderr.on('data', (d) => { stderr += d.toString(); });
+      child.on('exit', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`worker exited ${code}: ${stderr}`));
+      });
+    }));
+
+    await Promise.all(workers);
+    stop = true;
+    await peeker;
+
+    assert.strictEqual(halfFormed, 0, `observed ${halfFormed} half-formed lock states across ${peeks} peeks`);
+    // After all workers finish, the lock dir should be gone.
+    assert.strictEqual(fs.existsSync(`${lockTarget}.lock`), false);
+  });
 });
 
 describe('acquireInstanceLock run_id and live-loop detection', () => {
