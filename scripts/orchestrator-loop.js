@@ -17,6 +17,7 @@ const { tailLines } = require("./lib/log-tail");
 const { discoverDefaultBaseBranch } = require("./lib/git-base");
 
 const RECENT_DECISION_LIMIT = 30;
+const RESTART_PROMPT_KEEP = 10;
 const HEARTBEAT_GRACE_PHASES = new Set(["starting", "reading", "planning", "testing", "running_tests", "building", "installing", "debugging"]);
 const SAFE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const SAFE_AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -836,6 +837,7 @@ async function runLoop() {
       fs.mkdirSync(promptsDir, { recursive: true });
       const promptFile = path.join(promptsDir, `restart-${name}-${Date.now()}.txt`);
       fs.writeFileSync(promptFile, renderRestartPrompt({ name, instruction, worktree, paths, log }), "utf-8");
+      sweepRestartPrompts(promptsDir, name, RESTART_PROMPT_KEEP);
       log(`Respawning agent ${name} using ${cliTool} (attempt ${attempt}/${maxAttempts})...`);
       const spawnArgs = [
         path.join(__dirname, "spawn-agent.js"),
@@ -1633,6 +1635,25 @@ function inspectAbortFlag(abortFlagPath, runStartedAt) {
     pid,
     writtenAt,
   };
+}
+
+function sweepRestartPrompts(promptsDir, agentName, keep = RESTART_PROMPT_KEEP) {
+  const limit = Math.max(0, Number.isInteger(Number(keep)) ? Number(keep) : RESTART_PROMPT_KEEP);
+  if (!fs.existsSync(promptsDir)) return;
+  const prefix = `restart-${agentName}-`;
+  const prompts = [];
+  for (const name of fs.readdirSync(promptsDir)) {
+    if (!name.startsWith(prefix) || !name.endsWith(".txt")) continue;
+    const filePath = path.join(promptsDir, name);
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.isFile()) prompts.push({ name, filePath, mtimeMs: stat.mtimeMs });
+    } catch {}
+  }
+  prompts.sort((a, b) => (b.mtimeMs - a.mtimeMs) || b.name.localeCompare(a.name));
+  for (const stale of prompts.slice(limit)) {
+    try { fs.unlinkSync(stale.filePath); } catch {}
+  }
 }
 
 // Shared — called at the very beginning of each runLoop cycle and from the
@@ -2958,4 +2979,5 @@ module.exports = {
   consolidateStagedRequests,
   getPaths,
   progressTimeoutHistory,
+  sweepRestartPrompts,
 };

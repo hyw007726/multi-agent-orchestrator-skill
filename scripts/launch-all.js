@@ -226,6 +226,7 @@ function runLaunch(args, projectRoot, contextPath) {
       rollback(spawnedPids, createdWorktrees, projectRoot);
       process.exit(1);
     }
+    try { fs.unlinkSync(promptFile); } catch {}
     const { pid, logFile: logPath = 'coord/logs/', templateMode = 'unknown' } = result;
 
     spawnedAgents.push({ name: agentName, pid, logPath, templateMode });

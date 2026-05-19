@@ -64,7 +64,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
   - `scripts/orchestrator-loop.js:1872-1879` filters the path `"coord"` itself when it is a symlink. But the ownership-check walker (`addGitLines`) emits entries below it (`coord/requests/<file>.json`, `coord/progress/<agent>.json`) when a worker writes through the symlink. Those slip past the filter and trip "outside allowed_paths" on completion.
   - *Fix:* If the top-level `coord` is a symlink, also drop every changed file whose first path segment is `coord`. Add a regression that writes through the symlink and asserts ownership passes.
 
-- **[C2] Tmp prompt files leak under `os.tmpdir()`**
+- ~~**[C2] Tmp prompt files leak under `os.tmpdir()`**~~ - _fixed: launch-all temp prompts are deleted after successful spawn handoff, launch prompts are materialized under coord for workers, and restart prompts are capped per agent._
   - `scripts/launch-all.js:167-169` writes `launch-all-prompt-<agent>-<ts>.txt` to `os.tmpdir()` and never deletes it. `scripts/orchestrator-loop.js` deletes the `orch-prompt-<pid>-<ts>.txt` files but not the per-restart `coord/prompts/restart-*.txt` (kept on purpose for forensics but unbounded).
   - *Fix:* Delete each `launch-all-prompt-*.txt` after `spawn-agent.js` returns successfully. Add a small sweeper for `coord/prompts/` that keeps the N most-recent files per agent (mirroring the `loop-runs/` retention).
 

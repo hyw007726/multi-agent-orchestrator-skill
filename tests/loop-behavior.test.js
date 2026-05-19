@@ -22,6 +22,7 @@ const {
   checkCompletionOwnership,
   captureRecoveryAndReset,
   collectOwnershipChangedFiles,
+  sweepRestartPrompts,
 } = require(path.join(repoRoot(), 'scripts', 'orchestrator-loop.js'));
 
 describe('loop behavior', () => {
@@ -600,6 +601,41 @@ describe('loop behavior', () => {
     } finally {
       if (project) project.cleanup();
       fs.rmSync(coordTarget, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps only the most recent restart prompts for each agent', () => {
+    const promptsDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'restart-prompts-'));
+    try {
+      for (let i = 0; i < 12; i++) {
+        const file = path.join(promptsDir, `restart-agent-a-${i}.txt`);
+        fs.writeFileSync(file, `prompt ${i}\n`, 'utf-8');
+        const stamp = new Date(2026, 0, 1, 0, 0, i);
+        fs.utimesSync(file, stamp, stamp);
+      }
+      for (let i = 0; i < 2; i++) {
+        fs.writeFileSync(path.join(promptsDir, `restart-agent-b-${i}.txt`), `other ${i}\n`, 'utf-8');
+      }
+
+      sweepRestartPrompts(promptsDir, 'agent-a', 5);
+
+      const remaining = fs.readdirSync(promptsDir).sort();
+      assert.deepStrictEqual(
+        remaining.filter((name) => name.startsWith('restart-agent-a-')),
+        [
+          'restart-agent-a-10.txt',
+          'restart-agent-a-11.txt',
+          'restart-agent-a-7.txt',
+          'restart-agent-a-8.txt',
+          'restart-agent-a-9.txt',
+        ].sort(),
+      );
+      assert.deepStrictEqual(
+        remaining.filter((name) => name.startsWith('restart-agent-b-')),
+        ['restart-agent-b-0.txt', 'restart-agent-b-1.txt'],
+      );
+    } finally {
+      fs.rmSync(promptsDir, { recursive: true, force: true });
     }
   });
 

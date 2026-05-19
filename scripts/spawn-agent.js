@@ -52,6 +52,8 @@ function spawnAgent() {
     process.exit(1);
   }
 
+  const runtimePromptFile = materializeLaunchPrompt(config, prompt);
+
   const logsDir = path.resolve(config.coordDir, "logs");
   if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
   const logFile = path.join(logsDir, `${config.agent}.log`);
@@ -71,7 +73,7 @@ function spawnAgent() {
   if (cliTemplate) {
     try {
       child = spawnCliTemplate(config.cli, cliTemplate, {
-        promptFile: config.promptFile,
+        promptFile: runtimePromptFile,
         promptText: prompt,
         extraArgs: config.extraArgs,
         detached: true,
@@ -241,6 +243,36 @@ function buildAgentRecord(existing, { config, status, worktree, processMatch, te
   }
   delete next.exit_log_tail;
   return next;
+}
+
+function materializeLaunchPrompt(config, prompt) {
+  const base = path.basename(config.promptFile || "");
+  if (!base.startsWith("launch-all-prompt-") || !base.endsWith(".txt")) {
+    return config.promptFile;
+  }
+  const promptsDir = path.resolve(config.coordDir, "prompts");
+  fs.mkdirSync(promptsDir, { recursive: true });
+  const promptFile = path.join(promptsDir, `launch-${config.agent}-${Date.now()}.txt`);
+  fs.writeFileSync(promptFile, prompt, "utf-8");
+  sweepLaunchPrompts(promptsDir, config.agent, 10);
+  return promptFile;
+}
+
+function sweepLaunchPrompts(promptsDir, agentName, keep) {
+  const prefix = `launch-${agentName}-`;
+  const prompts = [];
+  for (const name of fs.readdirSync(promptsDir)) {
+    if (!name.startsWith(prefix) || !name.endsWith(".txt")) continue;
+    const filePath = path.join(promptsDir, name);
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.isFile()) prompts.push({ name, filePath, mtimeMs: stat.mtimeMs });
+    } catch {}
+  }
+  prompts.sort((a, b) => (b.mtimeMs - a.mtimeMs) || b.name.localeCompare(a.name));
+  for (const stale of prompts.slice(keep)) {
+    try { fs.unlinkSync(stale.filePath); } catch {}
+  }
 }
 
 function killSpawnedChild(child) {

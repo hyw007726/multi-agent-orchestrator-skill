@@ -4,6 +4,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
+const os = require('node:os');
 const { spawn, spawnSync } = require('node:child_process');
 
 const {
@@ -69,14 +70,17 @@ describe('launch-all smoke test', () => {
       };
       fs.writeFileSync(contextPath, JSON.stringify(context, null, 2));
 
+      const agentNames = ['agent-alpha', 'agent-beta', 'agent-gamma'];
+      const promptFilesBefore = new Set(listLaunchPromptFiles(agentNames));
       const launchScript = path.join(repoRoot(), 'scripts', 'launch-all.js');
       const launchResult = runLaunchAll(launchScript, project.root);
       assert.match(launchResult.stdout, /Git base ref:/);
+      const leakedPromptFiles = listLaunchPromptFiles(agentNames).filter((file) => !promptFilesBefore.has(file));
+      assert.deepStrictEqual(leakedPromptFiles, [], `launch prompt files leaked: ${leakedPromptFiles.join(', ')}`);
 
       const loopPidMatch = launchResult.stdout.match(/Orchestrator loop backgrounded \(PID:\s*(\d+)\)/);
       const loopPid = loopPidMatch ? parseInt(loopPidMatch[1], 10) : null;
 
-      const agentNames = ['agent-alpha', 'agent-beta', 'agent-gamma'];
       const worktreesDir = path.join(project.root, '.agents', 'worktrees');
       for (const name of agentNames) {
         assert.ok(
@@ -939,6 +943,22 @@ function writeNodeProjectConfig(projectRoot, cliPath) {
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function listLaunchPromptFiles(agentNames) {
+  const prefixes = new Set(agentNames.map((name) => `launch-all-prompt-${name}-`));
+  try {
+    return fs.readdirSync(os.tmpdir())
+      .filter((name) => {
+        for (const prefix of prefixes) {
+          if (name.startsWith(prefix) && name.endsWith('.txt')) return true;
+        }
+        return false;
+      })
+      .map((name) => path.join(os.tmpdir(), name));
+  } catch {
+    return [];
+  }
 }
 
 function git(cwd, args) {
