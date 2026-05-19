@@ -13,7 +13,7 @@ Each item is tagged with a complexity rating:
 Pointers into the detailed entries below; full context and C-tag are on the body items.
 
 1. **[C2] `runValidation` blocks the entire loop for up to 30 minutes** — every other agent goes unsupervised while a single agent's tests run. (Critical → "`runValidation` can freeze the orchestrator")
-2. **[C2] `processApprovals` is not crash-atomic** — decisions are audited before the matching requests flip status; a crash re-arbitrates on restart. (Critical → "Resolve approvals atomically with the requests they decide")
+2. ~~**[C2] `processApprovals` is not crash-atomic**~~ — _fixed: flip-then-audit ordering in `processApprovals`._
 3. **[C2] Per-cycle `ps`/`git` subprocess storm** — `pidMatchesCli` shells one `ps` per agent per tick and `readDiffSnapshot` shells four `git`s per agent per tick. (Medium → "Per-cycle `pidMatchesCli` and `readDiffSnapshot` subprocess storm")
 4. ~~**[C2] `acquireLock` race between `mkdir` and PID-file write**~~ — _fixed: stage-and-rename in `acquireLock`, atomic release._
 5. ~~**[C2] Worker-coord symlink failures are swallowed**~~ — _fixed: `ensureCoordSymlink` now exits non-zero with errno + workaround instructions._
@@ -21,10 +21,6 @@ Pointers into the detailed entries below; full context and C-tag are on the body
 ---
 
 ## Critical (correctness, data loss, security)
-
-- **[C2] Resolve approvals atomically with the requests they decide**
-  - `scripts/orchestrator-loop.js` `processApprovals` calls `appendDecisionRecords` first (writes both `decisions.jsonl` and `decisions.json`), then `updateJSONL(paths.requests, …)` flips the request status. A crash between the two leaves `decisions.jsonl` claiming a request was resolved while `requests.jsonl` still has it `pending`; the next loop cycle rebuilds the arbitration prompt with the same request and the orchestrator double-arbitrates. The atomic guarantee currently lives only in `finalizeEndAgentCompletion` for the `end_agent` path.
-  - *Fix:* Flip the order — mark requests resolved first, then append the decision audit, all inside the same lock domain (or wrap both in a small "atomic resolution" helper that takes pending IDs + dispositions). Add a regression that crashes mid-resolution and confirms no double-arbitration.
 
 - **[C2] `runValidation` can freeze the orchestrator for `VALIDATION_HARD_CAP_MINS` (30 min)**
   - `scripts/orchestrator-loop.js:1616` calls `spawnSync` synchronously inside the main loop. While a worker's test suite runs, every other agent's liveness check, progress timeout, and arbitration is paused; abort flag detection is also delayed.

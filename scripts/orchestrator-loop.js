@@ -682,8 +682,15 @@ async function runLoop() {
   // audit log, and keeps decisions.json as a bounded recent window for prompts/dashboard.
   // Workers never write this file directly; new staged requests are consolidated before
   // arbitration, and status updates are serialized through updateJSONL.
+  // Crash-atomic resolution: flip the matching requests.jsonl entries OUT of
+  // 'pending' first, then write the decision audit. The orchestrator's restart
+  // invariant for "should this be re-arbitrated?" is `request.status === 'pending'`,
+  // so the only acceptable failure mode for a partial write is a missing audit
+  // entry — never a re-arbitration of an already-decided request. The previous
+  // order (audit first, flip second) allowed exactly that re-arbitration:
+  // decisions.jsonl claimed the request was resolved while requests.jsonl still
+  // showed it pending, and the next loop tick double-decided.
   function processApprovals(response, paths, log, { pending = [] } = {}) {
-    const decisionsToAdd = [];
     const resolvedAt = new Date().toISOString();
     const currentRequests = readJSONL(paths.requests);
     const pendingById = new Map();
@@ -692,50 +699,66 @@ async function runLoop() {
         pendingById.set(request.request_id, request);
       }
     }
-    const recorded = new Set();
 
+    // Collect (request_id, intended disposition, decision payload) for every
+    // approval/rejection that matches a still-pending request. Dedup on
+    // request_id so a malformed response that lists the same id twice doesn't
+    // produce two audit entries.
+    const resolutions = [];
+    const seenIds = new Set();
     for (const approved of response.approved || []) {
       const req = pendingById.get(approved.request_id);
-      if (!req || req.status !== "pending" || recorded.has(approved.request_id)) continue;
-      recorded.add(approved.request_id);
-      decisionsToAdd.push({
+      if (!req || req.status !== "pending" || seenIds.has(approved.request_id)) continue;
+      seenIds.add(approved.request_id);
+      resolutions.push({
         request_id: approved.request_id,
+        status: "resolved",
         disposition: "approved",
         decision: approved.decision,
         reason: approved.reason,
-        resolved_at: resolvedAt,
       });
     }
-
     for (const rejected of response.rejected || []) {
       const req = pendingById.get(rejected.request_id);
-      if (!req || req.status !== "pending" || recorded.has(rejected.request_id)) continue;
-      recorded.add(rejected.request_id);
-      decisionsToAdd.push({
+      if (!req || req.status !== "pending" || seenIds.has(rejected.request_id)) continue;
+      seenIds.add(rejected.request_id);
+      resolutions.push({
         request_id: rejected.request_id,
+        status: "rejected",
         disposition: "rejected",
         decision: "Request rejected",
         reason: rejected.reason,
-        resolved_at: resolvedAt,
       });
     }
 
-    appendDecisionRecords(paths, decisionsToAdd, log);
-
+    // Step 1 (must come first): flip request status. After this lands, the
+    // next loop tick will not include these in `pending`, so a crash here is
+    // recoverable — we just lose the audit row.
+    const flippedCounts = new Map();
     updateJSONL(paths.requests, (current) => {
-      for (const approved of response.approved || []) {
-        const count = markPendingRequestsById(current, approved.request_id, "resolved");
-        if (count > 0) {
-          log(`Approved Request ${approved.request_id}: ${approved.decision}${count > 1 ? ` (${count} matching pending entries)` : ""}`);
-        }
-      }
-      for (const rejected of response.rejected || []) {
-        const count = markPendingRequestsById(current, rejected.request_id, "rejected");
-        if (count > 0) {
-          log(`Rejected Request ${rejected.request_id}: ${rejected.reason}${count > 1 ? ` (${count} matching pending entries)` : ""}`);
-        }
+      for (const resolution of resolutions) {
+        const count = markPendingRequestsById(current, resolution.request_id, resolution.status);
+        if (count > 0) flippedCounts.set(resolution.request_id, count);
       }
     });
+
+    // Step 2: append the decision audit for the resolutions we actually flipped.
+    const decisionsToAdd = [];
+    for (const resolution of resolutions) {
+      const count = flippedCounts.get(resolution.request_id) || 0;
+      if (count === 0) continue;
+      decisionsToAdd.push({
+        request_id: resolution.request_id,
+        disposition: resolution.disposition,
+        decision: resolution.decision,
+        reason: resolution.reason,
+        resolved_at: resolvedAt,
+      });
+      const verbed = resolution.disposition === "approved" ? "Approved" : "Rejected";
+      const trailingText = resolution.disposition === "approved" ? resolution.decision : resolution.reason;
+      log(`${verbed} Request ${resolution.request_id}: ${trailingText}${count > 1 ? ` (${count} matching pending entries)` : ""}`);
+    }
+    appendDecisionRecords(paths, decisionsToAdd, log);
 
     resetMilestonesOnWaitResolutions(response, pending, paths, log);
   }
