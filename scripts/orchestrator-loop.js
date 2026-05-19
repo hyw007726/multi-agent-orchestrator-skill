@@ -27,6 +27,7 @@ const VALIDATION_STATE = Object.freeze({
   PASSED: "passed",
   FAILED: "failed",
 });
+const LEGACY_ABORT_FLAG_STARTUP_GRACE_MS = 10_000;
 // Hard cap on runValidation: even if every configurable timeout is missing or 0,
 // a hung validation suite must not freeze the main loop and starve other agents.
 const VALIDATION_HARD_CAP_MINS = 30;
@@ -1613,13 +1614,18 @@ function inspectAbortFlag(abortFlagPath, runStartedAt) {
     : null;
   let writtenAt = parsed && typeof parsed.written_at === "string" ? parsed.written_at : "";
   let writtenMs = Date.parse(writtenAt);
-  if (!Number.isFinite(writtenMs)) {
+  const hasJsonWrittenAt = Number.isFinite(writtenMs);
+  if (!hasJsonWrittenAt) {
     writtenMs = stat.mtimeMs;
     writtenAt = new Date(stat.mtimeMs).toISOString();
   }
 
   const runStartedMs = Date.parse(runStartedAt);
-  const stale = Number.isFinite(runStartedMs) && Number.isFinite(writtenMs) && writtenMs < runStartedMs;
+  const stale = Number.isFinite(runStartedMs) && Number.isFinite(writtenMs) && (
+    hasJsonWrittenAt
+      ? writtenMs < runStartedMs
+      : writtenMs + LEGACY_ABORT_FLAG_STARTUP_GRACE_MS < runStartedMs
+  );
   return {
     active: !stale,
     stale,
