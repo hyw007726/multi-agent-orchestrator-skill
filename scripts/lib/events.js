@@ -26,6 +26,7 @@ const VALID_EVENTS = new Set([
   "recovery_tag_created",
   "agent_parked",
   "agent_resumed",
+  "arbitration_action_dropped",
 ]);
 
 // Public API

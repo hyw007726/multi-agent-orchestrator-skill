@@ -418,7 +418,10 @@ async function runLoop() {
 
       if (action.type === "end_agent") {
         const snapshot = readJSON(paths.agents)[action.agent];
-        if (!snapshot) continue;
+        if (!snapshot) {
+          dropUnknownAgentAction(action, log);
+          continue;
+        }
 
         const validation = beginCompletionValidation(action, snapshot, arbitration, paths, parsedConfig, log);
         if (validation.state === VALIDATION_STATE.RUNNING) continue;
@@ -432,6 +435,11 @@ async function runLoop() {
       }
 
       if (action.type === "soft_restart" || action.type === "hard_restart") {
+        const snapshot = readJSON(paths.agents)[action.agent];
+        if (!snapshot) {
+          dropUnknownAgentAction(action, log);
+          continue;
+        }
         bumpRestartAndRespawn({
           name: action.agent,
           instruction: action.instruction,
@@ -443,6 +451,18 @@ async function runLoop() {
         });
       }
     }
+  }
+
+  function dropUnknownAgentAction(action, log) {
+    const agentName = action?.agent || "(missing)";
+    const actionType = action?.type || "(missing)";
+    const reason = `Arbitration action targeted unknown agent ${agentName}`;
+    log(`${reason}; dropping ${actionType}.`);
+    appendEvent(config.coordDir, "arbitration_action_dropped", {
+      agent: action?.agent,
+      reason,
+      data: { action },
+    });
   }
 
   function beginCompletionValidation(action, snapshot, arbitration, paths, parsedConfig, log) {

@@ -68,7 +68,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
   - `scripts/launch-all.js:167-169` writes `launch-all-prompt-<agent>-<ts>.txt` to `os.tmpdir()` and never deletes it. `scripts/orchestrator-loop.js` deletes the `orch-prompt-<pid>-<ts>.txt` files but not the per-restart `coord/prompts/restart-*.txt` (kept on purpose for forensics but unbounded).
   - *Fix:* Delete each `launch-all-prompt-*.txt` after `spawn-agent.js` returns successfully. Add a small sweeper for `coord/prompts/` that keeps the N most-recent files per agent (mirroring the `loop-runs/` retention).
 
-- **[C2] `processActions` silently ignores unknown agents in arbitration output**
+- ~~**[C2] `processActions` silently ignores unknown agents in arbitration output**~~ - _fixed: unknown-agent arbitration actions now log a warning, emit `arbitration_action_dropped`, and appear in live inspection recent events._
   - `scripts/orchestrator-loop.js:367-458`: an `end_agent` for an agent not in `agents.json` falls through `if (!snapshot)`; a `soft_restart`/`hard_restart` for an unknown agent makes `bumpRestartAndRespawn` no-op inside its `updateJSON` callback. Either way the loop emits no warning and the orchestrator CLI gets no feedback that its response was malformed.
   - *Fix:* Log a clear `Arbitration action targeted unknown agent <name>` warning and emit an `arbitration_action_dropped` structured event (new `events.js` type) so it shows up in `inspect-live-test.js`.
 

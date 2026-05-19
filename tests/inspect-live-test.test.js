@@ -77,6 +77,12 @@ describe("live test inspection", () => {
         status: "pending",
       })}\n`, "utf-8");
       fs.writeFileSync(path.join(workspace, "coord", "decisions.json"), "[]\n", "utf-8");
+      fs.writeFileSync(path.join(workspace, "coord", "events.jsonl"), `${JSON.stringify({
+        timestamp: "2026-05-08T00:00:01.000Z",
+        event: "arbitration_action_dropped",
+        agent: "ghost-agent",
+        reason: "Arbitration action targeted unknown agent ghost-agent",
+      })}\n`, "utf-8");
       fs.writeFileSync(
         path.join(workspace, "coord", "plan-reviews", "iteration-1", "gemini-live-reviewer.md"),
         "Opening authentication page in your browser. Do you want to continue? [Y/n]:",
@@ -93,6 +99,8 @@ describe("live test inspection", () => {
       assert.strictEqual(info.orchestrator_pid, "12345");
       assert.strictEqual(info.roles.arbitrator.provider, "gemini");
       assert.strictEqual(info.pending_requests.length, 1);
+      assert.strictEqual(info.recent_events.length, 1);
+      assert.strictEqual(info.recent_events[0].event, "arbitration_action_dropped");
       assert.strictEqual(info.detections[0].type, "interactive_auth_prompt");
       assert.ok(info.tail_commands.some((entry) => entry.label === "session"));
       assert.ok(info.tail_commands.some((entry) => entry.label.startsWith("reviewer ")));
@@ -103,6 +111,7 @@ describe("live test inspection", () => {
       assert.match(report, /arbitrator: alias=gemini-live-arbitrator provider=gemini model=gemini-2\.5-flash-lite provider_cli=gemini/);
       assert.match(report, /Tail Commands:/);
       assert.match(report, /reviewer gemini-live-reviewer\.md: tail -F /);
+      assert.match(report, /arbitration_action_dropped agent=ghost-agent/);
       assert.match(report, /interactive_auth_prompt/);
       assert.match(report, /tail -n 120/);
     } finally {

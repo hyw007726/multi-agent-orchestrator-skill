@@ -639,6 +639,67 @@ describe('loop behavior', () => {
     }
   });
 
+  it('logs and events arbitration actions that target unknown agents', () => {
+    let project;
+    try {
+      project = createTempProject('unknown-arbitration-action-');
+
+      const cliPath = path.join(project.root, 'unknown-action-cli.js');
+      fs.writeFileSync(cliPath, [
+        '#!/usr/bin/env node',
+        "'use strict';",
+        'const fs = require("fs");',
+        'const prompt = fs.readFileSync(process.argv[2], "utf-8");',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  console.log(JSON.stringify({',
+        '    approved: [{ request_id: "known-question", decision: "approved", reason: "test" }],',
+        '    rejected: [],',
+        '    actions: [{ type: "soft_restart", agent: "ghost-agent", instruction: "try again" }]',
+        '  }));',
+        '  process.exit(0);',
+        '}',
+        'if (prompt.includes("reviewing the completed output")) { console.log("Unknown action summary."); process.exit(0); }',
+        'console.log("worker noop");',
+      ].join('\n'), 'utf-8');
+      writeProjectConfig(project.root, cliPath);
+      bootstrapProject(project.root, 'Unknown arbitration action test');
+
+      const agentsPath = path.join(project.root, 'coord', 'agents.json');
+      fs.writeFileSync(agentsPath, JSON.stringify({
+        'known-agent': {
+          task: 'Already complete.',
+          status: 'completed',
+          worktree: project.root,
+          cli: 'fake',
+          pid: 0,
+        },
+      }, null, 2) + '\n', 'utf-8');
+      fs.writeFileSync(path.join(project.root, 'coord', 'requests.jsonl'), JSON.stringify({
+        request_id: 'known-question',
+        agent: 'known-agent',
+        type: 'question',
+        priority: 'medium',
+        status: 'pending',
+        content: 'Resolve this request.',
+        created_at: new Date().toISOString(),
+      }) + '\n', 'utf-8');
+
+      const loop = runLoop(project.root);
+      assert.strictEqual(loop.status, 0,
+        `loop failed\nstdout:\n${loop.stdout}\nstderr:\n${loop.stderr}`);
+
+      const log = fs.readFileSync(path.join(project.root, 'coord', 'orchestrator.log'), 'utf-8');
+      assert.match(log, /Arbitration action targeted unknown agent ghost-agent/);
+      const events = readJsonl(path.join(project.root, 'coord', 'events.jsonl'));
+      const dropped = events.find((event) => event.event === 'arbitration_action_dropped');
+      assert.ok(dropped, 'expected arbitration_action_dropped event');
+      assert.strictEqual(dropped.agent, 'ghost-agent');
+      assert.strictEqual(dropped.data.action.type, 'soft_restart');
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
   // 5. Validation failure converts to soft restart and preserves validation command.
   it('validation failure triggers soft restart and preserves validate_cmd', () => {
     let project;

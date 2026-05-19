@@ -112,6 +112,7 @@ function inspectLiveWorkspace(workspace) {
   const agents = readJsonIfExists(path.join(coordDir, "agents.json")) || {};
   const requests = readJsonlIfExists(path.join(coordDir, "requests.jsonl"));
   const decisions = readJsonIfExists(path.join(coordDir, "decisions.json")) || [];
+  const events = readJsonlIfExists(path.join(coordDir, "events.jsonl"));
   const loopPid = readTextIfExists(path.join(coordDir, "orchestrator.instance.lock", "pid"))?.trim() || null;
   const reviewStreams = findReviewStreams(coordDir);
   const logFiles = findLogFiles(coordDir, agents);
@@ -131,6 +132,7 @@ function inspectLiveWorkspace(workspace) {
     agents: summarizeAgents(agents, coordDir),
     pending_requests: requests.filter((request) => request.status === "pending"),
     recent_decisions: Array.isArray(decisions) ? decisions.slice(-5) : [],
+    recent_events: events.slice(-10),
     review_streams: reviewStreams,
     log_files: logFiles,
     tail_commands: tailCommands,
@@ -307,6 +309,16 @@ function formatInspection(info) {
   lines.push("", `Recent decisions: ${info.recent_decisions.length}`);
   for (const decision of info.recent_decisions) {
     lines.push(`  ${decision.request_id || "(no id)"} disposition=${decision.disposition || "?"}`);
+  }
+
+  const recentEvents = info.recent_events || [];
+  if (recentEvents.length > 0) {
+    lines.push("", `Recent events: ${recentEvents.length}`);
+    for (const event of recentEvents.slice(-5)) {
+      const agent = event.agent ? ` agent=${event.agent}` : "";
+      const reason = event.reason ? ` reason=${event.reason}` : "";
+      lines.push(`  ${event.event || "unknown"}${agent}${reason}`);
+    }
   }
 
   if (info.detections.length > 0) {
