@@ -30,7 +30,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
   - `scripts/lib/locking.js:195-203` reads, filters out unparseable lines (with a `console.error`), and then writes the parsed array back. The malformed line is gone forever after the next mutation. If a corrupted line carried a pending request or decision, the audit log silently loses it.
   - *Fix:* Before rewriting, append every dropped line verbatim to `<file>.malformed` (or quarantine via rename). The current `consolidateStagedRequests` policy for staging files is the right pattern — mirror it for the canonical JSONL writers.
 
-- **[C2] `spawn-agent.js` has a window between `child.spawn` and the `agents.json` write where the worker is unmanaged**
+- ~~**[C2] `spawn-agent.js` has a window between `child.spawn` and the `agents.json` write where the worker is unmanaged**~~ — _fixed: `spawn-agent.js` registers a `spawning` PID immediately after `child.unref()` and promotes it to `running` before stdout result emission._
   - `scripts/spawn-agent.js` spawns the detached child, writes the log marker, prints `__SPAWN_RESULT__`, and only then calls `updateJSON(agentsFile, …)`. A crash (EAGAIN, EPIPE on stdout) between the spawn and the JSON write leaves a worker running with no registry entry; `launch-all.js`'s `recoverOrphanForRollback` looks in `agents.json` and finds nothing.
   - *Fix:* Write a minimal `{ pid, cli, started_at, status: "spawning" }` to `agents.json` immediately after `child.unref()`, before any stdout write. Promote to `running` once the marker/templateMode is committed. The orphan-recovery path then has a stable hook.
 

@@ -670,8 +670,51 @@ describe('spawn-agent.js __SPAWN_RESULT__ capture', () => {
 
       const agents = readJson(path.join(project.root, 'coord', 'agents.json'));
       assert.strictEqual(agents['agent-result'].pid, parsed.pid);
+      assert.strictEqual(agents['agent-result'].status, 'running');
+      assert.deepStrictEqual(agents['agent-result'].validation, { state: 'idle' });
 
       cleanupProcess(parsed.pid);
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
+  it('spawn-agent.js writes a spawning registry record before stdout result emission', () => {
+    let project;
+    try {
+      project = createTempProject('spawn-spawning-record-');
+      writeProjectConfig(project.root, fakeCliPath);
+      bootstrapProject(project.root, 'Spawn spawning-record contract project');
+      addKiloWorktree(project.root, 'agent-spawning');
+
+      const promptFile = path.join(project.root, 'worker-prompt.txt');
+      fs.writeFileSync(promptFile, 'ALLOWED PATHS: result/**\nDo the work.', 'utf-8');
+
+      const spawnResult = spawnSync('node', [
+        path.join(repoRoot(), 'scripts', 'spawn-agent.js'),
+        '--agent', 'agent-spawning',
+        '--prompt-file', promptFile,
+        '--coord', './coord',
+        '--cli', 'fake',
+      ], {
+        cwd: project.root,
+        encoding: 'utf-8',
+        env: { ...process.env, SPAWN_AGENT_TEST_EXIT_AFTER_SPAWNING: '1' },
+      });
+
+      assert.strictEqual(spawnResult.status, 42, spawnResult.stderr);
+      assert.strictEqual(parseSpawnResult(spawnResult.stdout), null,
+        'fault injection exits before __SPAWN_RESULT__ is printed');
+
+      const agents = readJson(path.join(project.root, 'coord', 'agents.json'));
+      const record = agents['agent-spawning'];
+      assert.ok(record, 'agents.json should contain the pre-stdout spawning record');
+      assert.strictEqual(record.status, 'spawning');
+      assert.ok(Number.isInteger(record.pid) && record.pid > 0, 'spawning record carries pid');
+      assert.strictEqual(record.cli, 'fake');
+      assert.ok(record.started_at && !Number.isNaN(Date.parse(record.started_at)));
+
+      cleanupProcess(record.pid);
     } finally {
       if (project) project.cleanup();
     }

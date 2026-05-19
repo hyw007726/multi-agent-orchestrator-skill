@@ -93,6 +93,34 @@ function spawnAgent() {
   // shells and child CLIs are stopped together.
   child.unref();
   const spawnedAt = new Date().toISOString();
+  const agentsFile = path.resolve(config.coordDir, "agents.json");
+  if (!fs.existsSync(agentsFile)) fs.writeFileSync(agentsFile, "{}\n");
+
+  try {
+    updateJSON(agentsFile, (agents) => {
+      const existing = agents[config.agent] && typeof agents[config.agent] === "object"
+        ? agents[config.agent]
+        : {};
+      agents[config.agent] = buildAgentRecord(existing, {
+        config,
+        status: "spawning",
+        worktree,
+        processMatch,
+        templateMode,
+        pid: child.pid,
+        spawnedAt,
+      });
+    });
+  } catch (err) {
+    killSpawnedChild(child);
+    console.error(`Error: spawned worker PID ${child.pid} but could not register it in ${agentsFile}: ${err.message}`);
+    process.exit(1);
+  }
+
+  if (process.env.SPAWN_AGENT_TEST_EXIT_AFTER_SPAWNING === "1") {
+    process.exit(42);
+  }
+
   // Capture the live cmdline. Some CLIs mutate `process.title` later, which
   // breaks the basename substring rule pidMatchesCli falls back to; recording
   // the spawn-time cmdline gives safeKill a stronger reference to compare
@@ -106,48 +134,23 @@ function spawnAgent() {
     spawnedAt,
   });
 
-  console.log(`Spawned agent '${config.agent}' in background (PID: ${child.pid})`);
-  console.log(`Template mode: ${templateMode}`);
-  console.log(`Logging output to ${logFile}`);
-  // Machine-readable result line. launch-all.js parses this single JSON object
-  // rather than regex-scraping the human-readable lines above, so wording
-  // changes can't silently break PID capture (which gates rollback).
-  console.log(`__SPAWN_RESULT__ ${JSON.stringify({ pid: child.pid, logFile, templateMode })}`);
-
-  const agentsFile = path.resolve(config.coordDir, "agents.json");
-  if (!fs.existsSync(agentsFile)) fs.writeFileSync(agentsFile, "{}\n");
-
   updateJSON(agentsFile, (agents) => {
     const existing = agents[config.agent] && typeof agents[config.agent] === "object"
       ? agents[config.agent]
       : {};
-    const next = {
-      ...existing,
-      task: taskDescriptionForRecord(config.taskDescription, existing.task),
+    const next = buildAgentRecord(existing, {
+      config,
       status: "running",
       worktree,
-      cli: config.cli,
-      process_match: processMatch,
-      template_mode: templateMode,
-      kilo_mode: config.mode,
+      processMatch,
+      templateMode,
       pid: child.pid,
-      spawned_cmdline: spawnedCmdline,
-      started_at: existing.started_at ?? spawnedAt,
-      current_started_at: spawnedAt,
-      last_spawned_at: spawnedAt,
-      last_heartbeat: spawnedAt,
-      validate_cmd: firstDefined(config.validateCmd, existing.validate_cmd),
-      validation: { state: "idle" },
-      validation_timeout_mins: firstDefined(config.validationTimeoutMins, existing.validation_timeout_mins),
-      timeout_mins: firstDefined(config.timeoutMins, existing.timeout_mins),
-      progress_timeout_mins: firstDefined(config.progressTimeoutMins, existing.progress_timeout_mins),
-      restart_count: existing.restart_count ?? 0,
-      base_ref: firstDefined(config.baseRef, existing.base_ref),
-    };
+      spawnedAt,
+      spawnedCmdline,
+    });
     delete next.exit_log_tail;
     agents[config.agent] = next;
   });
-  console.log(`Registered agent in ${agentsFile}`);
 
   appendEvent(config.coordDir, "agent_spawned", {
     agent: config.agent,
@@ -162,6 +165,15 @@ function spawnAgent() {
       spawned_cmdline: spawnedCmdline || undefined,
     },
   });
+
+  console.log(`Spawned agent '${config.agent}' in background (PID: ${child.pid})`);
+  console.log(`Template mode: ${templateMode}`);
+  console.log(`Logging output to ${logFile}`);
+  // Machine-readable result line. launch-all.js parses this single JSON object
+  // rather than regex-scraping the human-readable lines above, so wording
+  // changes can't silently break PID capture (which gates rollback).
+  console.log(`__SPAWN_RESULT__ ${JSON.stringify({ pid: child.pid, logFile, templateMode })}`);
+  console.log(`Registered agent in ${agentsFile}`);
 
   // Single-use helper — creates the coord/ symlink inside the worktree so workers can
   // reach the orchestration state via the documented `coord/...` relative paths.
@@ -199,6 +211,49 @@ function taskDescriptionForRecord(taskDescription, existingTask) {
     return taskDescription;
   }
   return existingTask ?? "Initial prompt";
+}
+
+function buildAgentRecord(existing, { config, status, worktree, processMatch, templateMode, pid, spawnedAt, spawnedCmdline }) {
+  const next = {
+    ...existing,
+    task: taskDescriptionForRecord(config.taskDescription, existing.task),
+    status,
+    worktree,
+    cli: config.cli,
+    process_match: processMatch,
+    template_mode: templateMode,
+    kilo_mode: config.mode,
+    pid,
+    started_at: existing.started_at ?? spawnedAt,
+    current_started_at: spawnedAt,
+    last_spawned_at: spawnedAt,
+    last_heartbeat: spawnedAt,
+    validate_cmd: firstDefined(config.validateCmd, existing.validate_cmd),
+    validation: { state: "idle" },
+    validation_timeout_mins: firstDefined(config.validationTimeoutMins, existing.validation_timeout_mins),
+    timeout_mins: firstDefined(config.timeoutMins, existing.timeout_mins),
+    progress_timeout_mins: firstDefined(config.progressTimeoutMins, existing.progress_timeout_mins),
+    restart_count: existing.restart_count ?? 0,
+    base_ref: firstDefined(config.baseRef, existing.base_ref),
+  };
+  if (spawnedCmdline !== undefined) {
+    next.spawned_cmdline = spawnedCmdline;
+  }
+  delete next.exit_log_tail;
+  return next;
+}
+
+function killSpawnedChild(child) {
+  if (!child || !Number.isInteger(child.pid) || child.pid <= 0) return;
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+      return;
+    } catch {}
+  }
+  try {
+    process.kill(child.pid, "SIGTERM");
+  } catch {}
 }
 
 function writeSpawnMarker(fd, { agent, pid, cli, templateMode, spawnedAt }) {
