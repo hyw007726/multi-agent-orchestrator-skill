@@ -149,9 +149,17 @@ describe('locking primitives', () => {
     for (const record of parsed) {
       assert.ok(typeof record.id === 'number', `record should have numeric id: ${JSON.stringify(record)}`);
     }
+
+    const malformedLines = fs.readFileSync(`${jsonlFile}.malformed`, 'utf-8').split('\n').filter(Boolean);
+    assert.deepStrictEqual(malformedLines, [
+      'not-json-at-all',
+      '\`\`\`',
+      '  {"id": 2, "malformed": true  ',
+      '\`\`\`json',
+    ]);
   });
 
-  it('updateJSONL never writes malformed lines back and preserves write order', () => {
+  it('updateJSONL quarantines malformed lines before rewriting and preserves write order', () => {
     const jsonlFile = path.join(tmpDir, 'data3.jsonl');
     // Write only malformed/fenced lines
     fs.writeFileSync(jsonlFile, [
@@ -170,6 +178,13 @@ describe('locking primitives', () => {
     const lines = fs.readFileSync(jsonlFile, 'utf-8').split('\n').filter(l => l.trim() !== '');
     assert.strictEqual(lines.length, 1);
     assert.deepStrictEqual(JSON.parse(lines[0]), { fresh: 1 });
+
+    const malformedLines = fs.readFileSync(`${jsonlFile}.malformed`, 'utf-8').split('\n').filter(Boolean);
+    assert.deepStrictEqual(malformedLines, [
+      'not json',
+      '\`\`\`python',
+      '\`\`\`',
+    ]);
   });
 
   it('writeAtomic leaves no tmp files', () => {

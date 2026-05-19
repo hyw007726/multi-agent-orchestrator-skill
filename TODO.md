@@ -26,7 +26,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
   - `scripts/orchestrator-loop.js:1616` calls `spawnSync` synchronously inside the main loop. While a worker's test suite runs, every other agent's liveness check, progress timeout, and arbitration is paused; abort flag detection is also delayed.
   - *Fix:* Run validation asynchronously, tracked by an `agent.validation` state field (idle / running / passed / failed). Keep the per-agent serialization, but let the main tick continue supervising peers. The hard cap can drop because the main loop is no longer at risk.
 
-- **[C2] `updateJSONL` permanently drops malformed lines on rewrite**
+- ~~**[C2] `updateJSONL` permanently drops malformed lines on rewrite**~~ — _fixed: canonical JSONL rewrites append skipped malformed/fenced lines verbatim to `<file>.malformed` before writing the cleaned file._
   - `scripts/lib/locking.js:195-203` reads, filters out unparseable lines (with a `console.error`), and then writes the parsed array back. The malformed line is gone forever after the next mutation. If a corrupted line carried a pending request or decision, the audit log silently loses it.
   - *Fix:* Before rewriting, append every dropped line verbatim to `<file>.malformed` (or quarantine via rename). The current `consolidateStagedRequests` policy for staging files is the right pattern — mirror it for the canonical JSONL writers.
 

@@ -189,17 +189,27 @@ function updateJSONL(filePath, mutate) {
   const release = acquireLock(filePath, LOCK_OPTS);
   try {
     const raw = fs.readFileSync(filePath, "utf-8");
-    const data = raw.split("\n").map(l => l.trim()).filter(l => l !== "" && !l.startsWith("\`\`\`")).reduce((acc, l) => {
+    const droppedLines = [];
+    const data = raw.split("\n").reduce((acc, line) => {
+      const trimmed = line.trim();
+      if (trimmed === "") return acc;
+      if (trimmed.startsWith("\`\`\`")) {
+        droppedLines.push(line);
+        console.error(`Warning: updateJSONL quarantining malformed line: ${line}`);
+        return acc;
+      }
       try {
-        acc.push(JSON.parse(l));
+        acc.push(JSON.parse(trimmed));
       } catch (e) {
-        console.error(`Warning: updateJSONL skipping malformed line: ${l}`);
+        droppedLines.push(line);
+        console.error(`Warning: updateJSONL quarantining malformed line: ${line}`);
       }
       return acc;
     }, []);
     const result = mutate(data);
     const toWrite = result === undefined ? data : result;
     const content = toWrite.map((item) => JSON.stringify(item)).join("\n") + (toWrite.length > 0 ? "\n" : "");
+    quarantineMalformedJSONLLines(filePath, droppedLines);
     writeAtomic(filePath, content);
   } finally {
     release();
@@ -217,6 +227,12 @@ function appendJSONL(filePath, items) {
   } finally {
     release();
   }
+}
+
+function quarantineMalformedJSONLLines(filePath, droppedLines) {
+  if (!Array.isArray(droppedLines) || droppedLines.length === 0) return;
+  const quarantinePath = `${filePath}.malformed`;
+  fs.appendFileSync(quarantinePath, droppedLines.join("\n") + "\n", "utf-8");
 }
 
 // Unlocked read — fine for snapshots used to drive iteration / decisions when the actual
