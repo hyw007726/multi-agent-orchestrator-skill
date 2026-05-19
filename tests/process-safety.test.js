@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { pidMatchesCli, safeKill, REFUSAL_FALLBACK_THRESHOLD, _resetRefusalCounts } = require('../scripts/lib/process');
+const { pidMatchesCli, getProcessCommandMap, safeKill, REFUSAL_FALLBACK_THRESHOLD, _resetRefusalCounts } = require('../scripts/lib/process');
 const { waitFor, cleanupProcess } = require('./helpers/temp-project');
 
 describe('process safety helpers', () => {
@@ -268,6 +268,46 @@ describe('process safety helpers', () => {
     } finally {
       cleanupProcess(child);
       try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  // 9. getProcessCommandMap returns a populated pid→cmdline map and
+  //    pidMatchesCli consults it instead of spawning its own ps.
+  it('pidMatchesCli reads from a per-cycle cmdMap and avoids the per-pid ps fan-out', {
+    skip: process.platform === 'win32' ? 'ps -eo is POSIX-only' : false,
+  }, async () => {
+    const child = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    try {
+      const cmdMap = getProcessCommandMap();
+      assert.ok(cmdMap instanceof Map, 'cmdMap should be a Map');
+      assert.ok(cmdMap.size > 0, 'cmdMap should contain at least the current node process');
+      assert.ok(cmdMap.has(child.pid), `cmdMap should include the spawned PID ${child.pid}`);
+      const recorded = cmdMap.get(child.pid);
+      assert.match(recorded, /node/, `cmdline should contain 'node', got: ${recorded}`);
+
+      // With the map provided, the match decision is purely in-memory — no
+      // per-pid ps is invoked. (We can't observe non-invocation directly,
+      // but we can prove the lookup uses the map by passing a synthetic
+      // map that "lies" about a non-existent pid: pidMatchesCli should
+      // accept the map's claim.)
+      const syntheticPid = 999999999;
+      const lyingMap = new Map([[syntheticPid, '/usr/bin/node fake-script.js']]);
+      assert.strictEqual(
+        pidMatchesCli(syntheticPid, 'node', { cmdMap: lyingMap }),
+        true,
+        'cmdMap entry should drive the decision without falling through to ps',
+      );
+
+      // And a real pid not in the map falls back to per-pid ps so a worker
+      // spawned mid-cycle still passes liveness.
+      const emptyMap = new Map();
+      assert.strictEqual(
+        pidMatchesCli(child.pid, 'node', { cmdMap: emptyMap }),
+        true,
+        'a real PID missing from the cmdMap must fall back to per-pid ps',
+      );
+    } finally {
+      cleanupProcess(child);
     }
   });
 });

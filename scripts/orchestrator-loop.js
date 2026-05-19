@@ -3,9 +3,10 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const crypto = require("crypto");
 const { spawn, spawnSync } = require("child_process");
 const { loadConfig } = require("./lib/config");
-const { pidMatchesCli, safeKill } = require("./lib/process");
+const { pidMatchesCli, getProcessCommandMap, safeKill } = require("./lib/process");
 const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL, appendJSONL } = require("./lib/locking");
 const { renderRestartPrompt } = require("./lib/restart-prompt");
 const { STATUS, transitionAgentStatus, parkAgentForAttention, parkRationale } = require("./lib/status");
@@ -108,12 +109,18 @@ async function runLoop() {
       const snapshot = readJSON(paths.agents);
       let allRequests = readJSONL(paths.requests);
 
+      // Single ps invocation for this tick. Every isAgentProcessAlive call
+      // below reads from the resulting pid→cmdline map instead of spawning
+      // its own `ps -p <pid>`. With N running agents the previous shape was
+      // N+ subprocesses per cycle just for liveness checks.
+      const cmdMap = getProcessCommandMap();
+
       for (const name in snapshot) {
         if (snapshot[name].status !== "running") continue;
         const agent = snapshot[name];
 
         // Process gone? Check whether the agent requested completion first.
-        if (!isAgentProcessAlive(agent, parsedConfig)) {
+        if (!isAgentProcessAlive(agent, parsedConfig, cmdMap)) {
           const agentLogFile = path.join(config.coordDir, "logs", `${name}.log`);
           const stagedRequests = readStagedRequests(paths);
           const inLog = allRequests.some(
@@ -184,19 +191,23 @@ async function runLoop() {
         }
 
         // Progress timeout: process is alive, but git-visible work is not changing.
+        // Per-tick we only compute a cheap content hash of `git status` — one git
+        // invocation per agent instead of the previous four. The detailed diff
+        // snapshot (4 git calls) is built on-demand only when a progress-timeout
+        // request is actually about to be written, which is rare.
         const progressMins = agent.progress_timeout_mins || parsedConfig.default_progress_timeout_mins;
-        const currentDiff = readDiffSnapshot(agent.worktree);
+        const currentDiffHash = readDiffHash(agent.worktree);
         const heartbeat = readProgressHeartbeat(paths.progressDir, name);
         const tracker = agentProgress[name];
         if (!tracker) {
           agentProgress[name] = {
-            last_diff: currentDiff,
+            last_diff_hash: currentDiffHash,
             last_progress_time: Date.now(),
             last_heartbeat_mtime: heartbeat.mtimeMs || 0,
             heartbeat_grace_count: 0,
           };
-        } else if (tracker.last_diff !== currentDiff) {
-          tracker.last_diff = currentDiff;
+        } else if (tracker.last_diff_hash !== currentDiffHash) {
+          tracker.last_diff_hash = currentDiffHash;
           tracker.last_progress_time = Date.now();
           tracker.last_heartbeat_mtime = heartbeat.mtimeMs || tracker.last_heartbeat_mtime || 0;
           tracker.heartbeat_grace_count = 0;
@@ -228,12 +239,15 @@ async function runLoop() {
             }
 
             log(`Agent ${name} stuck for ${progressMins} mins (no code changes). Writing progress-timeout request for arbitration.`);
+            // Now — and only now — pay for the full multi-call diff snapshot
+            // that's about to be embedded in the request.
+            const detailedDiff = readDiffSnapshot(agent.worktree);
             const request = buildProgressTimeoutRequest({
               agentName: name,
               agent,
               progressMins,
               logFile,
-              diffSnapshot: currentDiff,
+              diffSnapshot: detailedDiff,
               heartbeat,
               paths,
               allRequests,
@@ -1460,8 +1474,8 @@ function shouldAutoLaunchDashboard(setting) {
 
 // ─── Process / git helpers ───────────────────────────────────────────────────
 
-function isAgentProcessAlive(agent, parsedConfig) {
-  return pidMatchesCli(agent?.pid, expectedProcessForAgent(agent, parsedConfig), { recordedCmdline: agent?.spawned_cmdline });
+function isAgentProcessAlive(agent, parsedConfig, cmdMap) {
+  return pidMatchesCli(agent?.pid, expectedProcessForAgent(agent, parsedConfig), { recordedCmdline: agent?.spawned_cmdline, cmdMap });
 }
 
 function expectedProcessForAgent(agent, parsedConfig) {
@@ -1496,6 +1510,21 @@ function readDiffSnapshot(worktree) {
     const commits = gitStdout(worktree, ["log", "-n", "5", "--oneline"]);
     const untracked = gitStdout(worktree, ["ls-files", "--others", "--exclude-standard"]);
     return `${unstaged}\n${staged}\n${commits}\n${untracked}`;
+  } catch { return ""; }
+}
+
+// Cheap per-tick change-detection: one git invocation, hashed. The porcelain v2
+// `--branch` output captures both the working-tree state (modified/staged/
+// untracked, fully enumerated with `-uall`) and the current HEAD oid (via the
+// `# branch.oid <sha>` header), so a worker either rewriting files or landing
+// a commit changes the hash. Only the equality is meaningful; the full
+// snapshot for progress-timeout-request payloads still goes through
+// readDiffSnapshot when it's actually needed.
+function readDiffHash(worktree) {
+  if (!fs.existsSync(worktree)) return "";
+  try {
+    const status = gitStdout(worktree, ["status", "--porcelain=v2", "--branch", "-uall"]);
+    return crypto.createHash("sha1").update(status).digest("hex");
   } catch { return ""; }
 }
 

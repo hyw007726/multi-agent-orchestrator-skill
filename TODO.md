@@ -14,7 +14,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
 
 1. **[C2] `runValidation` blocks the entire loop for up to 30 minutes** — every other agent goes unsupervised while a single agent's tests run. (Critical → "`runValidation` can freeze the orchestrator")
 2. ~~**[C2] `processApprovals` is not crash-atomic**~~ — _fixed: flip-then-audit ordering in `processApprovals`._
-3. **[C2] Per-cycle `ps`/`git` subprocess storm** — `pidMatchesCli` shells one `ps` per agent per tick and `readDiffSnapshot` shells four `git`s per agent per tick. (Medium → "Per-cycle `pidMatchesCli` and `readDiffSnapshot` subprocess storm")
+3. ~~**[C2] Per-cycle `ps`/`git` subprocess storm**~~ — _fixed: single `ps -eo` per tick + `cmdMap`; `readDiffHash` (1 git/agent) replaces `readDiffSnapshot` for change-detection._
 4. ~~**[C2] `acquireLock` race between `mkdir` and PID-file write**~~ — _fixed: stage-and-rename in `acquireLock`, atomic release._
 5. ~~**[C2] Worker-coord symlink failures are swallowed**~~ — _fixed: `ensureCoordSymlink` now exits non-zero with errno + workaround instructions._
 
@@ -39,10 +39,6 @@ Pointers into the detailed entries below; full context and C-tag are on the body
   - *Fix:* Before `git clean -fd`, scan for `.gitmodules` and `submodule.*` entries in `git config --file .git/config`. If any exist, downgrade to `git clean -fdx --exclude="<submodule-paths>"` or refuse the hard restart and park the agent.
 
 ## Medium (UX gaps, missing safety nets)
-
-- **[C2] Per-cycle `pidMatchesCli` and `readDiffSnapshot` subprocess storm**
-  - For each running agent each tick, `isAgentProcessAlive` shells one `ps` (`scripts/lib/process.js:24`) and `readDiffSnapshot` shells four `git` invocations (`scripts/orchestrator-loop.js:1471-1474`). With N agents and a 1-second poll floor that is 5N subprocesses per second, all `spawnSync`, all blocking the event loop.
-  - *Fix:* (1) Replace per-agent `ps` with a single `ps -eo pid=,command=` per cycle (build a pid→cmdline map once, then look up). Or use `process.kill(pid, 0)` for liveness and only fall back to `ps` when refusing to signal. (2) Replace the four `git` calls per agent with a single `git status --porcelain=v1 -uall` + cheap hash; compute the detailed stat blocks only when the hash changes or when a request actually needs them.
 
 - **[C2] `acquireInstanceLock` calls `process.exit(1)` from a library helper**
   - `scripts/lib/locking.js:29, 52` exits the process directly when it detects a competing loop. That makes the helper untestable in-process and leaves no room for callers to do their own cleanup (release temp files, flush logs, etc.).

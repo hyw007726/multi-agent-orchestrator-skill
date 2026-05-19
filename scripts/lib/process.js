@@ -33,6 +33,33 @@ function getProcessCommand(pid) {
   return trimmed || null;
 }
 
+// Returns a Map<pid, cmdline> built from one `ps -eo pid=,command=` invocation.
+// Callers that need to liveness-check many pids per tick (the orchestrator
+// loop iterates every running agent on every cycle) pass the returned map to
+// pidMatchesCli so each lookup is in-memory instead of spawning ps per pid.
+// Empty map on Windows or when ps fails — the caller's getProcessCommand
+// fallback inside pidMatchesCli still covers those cases.
+function getProcessCommandMap() {
+  if (process.platform === "win32") return new Map();
+  const result = spawnSync("ps", ["-eo", "pid=,command="], {
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 2000,
+  });
+  if (!result || result.status !== 0 || !result.stdout) return new Map();
+  const map = new Map();
+  for (const rawLine of result.stdout.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const match = line.match(/^(\d+)\s+(.*)$/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (!Number.isInteger(pid)) continue;
+    map.set(pid, match[2]);
+  }
+  return map;
+}
+
 // PIDs recycle. Before signalling, confirm the PID still belongs to a process whose
 // cmdline matches what we spawned. Returns true if we can confidently send signals,
 // false if the PID is gone or has been recycled to something unrelated.
@@ -42,13 +69,23 @@ function getProcessCommand(pid) {
 // CLIs mutate `process.title` at runtime, breaking the substring rule. When
 // the live cmdline still starts with the same binary path as the recorded one,
 // we accept the match.
-function pidMatchesCli(pid, expectedCli, { recordedCmdline } = {}) {
+function pidMatchesCli(pid, expectedCli, { recordedCmdline, cmdMap } = {}) {
   const normalizedPid = normalizePid(pid);
   if (!normalizedPid || !expectedCli) return false;
   if (process.platform === "win32") {
     try { process.kill(normalizedPid, 0); return true; } catch { return false; }
   }
-  const cmdline = getProcessCommand(normalizedPid);
+  // Prefer the per-cycle ps map if the caller built one. A miss in the map
+  // means either the pid is gone or the map was captured before this process
+  // came into being — fall back to a per-pid ps so freshly-spawned workers
+  // aren't reported dead just because we caught them between ps snapshots.
+  let cmdline = null;
+  if (cmdMap instanceof Map) {
+    cmdline = cmdMap.get(normalizedPid) ?? null;
+    if (!cmdline) cmdline = getProcessCommand(normalizedPid);
+  } else {
+    cmdline = getProcessCommand(normalizedPid);
+  }
   if (!cmdline) return false;
 
   if (cmdline.toLowerCase().includes(expectedCli.toLowerCase())) return true;
@@ -206,6 +243,7 @@ function _resetRefusalCounts() {
 
 module.exports = {
   getProcessCommand,
+  getProcessCommandMap,
   pidMatchesCli,
   safeKill,
   REFUSAL_FALLBACK_THRESHOLD,
