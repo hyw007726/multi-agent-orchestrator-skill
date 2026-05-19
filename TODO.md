@@ -44,7 +44,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
   - `scripts/lib/locking.js:29, 52` exits the process directly when it detects a competing loop. That makes the helper untestable in-process and leaves no room for callers to do their own cleanup (release temp files, flush logs, etc.).
   - *Fix:* Throw a structured error (`code: "ELOCKED"`, attach the detected PID/cmd) and let `orchestrator-loop.js` format the message and exit. Update `tests/locking.test.js` to assert against the thrown error.
 
-- **[C2] `pidMatchesCli` substring match is permissive**
+- ~~**[C2] `pidMatchesCli` substring match is permissive**~~ - _fixed: matching now uses the first argv token basename, with a recorded-cmdline-gated fallback for shell/node wrappers and regression tests for filename false positives._
   - `scripts/lib/process.js:54` does `cmdline.toLowerCase().includes(expectedCli.toLowerCase())`. An unrelated process whose cmdline happens to contain the CLI name (e.g., `vim cli-templates/codex.md`, `tail codex.log`) matches. Combined with PID recycling this can lead the loop into signalling the wrong process before the events-log fallback even engages.
   - *Fix:* Compare the basename of the first argv token against `expectedCli` (path-aware), and only fall back to substring when the recorded `spawned_cmdline` also matches. Add tests for the false-positive cases.
 

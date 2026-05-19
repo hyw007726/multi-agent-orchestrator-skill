@@ -37,6 +37,30 @@ describe('process safety helpers', () => {
     }
   });
 
+  it('pidMatchesCli compares the first argv basename instead of any substring', () => {
+    const pid = 42424242;
+    assert.strictEqual(
+      pidMatchesCli(pid, 'codex', { cmdMap: new Map([[pid, '/opt/homebrew/bin/codex exec --json']]) }),
+      true,
+      'basename of the first argv token should match',
+    );
+    assert.strictEqual(
+      pidMatchesCli(pid, '/opt/homebrew/bin/codex', { cmdMap: new Map([[pid, 'codex exec --json']]) }),
+      true,
+      'expected CLI may include a path',
+    );
+    assert.strictEqual(
+      pidMatchesCli(pid, 'codex', { cmdMap: new Map([[pid, 'vim cli-templates/codex.md']]) }),
+      false,
+      'a later filename containing the CLI name must not match',
+    );
+    assert.strictEqual(
+      pidMatchesCli(pid, 'codex', { cmdMap: new Map([[pid, 'tail /tmp/codex.log']]) }),
+      false,
+      'a log filename containing the CLI name must not match',
+    );
+  });
+
   // 3. safeKill skips when expectedCli does not match the process.
   it('safeKill skips on CLI mismatch and returns false', async () => {
     const child = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], {
@@ -157,22 +181,35 @@ describe('process safety helpers', () => {
     }
   });
 
-  // 6. pidMatchesCli accepts the recorded cmdline as a stronger signal.
-  it('pidMatchesCli matches when expectedCli is wrong but recordedCmdline shares the binary path', async () => {
-    const child = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-    try {
-      // expectedCli intentionally wrong; recordedCmdline shares the binary path
-      // (the node executable) so the match should succeed via the recorded fallback.
-      const liveCmdline = spawn('node', ['-e', 'process.stdout.write(process.argv0)']) ? null : null;
-      // Compute the recorded cmdline from the spawned PID via /proc-like ps; reuse our helper.
-      const { getProcessCommand } = require('../scripts/lib/process');
-      const recorded = getProcessCommand(child.pid);
-      assert.ok(recorded, 'expected ps to return a cmdline');
-      const result = pidMatchesCli(child.pid, 'absolutely-not-the-process', { recordedCmdline: recorded });
-      assert.strictEqual(result, true);
-    } finally {
-      cleanupProcess(child);
-    }
+  // 6. pidMatchesCli accepts the recorded cmdline fallback only when the
+  //    expected CLI appears as a token in both live and recorded command lines.
+  it('pidMatchesCli gates wrapper substring fallback on the recorded cmdline', () => {
+    const pid = 52525252;
+    const recorded = '/bin/sh -c codex exec /tmp/original-prompt.txt';
+    assert.strictEqual(
+      pidMatchesCli(pid, 'codex', {
+        recordedCmdline: recorded,
+        cmdMap: new Map([[pid, '/bin/sh -c codex exec /tmp/current-prompt.txt']]),
+      }),
+      true,
+      'shell wrappers should match when both live and recorded cmdlines contain the CLI token',
+    );
+    assert.strictEqual(
+      pidMatchesCli(pid, 'codex', {
+        recordedCmdline: recorded,
+        cmdMap: new Map([[pid, '/bin/sh -c tail /tmp/codex.log']]),
+      }),
+      false,
+      'matching wrapper binary alone is not enough when the live command only mentions a codex log file',
+    );
+    assert.strictEqual(
+      pidMatchesCli(pid, 'not-codex', {
+        recordedCmdline: recorded,
+        cmdMap: new Map([[pid, '/bin/sh -c codex exec /tmp/current-prompt.txt']]),
+      }),
+      false,
+      'the recorded fallback must also match the expected CLI token',
+    );
   });
 
   // 7. After REFUSAL_FALLBACK_THRESHOLD refused checks, safeKill signals anyway

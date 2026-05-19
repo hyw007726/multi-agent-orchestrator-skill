@@ -65,10 +65,11 @@ function getProcessCommandMap() {
 // false if the PID is gone or has been recycled to something unrelated.
 //
 // `recordedCmdline` (optional) is the full `ps -o command=` output captured at
-// spawn time. It's a stronger signal than the template basename because some
-// CLIs mutate `process.title` at runtime, breaking the substring rule. When
-// the live cmdline still starts with the same binary path as the recorded one,
-// we accept the match.
+// spawn time. It's a stronger signal than the template basename because shell
+// and node wrappers often make the live first argv token `sh` or `node` while
+// the actual CLI appears later in the command. In that case, require both the
+// live and recorded cmdlines to contain the expected CLI as a path-aware token
+// before accepting the fallback.
 function pidMatchesCli(pid, expectedCli, { recordedCmdline, cmdMap } = {}) {
   const normalizedPid = normalizePid(pid);
   if (!normalizedPid || !expectedCli) return false;
@@ -88,12 +89,22 @@ function pidMatchesCli(pid, expectedCli, { recordedCmdline, cmdMap } = {}) {
   }
   if (!cmdline) return false;
 
-  if (cmdline.toLowerCase().includes(expectedCli.toLowerCase())) return true;
+  const liveBin = firstArgBasename(cmdline);
+  const expectedBin = cliBasename(expectedCli);
+  if (liveBin && expectedBin && liveBin === expectedBin) return true;
+
   if (typeof recordedCmdline === "string" && recordedCmdline.trim() !== "") {
     if (cmdline === recordedCmdline) return true;
-    const liveBin = firstToken(cmdline);
-    const recordedBin = firstToken(recordedCmdline);
-    if (liveBin && liveBin === recordedBin) return true;
+    const recordedBin = firstArgBasename(recordedCmdline);
+    if (
+      liveBin &&
+      recordedBin &&
+      liveBin === recordedBin &&
+      commandLineContainsCliToken(cmdline, expectedBin) &&
+      commandLineContainsCliToken(recordedCmdline, expectedBin)
+    ) {
+      return true;
+    }
   }
   return false;
 }
@@ -224,9 +235,30 @@ function eventsConfirmWeSpawned(coordDir, pid) {
   return false;
 }
 
-function firstToken(value) {
-  const match = typeof value === "string" ? value.match(/\S+/) : null;
-  return match ? match[0] : "";
+function commandLineContainsCliToken(cmdline, expectedBin) {
+  if (!expectedBin) return false;
+  return commandLineTokens(cmdline).some((token) => cliBasename(token) === expectedBin);
+}
+
+function commandLineTokens(value) {
+  if (typeof value !== "string") return [];
+  const tokens = [];
+  const re = /"([^"]+)"|'([^']+)'|(\S+)/g;
+  let match;
+  while ((match = re.exec(value)) !== null) {
+    tokens.push(match[1] || match[2] || match[3] || "");
+  }
+  return tokens;
+}
+
+function firstArgBasename(value) {
+  return cliBasename(commandLineTokens(value)[0] || "");
+}
+
+function cliBasename(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return path.basename(text).replace(/\.(cmd|exe)$/i, "").toLowerCase();
 }
 
 function normalizePid(pid) {
