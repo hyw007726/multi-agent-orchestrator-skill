@@ -246,8 +246,13 @@ describe('loop behavior', () => {
       const untrackedFile = path.join(worktree, 'new-file.data');
       fs.writeFileSync(untrackedFile, 'untracked data\n', 'utf-8');
 
-      // Create the abort flag.
-      fs.writeFileSync(path.join(project.root, 'coord', 'abort.flag'), 'stop\n', 'utf-8');
+      // Create an active abort flag. The loop stamps current_run.json at
+      // startup, so a pre-existing test flag needs a written_at newer than
+      // that startup time to model a dashboard Ctrl+C.
+      fs.writeFileSync(path.join(project.root, 'coord', 'abort.flag'), JSON.stringify({
+        pid: process.pid,
+        written_at: new Date(Date.now() + 1000).toISOString(),
+      }) + '\n', 'utf-8');
 
       const loop = runLoop(project.root);
       assert.strictEqual(loop.status, 0,
@@ -271,6 +276,61 @@ describe('loop behavior', () => {
       const agents = readJson(path.join(coordDir, 'agents.json'));
       assert.strictEqual(agents['agent-abort'].status, 'terminated');
       assert.match(loop.stdout, /Coordination directory preserved/);
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
+  it('ignores stale abort flags from a prior run on boot', () => {
+    let project;
+    try {
+      project = createTempProject('stale-abort-');
+
+      const cliPath = path.join(project.root, 'stale-abort-cli.js');
+      fs.writeFileSync(cliPath, [
+        '#!/usr/bin/env node',
+        "'use strict';",
+        'console.log("stale abort noop");',
+      ].join('\n'), 'utf-8');
+      writeProjectConfig(project.root, cliPath);
+      bootstrapProject(project.root, 'Stale abort flag test project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.tasks = {
+        'agent-done': {
+          description: 'Already completed before a new loop starts.',
+          cli: 'fake',
+          allowed_paths: ['*.txt'],
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2), 'utf-8');
+      fs.writeFileSync(path.join(project.root, 'coord', 'agents.json'), JSON.stringify({
+        'agent-done': {
+          task: 'Already completed before a new loop starts.',
+          status: 'completed',
+          worktree: project.root,
+          cli: 'fake',
+          pid: 0,
+        },
+      }, null, 2) + '\n', 'utf-8');
+      fs.writeFileSync(path.join(project.root, 'coord', 'abort.flag'), JSON.stringify({
+        pid: 123,
+        written_at: '2000-01-01T00:00:00.000Z',
+      }) + '\n', 'utf-8');
+
+      const loop = runLoop(project.root);
+      assert.strictEqual(loop.status, 0,
+        `orchestrator loop failed\nstdout:\n${loop.stdout}\nstderr:\n${loop.stderr}`);
+
+      const coordDir = path.join(project.root, 'coord');
+      assert.strictEqual(fs.existsSync(path.join(coordDir, 'abort.flag')), false,
+        'stale abort flag should be removed after being ignored');
+      const agents = readJson(path.join(coordDir, 'agents.json'));
+      assert.strictEqual(agents['agent-done'].status, 'completed');
+      const log = fs.readFileSync(path.join(coordDir, 'orchestrator.log'), 'utf-8');
+      assert.match(log, /Ignoring stale abort\.flag/);
+      assert.doesNotMatch(log, /ABORT SIGNAL RECEIVED/);
     } finally {
       if (project) project.cleanup();
     }

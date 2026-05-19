@@ -61,6 +61,8 @@ async function runLoop() {
     throw err;
   }
   const runId = instanceLock.runId;
+  const currentRunStartedAt = readJSONIfExists(path.join(config.coordDir, "current_run.json"))?.started_at || null;
+  const abortFlagPath = path.join(config.coordDir, "abort.flag");
   const releaseInstanceLock = () => { instanceLock.release(); };
   process.once("SIGTERM", () => { releaseInstanceLock(); process.exit(0); });
   process.once("SIGINT",  () => { releaseInstanceLock(); process.exit(0); });
@@ -94,11 +96,18 @@ async function runLoop() {
     let cycleHadPending = false;
     try {
       // ── Abort flag (soft stop — preserves worktrees) ─────────────────────
-      if (fs.existsSync(path.join(config.coordDir, "abort.flag"))) {
+      const abortFlag = inspectAbortFlag(abortFlagPath, currentRunStartedAt);
+      if (abortFlag.stale) {
+        log(`Ignoring stale abort.flag written at ${abortFlag.writtenAt || "(unknown)"} before current run started at ${currentRunStartedAt || "(unknown)"}; removing it.`);
+        try { fs.unlinkSync(abortFlagPath); } catch {}
+      } else if (abortFlag.active) {
         log("ABORT SIGNAL RECEIVED. Stopping running agents (worktrees preserved)...");
         const toKill = [];
         const validationsToKill = [];
-        appendEvent(config.coordDir, "abort_requested", { reason: "abort.flag detected" });
+        appendEvent(config.coordDir, "abort_requested", {
+          reason: "abort.flag detected",
+          data: { pid: abortFlag.pid || undefined, written_at: abortFlag.writtenAt || undefined },
+        });
         updateJSON(paths.agents, (agents) => {
           for (const name in agents) {
             if (agents[name].status === "running") {
@@ -119,7 +128,7 @@ async function runLoop() {
         for (const { pid, expectedProcess, recordedCmdline, name } of toKill) safeKill({ pid, expectedCli: expectedProcess, recordedCmdline, log, coordDir: config.coordDir, agent: name });
         for (const { pid, name } of validationsToKill) killValidationRunner(pid, name, log);
         log("All running agents stopped. Worktree contents preserved (run `git status` in each worktree to inspect/discard).");
-        try { fs.unlinkSync(path.join(config.coordDir, "abort.flag")); } catch {}
+        try { fs.unlinkSync(abortFlagPath); } catch {}
         aborted = true;
         break;
       }
@@ -313,7 +322,7 @@ async function runLoop() {
           callerContext,
           log,
         });
-        const response = await callOrchestratorCli(prompt, parsedConfig, config.maxRetries, log, path.join(config.coordDir, "abort.flag"));
+        const response = await callOrchestratorCli(prompt, parsedConfig, config.maxRetries, log, abortFlagPath);
 
         if (!response) {
           consecutiveCliFailures++;
@@ -1582,6 +1591,41 @@ function readTextIfExists(filePath) {
   } catch {
     return "";
   }
+}
+
+function inspectAbortFlag(abortFlagPath, runStartedAt) {
+  if (!fs.existsSync(abortFlagPath)) return { active: false, stale: false };
+
+  let stat;
+  try {
+    stat = fs.statSync(abortFlagPath);
+  } catch {
+    return { active: false, stale: false };
+  }
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(abortFlagPath, "utf-8"));
+  } catch {}
+
+  const pid = parsed && Number.isInteger(Number(parsed.pid)) && Number(parsed.pid) > 0
+    ? Number(parsed.pid)
+    : null;
+  let writtenAt = parsed && typeof parsed.written_at === "string" ? parsed.written_at : "";
+  let writtenMs = Date.parse(writtenAt);
+  if (!Number.isFinite(writtenMs)) {
+    writtenMs = stat.mtimeMs;
+    writtenAt = new Date(stat.mtimeMs).toISOString();
+  }
+
+  const runStartedMs = Date.parse(runStartedAt);
+  const stale = Number.isFinite(runStartedMs) && Number.isFinite(writtenMs) && writtenMs < runStartedMs;
+  return {
+    active: !stale,
+    stale,
+    pid,
+    writtenAt,
+  };
 }
 
 // Shared — called at the very beginning of each runLoop cycle and from the

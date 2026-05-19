@@ -34,7 +34,12 @@ process.on("SIGINT", () => {
     (answer) => {
       rl.close();
       if (answer.trim().toLowerCase() === "y") {
-        try { fs.writeFileSync(abortFlagFile, "true"); } catch {}
+        try {
+          fs.writeFileSync(abortFlagFile, JSON.stringify({
+            pid: process.pid,
+            written_at: new Date().toISOString(),
+          }) + "\n");
+        } catch {}
         console.log("Abort flag written. Orchestrator loop will stop agents and exit.");
       } else {
         console.log("Abort cancelled. Closing dashboard only.");

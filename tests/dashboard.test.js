@@ -127,7 +127,9 @@ describe('dashboard CLI', () => {
 
       assert.strictEqual(closed.code, 0);
       assert.match(closed.output, /Abort flag written/);
-      assert.strictEqual(fs.readFileSync(path.join(coord, 'abort.flag'), 'utf-8'), 'true');
+      const abortFlag = JSON.parse(fs.readFileSync(path.join(coord, 'abort.flag'), 'utf-8'));
+      assert.strictEqual(abortFlag.pid, child.pid);
+      assert.ok(!Number.isNaN(Date.parse(abortFlag.written_at)), 'abort flag carries written_at');
     } finally {
       cleanupProcess(child);
       fs.rmSync(coord, { recursive: true, force: true });

@@ -52,7 +52,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
   - In `processActions`, the sequence for a passing validation is `finalizeEndAgentCompletion` → `safeKill` → `appendEvent("agent_completed")`. If `safeKill` raises (e.g., `process.kill` permission error path that escapes the try/catch via a future refactor), the `agent_completed` event is never written even though the agent is marked `completed`.
   - *Fix:* Emit `agent_completed` immediately after the COMPLETED transition (already inside the lock), then signal the worker. The event is cheap and idempotent at the consumer.
 
-- **[C2] `abort.flag` has no identity, so a stale flag from a prior run can short-circuit a fresh launch**
+- ~~**[C2] `abort.flag` has no identity, so a stale flag from a prior run can short-circuit a fresh launch**~~ - _fixed: abort flags now carry `{ pid, written_at }`, stale pre-run flags are ignored and removed, and legacy/manual flags fall back to mtime._
   - `scripts/orchestrator-loop.js:81` only checks for `existsSync(abort.flag)` and unlinks it after handling. If a prior run was killed before unlinking (or the user wrote it manually for testing), the next loop boots, sees the flag, aborts immediately, and unlinks it — wasting one full launch cycle.
   - *Fix:* Write the abort flag as JSON `{ pid, written_at }`. On startup, ignore flags whose `written_at` predates the current `current_run.json` started_at. Dashboard's Ctrl+C writer should include those fields.
 
