@@ -623,8 +623,8 @@ async function runLoop() {
     // status=completed and an unresolved review_request — the COMPLETED write
     // is unreachable unless the resolution write has already landed.
     finalizeEndAgentCompletion(action, arbitration, paths, log);
-    safeKill({ pid: snapshot.pid, expectedCli: expectedProcessForAgent(snapshot, parsedConfig), recordedCmdline: snapshot.spawned_cmdline, log, coordDir: config.coordDir, agent: action.agent });
     appendEvent(config.coordDir, "agent_completed", { agent: action.agent });
+    safeKill({ pid: snapshot.pid, expectedCli: expectedProcessForAgent(snapshot, parsedConfig), recordedCmdline: snapshot.spawned_cmdline, log, coordDir: config.coordDir, agent: action.agent });
   }
 
   function handleValidationFailure(agentName, validation, paths, parsedConfig, log) {

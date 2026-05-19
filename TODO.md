@@ -48,7 +48,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
   - `scripts/lib/process.js:54` does `cmdline.toLowerCase().includes(expectedCli.toLowerCase())`. An unrelated process whose cmdline happens to contain the CLI name (e.g., `vim cli-templates/codex.md`, `tail codex.log`) matches. Combined with PID recycling this can lead the loop into signalling the wrong process before the events-log fallback even engages.
   - *Fix:* Compare the basename of the first argv token against `expectedCli` (path-aware), and only fall back to substring when the recorded `spawned_cmdline` also matches. Add tests for the false-positive cases.
 
-- **[C2] `processApprovals` order also drops the `agent_completed` / decision audit if the `safeKill` happens to crash the loop**
+- ~~**[C2] `processApprovals` order also drops the `agent_completed` / decision audit if the `safeKill` happens to crash the loop**~~ - _fixed: `agent_completed` is emitted immediately after the COMPLETED transition, before signalling the worker._
   - In `processActions`, the sequence for a passing validation is `finalizeEndAgentCompletion` → `safeKill` → `appendEvent("agent_completed")`. If `safeKill` raises (e.g., `process.kill` permission error path that escapes the try/catch via a future refactor), the `agent_completed` event is never written even though the agent is marked `completed`.
   - *Fix:* Emit `agent_completed` immediately after the COMPLETED transition (already inside the lock), then signal the worker. The event is cheap and idempotent at the consumer.
 
