@@ -72,7 +72,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
   - `scripts/orchestrator-loop.js:367-458`: an `end_agent` for an agent not in `agents.json` falls through `if (!snapshot)`; a `soft_restart`/`hard_restart` for an unknown agent makes `bumpRestartAndRespawn` no-op inside its `updateJSON` callback. Either way the loop emits no warning and the orchestrator CLI gets no feedback that its response was malformed.
   - *Fix:* Log a clear `Arbitration action targeted unknown agent <name>` warning and emit an `arbitration_action_dropped` structured event (new `events.js` type) so it shows up in `inspect-live-test.js`.
 
-- **[C2] `writeAtomic` skips fsync; rename-without-flush can lose committed state on power loss**
+- ~~**[C2] `writeAtomic` skips fsync; rename-without-flush can lose committed state on power loss**~~ - _fixed: `writeAtomic` now writes through an fd, fsyncs before close/rename, cleans failed tmp files, and tests assert fsync-before-rename ordering._
   - `scripts/lib/locking.js:291-295` writes to a tmp file then renames. On crash/poweroff between rename and the page cache flushing, the new content can be lost while the rename is observed. Most of the time this is fine, but `agents.json`, `current_run.json`, and `decisions.jsonl` represent committed state.
   - *Fix:* Open the tmp file with `'w'`, write, then `fsyncSync(fd)` before `closeSync` and `renameSync`. Optional on append-only files where the loss is recoverable. Tests that don't care about fsync can stay green; add one that asserts the fsync was invoked via a stub.
 

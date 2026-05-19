@@ -360,8 +360,21 @@ function atomicRemoveLock(lockDir) {
 // the old contents or the new contents, never a half-written file.
 function writeAtomic(filePath, content) {
   const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
-  fs.writeFileSync(tmpPath, content);
-  fs.renameSync(tmpPath, filePath);
+  let fd;
+  try {
+    fd = fs.openSync(tmpPath, "w");
+    fs.writeFileSync(fd, content);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch {}
+    }
+    try { fs.unlinkSync(tmpPath); } catch {}
+    throw err;
+  }
 }
 
 module.exports = { acquireInstanceLock, readCurrentRunId, updateJSON, updateJSONL, appendJSONL, readJSON, readJSONL, acquireLock, writeAtomic };

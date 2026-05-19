@@ -199,6 +199,32 @@ describe('locking primitives', () => {
     assert.strictEqual(tmpFiles.length, 0, `tmp files left behind: ${tmpFiles.join(', ')}`);
   });
 
+  it('writeAtomic fsyncs the tmp file before rename', () => {
+    const targetFile = path.join(tmpDir, 'synced.txt');
+    const originalFsync = fs.fsyncSync;
+    const originalRename = fs.renameSync;
+    const order = [];
+
+    try {
+      fs.fsyncSync = (fd) => {
+        order.push('fsync');
+        return originalFsync.call(fs, fd);
+      };
+      fs.renameSync = (...args) => {
+        order.push('rename');
+        return originalRename.apply(fs, args);
+      };
+
+      writeAtomic(targetFile, 'durable content\n');
+    } finally {
+      fs.fsyncSync = originalFsync;
+      fs.renameSync = originalRename;
+    }
+
+    assert.deepStrictEqual(order, ['fsync', 'rename']);
+    assert.strictEqual(fs.readFileSync(targetFile, 'utf-8'), 'durable content\n');
+  });
+
   // 7. acquireLock never exposes a half-formed lock dir (mkdir-without-pid).
   // Regression: the previous mkdir-then-write-pid sequence let a concurrent
   // acquirer read between the two writes, fall into the mtime-stale branch,
