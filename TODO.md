@@ -16,7 +16,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
 2. **[C2] `processApprovals` is not crash-atomic** — decisions are audited before the matching requests flip status; a crash re-arbitrates on restart. (Critical → "Resolve approvals atomically with the requests they decide")
 3. **[C2] Per-cycle `ps`/`git` subprocess storm** — `pidMatchesCli` shells one `ps` per agent per tick and `readDiffSnapshot` shells four `git`s per agent per tick. (Medium → "Per-cycle `pidMatchesCli` and `readDiffSnapshot` subprocess storm")
 4. ~~**[C2] `acquireLock` race between `mkdir` and PID-file write**~~ — _fixed: stage-and-rename in `acquireLock`, atomic release._
-5. **[C2] Worker-coord symlink failures are swallowed** — `ensureCoordSymlink` warns and proceeds; on FS without symlink permission the worker can't find `coord/` and silently fails. (Medium → "Worker-coord symlink failures degrade the worker invisibly")
+5. ~~**[C2] Worker-coord symlink failures are swallowed**~~ — _fixed: `ensureCoordSymlink` now exits non-zero with errno + workaround instructions._
 
 ---
 
@@ -51,10 +51,6 @@ Pointers into the detailed entries below; full context and C-tag are on the body
 - **[C2] `acquireInstanceLock` calls `process.exit(1)` from a library helper**
   - `scripts/lib/locking.js:29, 52` exits the process directly when it detects a competing loop. That makes the helper untestable in-process and leaves no room for callers to do their own cleanup (release temp files, flush logs, etc.).
   - *Fix:* Throw a structured error (`code: "ELOCKED"`, attach the detected PID/cmd) and let `orchestrator-loop.js` format the message and exit. Update `tests/locking.test.js` to assert against the thrown error.
-
-- **[C2] Worker-coord symlink failures degrade the worker invisibly**
-  - `scripts/spawn-agent.js:170-182` warns to stderr and continues if `fs.symlinkSync` throws. The worker then boots in a worktree where every documented `coord/...` path resolves to ENOENT. Common on shared filesystems without symlink perms and inside some sandboxes.
-  - *Fix:* Hard-fail spawn (exit non-zero) when symlink creation fails. Surface the underlying errno in the message and point at a workaround flag (e.g., `--coord-mode=copy` that materializes the directory at the cost of extra IO). Alternatively, render absolute coord/ paths into the worker prompt when symlink fails.
 
 - **[C2] `pidMatchesCli` substring match is permissive**
   - `scripts/lib/process.js:54` does `cmdline.toLowerCase().includes(expectedCli.toLowerCase())`. An unrelated process whose cmdline happens to contain the CLI name (e.g., `vim cli-templates/codex.md`, `tail codex.log`) matches. Combined with PID recycling this can lead the loop into signalling the wrong process before the events-log fallback even engages.

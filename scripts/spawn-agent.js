@@ -165,8 +165,11 @@ function spawnAgent() {
   // Single-use helper — creates the coord/ symlink inside the worktree so workers can
   // reach the orchestration state via the documented `coord/...` relative paths.
   // Idempotent: skips if a coord symlink (or directory, in case the user pre-staged one)
-  // is already present. Failures are warned, not fatal — the worker may still succeed if
-  // its prompt was generated with absolute paths.
+  // is already present. Hard-fails on failure: a worker that boots without coord/
+  // discovers every `coord/...` path as ENOENT and silently degrades — the request
+  // staging protocol, progress heartbeats, and review_requests all break. Surface
+  // the underlying errno so the operator can fix the FS perms or pre-stage the link
+  // manually, rather than letting a broken worker chew through restart budget.
   function ensureCoordSymlink(worktreeAbs, coordDirArg) {
     const coordSymlink = path.join(worktreeAbs, "coord");
     if (fs.existsSync(coordSymlink) || fs.lstatSync(coordSymlink, { throwIfNoEntry: false })) return;
@@ -175,9 +178,13 @@ function spawnAgent() {
     try {
       fs.symlinkSync(target, coordSymlink, "dir");
     } catch (err) {
-      console.warn(`Warning: failed to create coord symlink at ${coordSymlink}: ${err.message}`);
-      console.warn(`The worker may not find coord/. Create it manually with:`);
-      console.warn(`  ln -s ${coordAbs} ${coordSymlink}`);
+      console.error(`Error: failed to create coord symlink at ${coordSymlink}: ${err.message} (${err.code || "unknown"})`);
+      console.error(`Worker cannot run without coord/ — every documented coord/... path would resolve to ENOENT and the staging protocol would silently fail.`);
+      console.error(`Fixes (try one):`);
+      console.error(`  • Run on a filesystem where the user can create symlinks (some sandboxed FS / SMB shares disallow it).`);
+      console.error(`  • Pre-stage the link yourself before re-running:  ln -s ${coordAbs} ${coordSymlink}`);
+      console.error(`  • Bind-mount coord/ at the same path inside the worktree.`);
+      process.exit(1);
     }
   }
 }
