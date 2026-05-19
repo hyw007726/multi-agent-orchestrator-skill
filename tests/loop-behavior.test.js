@@ -19,6 +19,7 @@ const {
 } = require('./helpers/temp-project');
 
 const {
+  checkCompletionOwnership,
   captureRecoveryAndReset,
   collectOwnershipChangedFiles,
 } = require(path.join(repoRoot(), 'scripts', 'orchestrator-loop.js'));
@@ -555,6 +556,50 @@ describe('loop behavior', () => {
       assert.deepStrictEqual(logs, []);
     } finally {
       if (project) project.cleanup();
+    }
+  });
+
+  it('ignores changed files under a runtime coord symlink during ownership checks', () => {
+    let project;
+    const coordTarget = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'coord-target-'));
+    try {
+      project = createTempProject('ownership-coord-symlink-');
+      gitCommand(project.root, ['branch', '-M', 'trunk']);
+      fs.mkdirSync(path.join(project.root, 'coord', 'requests'), { recursive: true });
+      fs.writeFileSync(path.join(project.root, 'coord', 'requests', 'old.json'), '{}\n', 'utf-8');
+      gitCommand(project.root, ['add', 'coord/requests/old.json']);
+      gitCommand(project.root, ['commit', '-m', 'Track prior coord file']);
+      gitCommand(project.root, ['checkout', '-b', 'agent-coord']);
+
+      fs.rmSync(path.join(project.root, 'coord'), { recursive: true, force: true });
+      fs.mkdirSync(path.join(coordTarget, 'requests'), { recursive: true });
+      fs.symlinkSync(coordTarget, path.join(project.root, 'coord'), 'dir');
+      fs.writeFileSync(path.join(project.root, 'coord', 'requests', 'new.json'), '{}\n', 'utf-8');
+      gitCommand(project.root, ['add', '-A']);
+
+      const contextPath = path.join(coordTarget, 'context.json');
+      fs.writeFileSync(contextPath, JSON.stringify({
+        tasks: {
+          'agent-coord': {
+            description: 'Owns source files only.',
+            allowed_paths: ['src/**'],
+            forbidden_paths: ['coord/**'],
+          },
+        },
+      }, null, 2), 'utf-8');
+
+      const ownership = checkCompletionOwnership('agent-coord', {
+        worktree: project.root,
+        base_ref: 'trunk',
+      }, { context: contextPath }, () => {});
+
+      assert.strictEqual(ownership.ok, true, ownership.summary);
+      assert.deepStrictEqual(ownership.changedFiles, []);
+      assert.deepStrictEqual(ownership.forbiddenViolations, []);
+      assert.deepStrictEqual(ownership.outsideAllowed, []);
+    } finally {
+      if (project) project.cleanup();
+      fs.rmSync(coordTarget, { recursive: true, force: true });
     }
   });
 

@@ -2464,7 +2464,8 @@ function normalizeRepoPath(value) {
 }
 
 function isRuntimeCoordSymlink(file, worktree) {
-  if (normalizeRepoPath(file) !== "coord") return false;
+  const normalized = normalizeRepoPath(file);
+  if (normalized !== "coord" && !normalized.startsWith("coord/")) return false;
   try {
     return fs.lstatSync(path.join(worktree, "coord")).isSymbolicLink();
   } catch {
