@@ -50,7 +50,16 @@ async function runLoop() {
   // Refuse to start a second loop on the same coord/. Held for the full run; released
   // on every teardown path below. The stale option recovers automatically if a prior
   // loop was SIGKILL'd without running its teardown.
-  const instanceLock = acquireInstanceLock(config.coordDir);
+  let instanceLock;
+  try {
+    instanceLock = acquireInstanceLock(config.coordDir);
+  } catch (err) {
+    if (err && err.code === "ELOCKED") {
+      console.error(formatInstanceLockError(err));
+      process.exit(1);
+    }
+    throw err;
+  }
   const runId = instanceLock.runId;
   const releaseInstanceLock = () => { instanceLock.release(); };
   process.once("SIGTERM", () => { releaseInstanceLock(); process.exit(0); });
@@ -1787,6 +1796,28 @@ function shouldAutoLaunchDashboard(setting) {
     return { launch: false, reason: "Dashboard auto-launch auto mode skipped over SSH" };
   }
   return { launch: true, reason: "Dashboard auto-launch auto mode enabled on macOS" };
+}
+
+function formatInstanceLockError(err) {
+  const coordDir = err.coordDir || "(unknown coord)";
+  const pidText = err.pid ? ` (PID ${err.pid})` : "";
+  const base = [
+    `Another orchestrator loop is already running on '${coordDir}'${pidText}.`,
+    "Refusing to start a second instance - concurrent loops would double-arbitrate pending requests and double-bump restart counts on the same agents.",
+  ];
+  if (err.detectedVia === "ps" && err.cmd) {
+    base.push("");
+    base.push(`Detected via ps scan: ${err.cmd}`);
+    base.push("");
+    base.push(`If that process is wedged, stop it explicitly (e.g. \`kill ${err.pid}\`) before retrying.`);
+  } else {
+    const marker = err.lockMarker || path.join(coordDir, "orchestrator.instance.lock");
+    base.push("");
+    base.push("Detected via singleton lock marker.");
+    base.push("");
+    base.push(`If you're certain no other loop is running (e.g. it crashed without cleanup), remove the stale lock marker:  rm -rf '${marker}'`);
+  }
+  return base.join("\n");
 }
 
 // ─── Process / git helpers ───────────────────────────────────────────────────

@@ -19,14 +19,11 @@ const LOCK_OPTS = { retries: 20, factor: 1.3, minTimeout: 50, maxTimeout: 1000, 
 function acquireInstanceLock(coordDir) {
   const live = findRunningLoop(coordDir);
   if (live) {
-    console.error(
-      `Another orchestrator loop is already running on '${coordDir}' (PID ${live.pid}).\n` +
-      `Refusing to start a second instance — concurrent loops would double-arbitrate ` +
-      `pending requests and double-bump restart counts on the same agents.\n\n` +
-      `Detected via ps scan: ${live.cmd}\n\n` +
-      `If that process is wedged, stop it explicitly (e.g. \`kill ${live.pid}\`) before retrying.`,
-    );
-    process.exit(1);
+    throw instanceLockError(coordDir, {
+      pid: live.pid,
+      cmd: live.cmd,
+      detectedVia: "ps",
+    });
   }
 
   const instanceFile = path.join(coordDir, "orchestrator.instance");
@@ -42,14 +39,12 @@ function acquireInstanceLock(coordDir) {
   } catch (err) {
     if (err && err.code === "ELOCKED") {
       const lockMarker = `${instanceFile}.lock`;
-      console.error(
-        `Another orchestrator loop is already running on '${coordDir}'.\n` +
-        `Refusing to start a second instance — concurrent loops would double-arbitrate ` +
-        `pending requests and double-bump restart counts on the same agents.\n\n` +
-        `If you're certain no other loop is running (e.g. it crashed without cleanup), ` +
-        `remove the stale lock marker:  rm -rf '${lockMarker}'`,
-      );
-      process.exit(1);
+      throw instanceLockError(coordDir, {
+        pid: readLockPid(lockMarker),
+        cmd: null,
+        detectedVia: "lock",
+        lockMarker,
+      });
     }
     throw err;
   }
@@ -148,6 +143,29 @@ function acquireInstanceLock(coordDir) {
     }
     return runId;
   }
+
+  function readLockPid(lockMarker) {
+    try {
+      const value = parseInt(fs.readFileSync(path.join(lockMarker, "pid"), "utf-8"), 10);
+      return Number.isInteger(value) && value > 0 ? value : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function instanceLockError(coordDir, { pid = null, cmd = null, detectedVia, lockMarker = null } = {}) {
+  return Object.assign(
+    new Error(`Another orchestrator loop is already running on '${coordDir}'.`),
+    {
+      code: "ELOCKED",
+      coordDir,
+      pid,
+      cmd,
+      detectedVia,
+      lockMarker,
+    },
+  );
 }
 
 // Read the current run_id (if any) from coord/current_run.json. Subprocesses

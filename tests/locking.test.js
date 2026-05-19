@@ -307,6 +307,26 @@ describe('acquireInstanceLock run_id and live-loop detection', () => {
     }
   });
 
+  it('throws ELOCKED with lock metadata when the singleton lock is already held', () => {
+    const handle = acquireInstanceLock(coordDir);
+    try {
+      let thrown;
+      try {
+        acquireInstanceLock(coordDir);
+      } catch (err) {
+        thrown = err;
+      }
+      assert.ok(thrown, 'second acquire should throw');
+      assert.strictEqual(thrown.code, 'ELOCKED');
+      assert.strictEqual(thrown.coordDir, coordDir);
+      assert.strictEqual(thrown.detectedVia, 'lock');
+      assert.strictEqual(thrown.pid, process.pid);
+      assert.match(thrown.lockMarker, /orchestrator\.instance\.lock$/);
+    } finally {
+      handle.release();
+    }
+  });
+
   it('refuses to acquire when a sibling orchestrator-loop is running on the same coord (lock dir removed)', async () => {
     // Stand up a fake orchestrator-loop.js binary that just sleeps. We need the
     // command line to literally contain "orchestrator-loop.js --coord <coord>" so
@@ -334,21 +354,28 @@ describe('acquireInstanceLock run_id and live-loop detection', () => {
       if (!visible) return; // ps doesn't see it (e.g. unusual env); skip without failing.
 
       // No instance.lock dir exists — the "user deleted a stale lock" scenario.
-      // Spawn a subprocess that calls acquireInstanceLock so its process.exit(1)
-      // doesn't take down the test runner.
-      const probe = spawnSync(process.execPath, [
-        '-e',
-        `const { acquireInstanceLock } = require(${JSON.stringify(path.resolve(__dirname, '..', 'scripts', 'lib', 'locking'))});` +
-        `acquireInstanceLock(${JSON.stringify(coordDir)});`,
-      ], { encoding: 'utf-8' });
-
-      assert.strictEqual(probe.status, 1, `expected exit 1, got ${probe.status}. stderr:\n${probe.stderr}`);
-      assert.match(probe.stderr, /Another orchestrator loop is already running/);
-      assert.match(probe.stderr, new RegExp(`PID ${child.pid}`));
-      assert.match(probe.stderr, /Detected via ps scan/);
+      // The library helper should throw instead of exiting so callers can
+      // format the message and perform their own cleanup.
+      let thrown;
+      try {
+        acquireInstanceLock(coordDir);
+      } catch (err) {
+        thrown = err;
+      }
+      assert.ok(thrown, 'acquireInstanceLock should throw');
+      assert.strictEqual(thrown.code, 'ELOCKED');
+      assert.strictEqual(thrown.coordDir, coordDir);
+      assert.strictEqual(thrown.pid, child.pid);
+      assert.strictEqual(thrown.detectedVia, 'ps');
+      assert.match(thrown.cmd, /orchestrator-loop\.js/);
+      assert.match(thrown.cmd, new RegExp(`--coord ${escapeRegExp(coordDir)}`));
     } finally {
       try { child.kill('SIGKILL'); } catch {}
       try { fs.rmSync(fakeDir, { recursive: true, force: true }); } catch {}
     }
   });
 });
+
+function escapeRegExp(value) {
+  return String(value).replace(/[\\^$+?.()|{}[\]]/g, '\\$&');
+}

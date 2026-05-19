@@ -40,7 +40,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
 
 ## Medium (UX gaps, missing safety nets)
 
-- **[C2] `acquireInstanceLock` calls `process.exit(1)` from a library helper**
+- ~~**[C2] `acquireInstanceLock` calls `process.exit(1)` from a library helper**~~ - _fixed: the helper now throws structured `ELOCKED` errors with detected PID/cmd metadata, and `orchestrator-loop.js` owns message formatting + exit._
   - `scripts/lib/locking.js:29, 52` exits the process directly when it detects a competing loop. That makes the helper untestable in-process and leaves no room for callers to do their own cleanup (release temp files, flush logs, etc.).
   - *Fix:* Throw a structured error (`code: "ELOCKED"`, attach the detected PID/cmd) and let `orchestrator-loop.js` format the message and exit. Update `tests/locking.test.js` to assert against the thrown error.
 
