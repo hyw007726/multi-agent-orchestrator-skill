@@ -18,6 +18,8 @@ const {
   waitFor,
 } = require('./helpers/temp-project');
 
+const { captureRecoveryAndReset } = require(path.join(repoRoot(), 'scripts', 'orchestrator-loop.js'));
+
 describe('loop behavior', () => {
   // 1. Restart cap parks an agent for human attention.
   it('parks agent for attention when restart count exceeds max', () => {
@@ -425,7 +427,52 @@ describe('loop behavior', () => {
     }
   });
 
-  // 4. Validation failure converts to soft restart and preserves validation command.
+  // 4. Hard restart recovery preserves declared nested git state.
+  it('hard restart recovery preserves declared submodule worktrees during clean', () => {
+    let project;
+    try {
+      project = createTempProject('hard-reset-submodule-');
+      const worktree = project.root;
+      const submodulePath = path.join(worktree, 'vendor', 'lib');
+      fs.mkdirSync(submodulePath, { recursive: true });
+
+      const git = (cwd, args) => {
+        const result = spawnSync('git', args, { cwd, encoding: 'utf-8' });
+        assert.strictEqual(result.status, 0,
+          `git ${args.join(' ')} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+        return result;
+      };
+
+      git(submodulePath, ['init']);
+      git(submodulePath, ['config', 'user.email', 'test@test.test']);
+      git(submodulePath, ['config', 'user.name', 'Test']);
+      fs.writeFileSync(path.join(submodulePath, 'nested.txt'), 'nested state\n', 'utf-8');
+      git(submodulePath, ['add', 'nested.txt']);
+      git(submodulePath, ['commit', '-m', 'Nested initial commit']);
+
+      fs.writeFileSync(path.join(worktree, '.gitmodules'), [
+        '[submodule "vendor/lib"]',
+        '\tpath = vendor/lib',
+        '\turl = ./vendor/lib',
+        '',
+      ].join('\n'), 'utf-8');
+      fs.writeFileSync(path.join(worktree, 'scratch.txt'), 'untracked parent state\n', 'utf-8');
+
+      const result = captureRecoveryAndReset(worktree, 'agent-submodule', () => {}, 'run-test');
+      assert.strictEqual(result.error, null);
+      assert.ok(result.tag, 'dirty state should be preserved in a recovery tag');
+
+      assert.ok(fs.existsSync(path.join(submodulePath, '.git')),
+        'declared submodule git metadata should survive git clean');
+      assert.strictEqual(fs.readFileSync(path.join(submodulePath, 'nested.txt'), 'utf-8'), 'nested state\n');
+      assert.strictEqual(fs.existsSync(path.join(worktree, 'scratch.txt')), false,
+        'ordinary untracked files should still be cleaned');
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
+  // 5. Validation failure converts to soft restart and preserves validation command.
   it('validation failure triggers soft restart and preserves validate_cmd', () => {
     let project;
     try {

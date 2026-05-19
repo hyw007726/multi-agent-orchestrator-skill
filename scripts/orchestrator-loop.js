@@ -1936,6 +1936,14 @@ function commitWorktree(worktree, message) {
 // the recovery_tag_created event).
 function captureRecoveryAndReset(worktree, agent, log, runId) {
   try {
+    const nestedGitState = inspectNestedGitState(worktree);
+    if (nestedGitState.unknownNestedGitPaths.length > 0) {
+      return {
+        tag: null,
+        error: `nested git state detected outside declared submodules: ${nestedGitState.unknownNestedGitPaths.join(", ")}`,
+      };
+    }
+
     const headBefore = gitStdout(worktree, ["rev-parse", "HEAD"]).trim();
     let createdRecovery = false;
     try {
@@ -1970,12 +1978,105 @@ function captureRecoveryAndReset(worktree, agent, log, runId) {
     }
 
     runGit(worktree, ["reset", "--hard", headBefore]);
-    runGit(worktree, ["clean", "-fd"]);
+    runGit(worktree, gitCleanArgsForNestedGitState(nestedGitState));
     return { tag, error: null };
   } catch (err) {
     log(`Hard reset failed: ${err.message}`);
     return { tag: null, error: `hard reset failed: ${err.message}` };
   }
+}
+
+function inspectNestedGitState(worktree) {
+  const submodulePaths = collectDeclaredSubmodulePaths(worktree);
+  const nestedGitPaths = collectNestedGitPaths(worktree);
+  const unknownNestedGitPaths = nestedGitPaths.filter((nestedPath) =>
+    !submodulePaths.some((submodulePath) => pathWithinRepoPath(nestedPath, submodulePath))
+  );
+  return { submodulePaths, nestedGitPaths, unknownNestedGitPaths };
+}
+
+function collectDeclaredSubmodulePaths(worktree) {
+  const paths = new Set();
+  for (const raw of [
+    ...readSubmodulePathsFromGitmodules(worktree),
+    ...readSubmodulePathsFromConfig(worktree),
+  ]) {
+    const normalized = normalizeRepoRelativePath(raw);
+    if (normalized) paths.add(normalized);
+  }
+  return [...paths].sort();
+}
+
+function readSubmodulePathsFromGitmodules(worktree) {
+  if (!fs.existsSync(path.join(worktree, ".gitmodules"))) return [];
+  const result = runGit(worktree, ["config", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"], { allowFailure: true });
+  if (result.status !== 0) return [];
+  return parseGitConfigPathValues(result.stdout);
+}
+
+function readSubmodulePathsFromConfig(worktree) {
+  const result = runGit(worktree, ["config", "--local", "--get-regexp", "^submodule\\..*\\.path$"], { allowFailure: true });
+  if (result.status !== 0) return [];
+  return parseGitConfigPathValues(result.stdout);
+}
+
+function parseGitConfigPathValues(stdout) {
+  const paths = [];
+  for (const line of String(stdout || "").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^[^\s]+\s+(.+)$/);
+    if (match) paths.push(match[1]);
+  }
+  return paths;
+}
+
+function collectNestedGitPaths(worktree) {
+  const nested = [];
+  walk(worktree, "");
+  return nested.sort();
+
+  function walk(absDir, relDir) {
+    let entries;
+    try {
+      entries = fs.readdirSync(absDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name === ".git") {
+        if (relDir !== "") nested.push(relDir);
+        continue;
+      }
+      if (!entry.isDirectory()) continue;
+      if (relDir === "" && entry.name === ".git") continue;
+      const childRel = relDir ? `${relDir}/${entry.name}` : entry.name;
+      if (childRel === ".git") continue;
+      walk(path.join(absDir, entry.name), childRel);
+    }
+  }
+}
+
+function gitCleanArgsForNestedGitState(nestedGitState) {
+  const args = ["clean", "-fd"];
+  for (const submodulePath of nestedGitState.submodulePaths) {
+    args.push(`--exclude=${submodulePath}`);
+    args.push(`--exclude=${submodulePath}/**`);
+  }
+  return args;
+}
+
+function normalizeRepoRelativePath(rawPath) {
+  if (typeof rawPath !== "string") return "";
+  const trimmed = rawPath.trim();
+  if (!trimmed || path.isAbsolute(trimmed)) return "";
+  const normalized = path.posix.normalize(trimmed.replace(/\\/g, "/")).replace(/^\.\/+/, "");
+  if (normalized === "." || normalized === ".." || normalized.startsWith("../")) return "";
+  return normalized.replace(/\/+$/, "");
+}
+
+function pathWithinRepoPath(candidate, parent) {
+  return candidate === parent || candidate.startsWith(`${parent}/`);
 }
 
 function validationTimeout(agent, parsedConfig = {}) {
@@ -2763,6 +2864,7 @@ module.exports = {
   buildBoundedArbitrationPrompt,
   ARBITRATION_PROMPT_CAP_BYTES,
   buildFinalSummary,
+  captureRecoveryAndReset,
   checkCompletionOwnership,
   collectOwnershipChangedFiles,
   commitWorktree,

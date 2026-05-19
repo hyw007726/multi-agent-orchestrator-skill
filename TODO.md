@@ -34,7 +34,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
   - `scripts/spawn-agent.js` spawns the detached child, writes the log marker, prints `__SPAWN_RESULT__`, and only then calls `updateJSON(agentsFile, …)`. A crash (EAGAIN, EPIPE on stdout) between the spawn and the JSON write leaves a worker running with no registry entry; `launch-all.js`'s `recoverOrphanForRollback` looks in `agents.json` and finds nothing.
   - *Fix:* Write a minimal `{ pid, cli, started_at, status: "spawning" }` to `agents.json` immediately after `child.unref()`, before any stdout write. Promote to `running` once the marker/templateMode is committed. The orphan-recovery path then has a stable hook.
 
-- **[C2] `captureRecoveryAndReset` destroys nested git state**
+- ~~**[C2] `captureRecoveryAndReset` destroys nested git state**~~ — _fixed: hard restart recovery detects declared submodule paths and excludes them from cleanup; undeclared nested Git state fails closed before reset._
   - `scripts/orchestrator-loop.js:1601-1604`: `git reset --hard <head>` followed by `git clean -fd` deletes anything not tracked, including nested `.git` directories and submodule worktrees that a worker may have introduced. Once gone, they cannot be recovered from the recovery tag (only the parent commit's blobs were captured).
   - *Fix:* Before `git clean -fd`, scan for `.gitmodules` and `submodule.*` entries in `git config --file .git/config`. If any exist, downgrade to `git clean -fdx --exclude="<submodule-paths>"` or refuse the hard restart and park the agent.
 
