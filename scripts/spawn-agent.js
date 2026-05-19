@@ -137,6 +137,7 @@ function spawnAgent() {
       last_spawned_at: spawnedAt,
       last_heartbeat: spawnedAt,
       validate_cmd: firstDefined(config.validateCmd, existing.validate_cmd),
+      validation: { state: "idle" },
       validation_timeout_mins: firstDefined(config.validationTimeoutMins, existing.validation_timeout_mins),
       timeout_mins: firstDefined(config.timeoutMins, existing.timeout_mins),
       progress_timeout_mins: firstDefined(config.progressTimeoutMins, existing.progress_timeout_mins),

@@ -12,7 +12,7 @@ Each item is tagged with a complexity rating:
 
 Pointers into the detailed entries below; full context and C-tag are on the body items.
 
-1. **[C2] `runValidation` blocks the entire loop for up to 30 minutes** — every other agent goes unsupervised while a single agent's tests run. (Critical → "`runValidation` can freeze the orchestrator")
+1. ~~**[C2] `runValidation` blocks the entire loop for up to 30 minutes**~~ — _fixed: completion validation now runs in an async helper with per-agent `validation` state, so the main loop keeps supervising peers._
 2. ~~**[C2] `processApprovals` is not crash-atomic**~~ — _fixed: flip-then-audit ordering in `processApprovals`._
 3. ~~**[C2] Per-cycle `ps`/`git` subprocess storm**~~ — _fixed: single `ps -eo` per tick + `cmdMap`; `readDiffHash` (1 git/agent) replaces `readDiffSnapshot` for change-detection._
 4. ~~**[C2] `acquireLock` race between `mkdir` and PID-file write**~~ — _fixed: stage-and-rename in `acquireLock`, atomic release._
@@ -22,7 +22,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
 
 ## Critical (correctness, data loss, security)
 
-- **[C2] `runValidation` can freeze the orchestrator for `VALIDATION_HARD_CAP_MINS` (30 min)**
+- ~~**[C2] `runValidation` can freeze the orchestrator for `VALIDATION_HARD_CAP_MINS` (30 min)**~~ — _fixed: validation runs asynchronously via `scripts/validation-runner.js`, with requests moved through `validating` and completion finalized when the result lands._
   - `scripts/orchestrator-loop.js:1616` calls `spawnSync` synchronously inside the main loop. While a worker's test suite runs, every other agent's liveness check, progress timeout, and arbitration is paused; abort flag detection is also delayed.
   - *Fix:* Run validation asynchronously, tracked by an `agent.validation` state field (idle / running / passed / failed). Keep the per-agent serialization, but let the main tick continue supervising peers. The hard cap can drop because the main loop is no longer at risk.
 

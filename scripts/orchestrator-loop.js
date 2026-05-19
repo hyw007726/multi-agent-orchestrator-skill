@@ -7,7 +7,7 @@ const crypto = require("crypto");
 const { spawn, spawnSync } = require("child_process");
 const { loadConfig } = require("./lib/config");
 const { pidMatchesCli, getProcessCommandMap, safeKill } = require("./lib/process");
-const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL, appendJSONL } = require("./lib/locking");
+const { acquireInstanceLock, readJSON, readJSONL, updateJSON, updateJSONL, appendJSONL, writeAtomic } = require("./lib/locking");
 const { renderRestartPrompt } = require("./lib/restart-prompt");
 const { STATUS, transitionAgentStatus, parkAgentForAttention, parkRationale } = require("./lib/status");
 const { appendEvent } = require("./lib/events");
@@ -21,6 +21,12 @@ const SAFE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const SAFE_AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const STAGED_REQUEST_TYPES = new Set(["question", "change", "conflict", "review_request"]);
 const REQUEST_PRIORITIES = new Set(["low", "medium", "high"]);
+const VALIDATION_STATE = Object.freeze({
+  IDLE: "idle",
+  RUNNING: "running",
+  PASSED: "passed",
+  FAILED: "failed",
+});
 // Hard cap on runValidation: even if every configurable timeout is missing or 0,
 // a hung validation suite must not freeze the main loop and starve other agents.
 const VALIDATION_HARD_CAP_MINS = 30;
@@ -82,6 +88,7 @@ async function runLoop() {
       if (fs.existsSync(path.join(config.coordDir, "abort.flag"))) {
         log("ABORT SIGNAL RECEIVED. Stopping running agents (worktrees preserved)...");
         const toKill = [];
+        const validationsToKill = [];
         appendEvent(config.coordDir, "abort_requested", { reason: "abort.flag detected" });
         updateJSON(paths.agents, (agents) => {
           for (const name in agents) {
@@ -92,17 +99,23 @@ async function runLoop() {
                 recordedCmdline: agents[name].spawned_cmdline,
                 name,
               });
+              if (isValidationRunning(agents[name]) && Number.isInteger(agents[name].validation.pid)) {
+                validationsToKill.push({ pid: agents[name].validation.pid, name });
+              }
               transitionAgentStatus(agents[name], name, STATUS.TERMINATED, "abort signal", log);
             }
           }
         });
         // Kill outside the lock — the lock's job is to protect agents.json, not gate signals.
         for (const { pid, expectedProcess, recordedCmdline, name } of toKill) safeKill({ pid, expectedCli: expectedProcess, recordedCmdline, log, coordDir: config.coordDir, agent: name });
+        for (const { pid, name } of validationsToKill) killValidationRunner(pid, name, log);
         log("All running agents stopped. Worktree contents preserved (run `git status` in each worktree to inspect/discard).");
         try { fs.unlinkSync(path.join(config.coordDir, "abort.flag")); } catch {}
         aborted = true;
         break;
       }
+
+      processFinishedValidations(paths, parsedConfig, log);
 
       // ── Per-agent liveness + progress checks ─────────────────────────────
       // Snapshot read for diagnostics; each actual mutation takes its own lock.
@@ -118,6 +131,9 @@ async function runLoop() {
       for (const name in snapshot) {
         if (snapshot[name].status !== "running") continue;
         const agent = snapshot[name];
+        if (isValidationRunning(agent)) {
+          continue;
+        }
 
         // Process gone? Check whether the agent requested completion first.
         if (!isAgentProcessAlive(agent, parsedConfig, cmdMap)) {
@@ -383,78 +399,14 @@ async function runLoop() {
         const snapshot = readJSON(paths.agents)[action.agent];
         if (!snapshot) continue;
 
-        const validation = runValidation(snapshot, log, parsedConfig);
-        if (validation.passed) {
-          const ownership = checkCompletionOwnership(action.agent, snapshot, paths, log);
-          if (!ownership.ok) {
-            const violationText = formatOwnershipViolation(ownership);
-            log(`Completion rejected for ${action.agent}: file ownership violation. ${ownership.summary}`);
-            appendEvent(config.coordDir, "ownership_violation", {
-              agent: action.agent,
-              reason: ownership.summary,
-              data: {
-                changed_files: ownership.changedFiles,
-                forbidden_violations: ownership.forbiddenViolations,
-                outside_allowed: ownership.outsideAllowed,
-              },
-            });
-            rejectPendingRequestsForAgent(arbitration.response, arbitration.pending, action.agent, `Completion rejected: ${ownership.summary}`);
-            bumpRestartAndRespawn({
-              name: action.agent,
-              instruction: [
-                "Completion was rejected because your worktree changed files outside your assigned ownership.",
-                "",
-                violationText,
-                "",
-                "Fix this by reverting, moving, or replacing every out-of-scope change. Keep only changes covered by allowed_paths and no changes covered by forbidden_paths, then submit a new review_request.",
-              ].join("\n"),
-              reason: "file ownership violation",
-              paths,
-              parsedConfig,
-              mode: "soft",
-              skipWipCommit: true,
-              log,
-            });
-            continue;
-          }
-
-          // Auto-commit any uncommitted changes so the final merge phase picks them up.
-          const worktree = snapshot.worktree;
-          if (fs.existsSync(worktree)) {
-            try {
-              stageCompletionChanges(worktree, ownership.changedFiles);
-              const taskSummary = (snapshot.task || "completed").toString().slice(0, 200);
-              const commit = commitWorktree(worktree, `agent-${action.agent}: ${taskSummary}`);
-              if (commit.committed) {
-                log(`Agent ${action.agent}: auto-committed worktree state.`);
-              } else {
-                log(`Agent ${action.agent}: no changes to commit (already clean).`);
-              }
-            } catch (err) {
-              log(`Agent ${action.agent}: auto-commit failed: ${err.message}`);
-            }
-          }
-
-          // Atomic completion: resolve the approval and mark the agent COMPLETED
-          // back-to-back with no intervening I/O. A crash here cannot leave us with
-          // status=completed and an unresolved review_request — the COMPLETED write
-          // is unreachable unless the resolution write has already landed.
-          finalizeEndAgentCompletion(action, arbitration, paths, log);
-          safeKill({ pid: snapshot.pid, expectedCli: expectedProcessForAgent(snapshot, parsedConfig), recordedCmdline: snapshot.spawned_cmdline, log, coordDir: config.coordDir, agent: action.agent });
-          appendEvent(config.coordDir, "agent_completed", { agent: action.agent });
-        } else {
-          log(`Validation failed for ${action.agent} — converting to soft_restart.`);
-          appendEvent(config.coordDir, "validation_failed", { agent: action.agent, reason: validation.log.slice(0, 500) });
-          bumpRestartAndRespawn({
-            name: action.agent,
-            instruction: `Validation failed! Please fix the errors:\n\n${validation.log}`,
-            reason: "validation failure",
-            paths,
-            parsedConfig,
-            mode: "soft",
-            log,
-          });
+        const validation = beginCompletionValidation(action, snapshot, arbitration, paths, parsedConfig, log);
+        if (validation.state === VALIDATION_STATE.RUNNING) continue;
+        if (validation.state === VALIDATION_STATE.FAILED) {
+          handleValidationFailure(action.agent, validation, paths, parsedConfig, log);
+          continue;
         }
+
+        completeValidatedEndAgent(action, snapshot, arbitration, paths, parsedConfig, log);
         continue;
       }
 
@@ -470,6 +422,217 @@ async function runLoop() {
         });
       }
     }
+  }
+
+  function beginCompletionValidation(action, snapshot, arbitration, paths, parsedConfig, log) {
+    const cmd = snapshot.validate_cmd;
+    if (!hasValidationCommand(cmd)) {
+      return { state: VALIDATION_STATE.PASSED, log: "" };
+    }
+    if (isValidationRunning(snapshot)) {
+      const requestDecisions = completionRequestDecisions(action, arbitration);
+      markCompletionRequestsValidating(paths, action.agent, requestDecisions.map((request) => request.request_id));
+      log(`Validation already running for ${action.agent}; leaving completion request in validation state.`);
+      return { state: VALIDATION_STATE.RUNNING };
+    }
+
+    const timeout = validationTimeout(snapshot, parsedConfig);
+    const validationDir = path.join(path.dirname(paths.agents), "validation");
+    fs.mkdirSync(validationDir, { recursive: true });
+    const jobId = `${safeValidationFileSegment(action.agent)}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+    const jobFile = path.join(validationDir, `${jobId}.job.json`);
+    const resultFile = path.join(validationDir, `${jobId}.result.json`);
+    const outputFile = path.join(validationDir, `${jobId}.log`);
+    const startedAt = new Date().toISOString();
+    const requestDecisions = completionRequestDecisions(action, arbitration);
+
+    writeAtomic(jobFile, JSON.stringify({
+      agent: action.agent,
+      cmd,
+      worktree: snapshot.worktree,
+      timeoutMs: timeout.ms,
+      timeoutMins: timeout.mins,
+      outputFile,
+      resultFile,
+      startedAt,
+    }, null, 2) + "\n");
+
+    updateJSON(paths.agents, (agents) => {
+      const agent = agents[action.agent];
+      if (!agent || agent.status !== STATUS.RUNNING) return;
+      agent.validation = {
+        state: VALIDATION_STATE.RUNNING,
+        job_id: jobId,
+        started_at: startedAt,
+        timeout_ms: timeout.ms,
+        timeout_mins: timeout.mins,
+        job_file: jobFile,
+        result_file: resultFile,
+        output_file: outputFile,
+        requests: requestDecisions,
+      };
+    });
+    markCompletionRequestsValidating(paths, action.agent, requestDecisions.map((request) => request.request_id));
+
+    const cmdText = formatValidationCommandForLog(cmd);
+    log(`Running validation${Array.isArray(cmd) ? "" : " (shell form)"}: ${cmdText} (async, timeout ${formatValidationTimeout(timeout)}${timeout.fromHardCap ? ", hard cap" : ""})`);
+    try {
+      const child = spawn(process.execPath, [path.join(__dirname, "validation-runner.js"), jobFile], {
+        cwd: process.cwd(),
+        detached: true,
+        stdio: "ignore",
+      });
+      child.once("error", (err) => {
+        writeValidationResultFile(resultFile, {
+          passed: false,
+          log: `Validation runner failed to start: ${err.message}`,
+          error: err.message,
+          completed_at: new Date().toISOString(),
+        });
+      });
+      child.unref();
+      updateJSON(paths.agents, (agents) => {
+        const agent = agents[action.agent];
+        if (!agent || !agent.validation || agent.validation.job_id !== jobId) return;
+        agent.validation.pid = child.pid;
+      });
+      return { state: VALIDATION_STATE.RUNNING };
+    } catch (err) {
+      const failed = {
+        state: VALIDATION_STATE.FAILED,
+        log: `Validation runner failed to start: ${err.message}`,
+        error: err.message,
+      };
+      updateJSON(paths.agents, (agents) => {
+        const agent = agents[action.agent];
+        if (!agent || !agent.validation || agent.validation.job_id !== jobId) return;
+        agent.validation = {
+          ...agent.validation,
+          state: VALIDATION_STATE.FAILED,
+          completed_at: new Date().toISOString(),
+          result: { passed: false, error: err.message },
+        };
+      });
+      return failed;
+    }
+  }
+
+  function processFinishedValidations(paths, parsedConfig, log) {
+    const agents = readJSON(paths.agents);
+    for (const [name, agent] of Object.entries(agents)) {
+      if (agent.status !== STATUS.RUNNING || !isValidationRunning(agent)) continue;
+      const validation = agent.validation;
+      let result = readValidationResult(validation);
+      if (!result) {
+        result = missingValidationResultIfStale(agent, validation, parsedConfig);
+      }
+      if (!result) continue;
+
+      updateJSON(paths.agents, (current) => {
+        const latest = current[name];
+        if (!latest || !latest.validation || latest.validation.job_id !== validation.job_id) return;
+        latest.validation = {
+          ...latest.validation,
+          state: result.passed ? VALIDATION_STATE.PASSED : VALIDATION_STATE.FAILED,
+          completed_at: result.completed_at || new Date().toISOString(),
+          result: {
+            passed: Boolean(result.passed),
+            status: result.status,
+            signal: result.signal,
+            error: result.error,
+            timed_out: Boolean(result.timed_out),
+          },
+        };
+      });
+
+      const latest = readJSON(paths.agents)[name];
+      const action = { type: "end_agent", agent: name };
+      if (result.passed) {
+        log(`Validation passed for ${name}.`);
+        completeValidatedEndAgent(action, latest, validationArbitrationFromState({ ...latest.validation, agent: name }), paths, parsedConfig, log);
+      } else {
+        handleValidationFailure(name, { ...result, state: VALIDATION_STATE.FAILED, requests: validation.requests || [] }, paths, parsedConfig, log);
+      }
+    }
+  }
+
+  function completeValidatedEndAgent(action, snapshot, arbitration, paths, parsedConfig, log) {
+    if (!snapshot || snapshot.status !== STATUS.RUNNING) return;
+    const ownership = checkCompletionOwnership(action.agent, snapshot, paths, log);
+    if (!ownership.ok) {
+      const violationText = formatOwnershipViolation(ownership);
+      log(`Completion rejected for ${action.agent}: file ownership violation. ${ownership.summary}`);
+      appendEvent(config.coordDir, "ownership_violation", {
+        agent: action.agent,
+        reason: ownership.summary,
+        data: {
+          changed_files: ownership.changedFiles,
+          forbidden_violations: ownership.forbiddenViolations,
+          outside_allowed: ownership.outsideAllowed,
+        },
+      });
+      rejectCompletionRequestsForAgent(arbitration, paths, action.agent, `Completion rejected: ${ownership.summary}`, log);
+      rejectPendingRequestsForAgent(arbitration.response, arbitration.pending, action.agent, `Completion rejected: ${ownership.summary}`);
+      bumpRestartAndRespawn({
+        name: action.agent,
+        instruction: [
+          "Completion was rejected because your worktree changed files outside your assigned ownership.",
+          "",
+          violationText,
+          "",
+          "Fix this by reverting, moving, or replacing every out-of-scope change. Keep only changes covered by allowed_paths and no changes covered by forbidden_paths, then submit a new review_request.",
+        ].join("\n"),
+        reason: "file ownership violation",
+        paths,
+        parsedConfig,
+        mode: "soft",
+        skipWipCommit: true,
+        log,
+      });
+      return;
+    }
+
+    // Auto-commit any uncommitted changes so the final merge phase picks them up.
+    const worktree = snapshot.worktree;
+    if (fs.existsSync(worktree)) {
+      try {
+        stageCompletionChanges(worktree, ownership.changedFiles);
+        const taskSummary = (snapshot.task || "completed").toString().slice(0, 200);
+        const commit = commitWorktree(worktree, `agent-${action.agent}: ${taskSummary}`);
+        if (commit.committed) {
+          log(`Agent ${action.agent}: auto-committed worktree state.`);
+        } else {
+          log(`Agent ${action.agent}: no changes to commit (already clean).`);
+        }
+      } catch (err) {
+        log(`Agent ${action.agent}: auto-commit failed: ${err.message}`);
+      }
+    }
+
+    // Atomic completion: resolve the approval and mark the agent COMPLETED
+    // back-to-back with no intervening I/O. A crash here cannot leave us with
+    // status=completed and an unresolved review_request — the COMPLETED write
+    // is unreachable unless the resolution write has already landed.
+    finalizeEndAgentCompletion(action, arbitration, paths, log);
+    safeKill({ pid: snapshot.pid, expectedCli: expectedProcessForAgent(snapshot, parsedConfig), recordedCmdline: snapshot.spawned_cmdline, log, coordDir: config.coordDir, agent: action.agent });
+    appendEvent(config.coordDir, "agent_completed", { agent: action.agent });
+  }
+
+  function handleValidationFailure(agentName, validation, paths, parsedConfig, log) {
+    const validationLog = validation.log || validation.error || "Validation failed.";
+    log(validationLog);
+    log(`Validation failed for ${agentName} — converting to soft_restart.`);
+    appendEvent(config.coordDir, "validation_failed", { agent: agentName, reason: validationLog.slice(0, 500) });
+    resolveCompletionRequestsAfterValidationFailure(paths, agentName, validation.requests || [], validationLog, log);
+    bumpRestartAndRespawn({
+      name: agentName,
+      instruction: `Validation failed! Please fix the errors:\n\n${validationLog}`,
+      reason: "validation failure",
+      paths,
+      parsedConfig,
+      mode: "soft",
+      log,
+    });
   }
 
   // Shared — used by the progress-timeout handler above and by processActions.
@@ -828,6 +991,158 @@ async function runLoop() {
     });
   }
 
+  function completionRequestDecisions(action, arbitration = {}) {
+    const response = arbitration.response || {};
+    const pending = Array.isArray(arbitration.pending) ? arbitration.pending : [];
+    const approvedById = new Map();
+    for (const approved of response.approved || []) {
+      if (approved && approved.request_id && !approvedById.has(approved.request_id)) {
+        approvedById.set(approved.request_id, approved);
+      }
+    }
+    const rejectedIds = new Set((response.rejected || [])
+      .filter((rejected) => rejected && rejected.request_id)
+      .map((rejected) => rejected.request_id));
+
+    const completionRequests = pending.filter((request) =>
+      request &&
+      request.agent === action.agent &&
+      request.type === "review_request" &&
+      (request.status === "pending" || request.status === "validating") &&
+      request.request_id
+    );
+    const explicitlyApproved = completionRequests.filter((request) => approvedById.has(request.request_id));
+    const notRejected = completionRequests.filter((request) => !rejectedIds.has(request.request_id));
+    const selected = explicitlyApproved.length > 0
+      ? explicitlyApproved
+      : notRejected.length === 1
+        ? notRejected
+        : [];
+
+    return selected.map((request) => {
+      const approved = approvedById.get(request.request_id);
+      return {
+        request_id: request.request_id,
+        decision: approved?.decision || `Completion approved for ${action.agent}`,
+        reason: approved?.reason || "The orchestrator returned end_agent for this completion review request.",
+      };
+    });
+  }
+
+  function markCompletionRequestsValidating(paths, agentName, requestIds) {
+    const ids = new Set((requestIds || []).filter(Boolean));
+    if (ids.size === 0) return;
+    updateJSONL(paths.requests, (current) => {
+      for (const request of current) {
+        if (
+          ids.has(request.request_id) &&
+          request.agent === agentName &&
+          request.type === "review_request" &&
+          request.status === "pending"
+        ) {
+          request.status = "validating";
+          request.validation_started_at = new Date().toISOString();
+        }
+      }
+    });
+  }
+
+  function validationArbitrationFromState(validation = {}) {
+    const requests = Array.isArray(validation.requests) ? validation.requests : [];
+    return {
+      response: {
+        approved: requests.map((request) => ({
+          request_id: request.request_id,
+          decision: request.decision,
+          reason: request.reason,
+        })),
+        rejected: [],
+      },
+      pending: requests.map((request) => ({
+        request_id: request.request_id,
+        agent: validation.agent,
+        type: "review_request",
+        status: "validating",
+      })),
+    };
+  }
+
+  function resolveCompletionRequestsAfterValidationFailure(paths, agentName, requests, validationLog, log) {
+    const ids = new Set((requests || []).map((request) => request.request_id).filter(Boolean));
+    if (ids.size === 0) return;
+
+    const resolvedCounts = new Map();
+    updateJSONL(paths.requests, (current) => {
+      for (const request of current) {
+        if (
+          ids.has(request.request_id) &&
+          request.agent === agentName &&
+          request.type === "review_request" &&
+          (request.status === "pending" || request.status === "validating")
+        ) {
+          request.status = "resolved";
+          request.validation_result = "failed";
+          request.validation_resolved_at = new Date().toISOString();
+          resolvedCounts.set(request.request_id, (resolvedCounts.get(request.request_id) || 0) + 1);
+        }
+      }
+    });
+
+    const resolvedAt = new Date().toISOString();
+    const decisionsToAdd = [];
+    for (const request of requests || []) {
+      const count = resolvedCounts.get(request.request_id) || 0;
+      if (count === 0) continue;
+      decisionsToAdd.push({
+        request_id: request.request_id,
+        disposition: "approved",
+        decision: request.decision || `Completion review processed for ${agentName}; validation failed and a restart was scheduled.`,
+        reason: `${request.reason || "Completion review was validated by the orchestrator."} Validation failed: ${validationLog.slice(0, 300)}`,
+        resolved_at: resolvedAt,
+      });
+    }
+    appendDecisionRecords(paths, decisionsToAdd, log);
+  }
+
+  function rejectCompletionRequestsForAgent(arbitration, paths, agentName, reason, log) {
+    const requests = completionRequestDecisions({ agent: agentName }, arbitration);
+    const ids = new Set(requests.map((request) => request.request_id).filter(Boolean));
+    if (ids.size === 0) return;
+
+    const rejectedCounts = new Map();
+    updateJSONL(paths.requests, (current) => {
+      for (const request of current) {
+        if (
+          ids.has(request.request_id) &&
+          request.agent === agentName &&
+          request.type === "review_request" &&
+          (request.status === "pending" || request.status === "validating")
+        ) {
+          request.status = "rejected";
+          request.validation_result = "ownership_rejected";
+          request.validation_resolved_at = new Date().toISOString();
+          rejectedCounts.set(request.request_id, (rejectedCounts.get(request.request_id) || 0) + 1);
+        }
+      }
+    });
+
+    const resolvedAt = new Date().toISOString();
+    const decisionsToAdd = [];
+    for (const request of requests) {
+      const count = rejectedCounts.get(request.request_id) || 0;
+      if (count === 0) continue;
+      decisionsToAdd.push({
+        request_id: request.request_id,
+        disposition: "rejected",
+        decision: "Completion rejected",
+        reason,
+        resolved_at: resolvedAt,
+      });
+      log(`Rejected Request ${request.request_id}: ${reason}${count > 1 ? ` (${count} matching entries)` : ""}`);
+    }
+    appendDecisionRecords(paths, decisionsToAdd, log);
+  }
+
   // Resolves the agent's pending completion approval and then immediately marks
   // the agent COMPLETED. The two writes are issued back-to-back with nothing
   // between them, so the invariant "status=completed ⇒ approval resolved" holds
@@ -857,7 +1172,7 @@ async function runLoop() {
       request &&
       request.agent === action.agent &&
       request.type === "review_request" &&
-      request.status === "pending" &&
+      (request.status === "pending" || request.status === "validating") &&
       request.request_id
     );
     const explicitlyApproved = completionRequests.filter((request) => approvedById.has(request.request_id));
@@ -877,9 +1192,11 @@ async function runLoop() {
           ids.has(request.request_id) &&
           request.agent === action.agent &&
           request.type === "review_request" &&
-          request.status === "pending"
+          (request.status === "pending" || request.status === "validating")
         ) {
           request.status = "resolved";
+          request.validation_result = "passed";
+          request.validation_resolved_at = new Date().toISOString();
           resolvedCounts.set(request.request_id, (resolvedCounts.get(request.request_id) || 0) + 1);
         }
       }
@@ -1661,51 +1978,6 @@ function captureRecoveryAndReset(worktree, agent, log, runId) {
   }
 }
 
-// Runs the agent's validation command in its worktree. Two forms are accepted:
-//   • argv array (e.g. ["npm", "run", "test"]) — runs with shell:false, no expansion, no injection surface.
-//   • shell string (e.g. "npm run test -- src") — runs through /bin/sh -c, retained for ergonomics
-//     (pipes, &&, env vars). Logged as "(shell form)" so the trust requirement stays visible.
-function runValidation(agent, log, parsedConfig = {}) {
-  const cmd = agent.validate_cmd;
-  if (!cmd || cmd === "null") return { passed: true, log: "" };
-  if (Array.isArray(cmd) && cmd.length === 0) return { passed: true, log: "" };
-
-  const isArgv = Array.isArray(cmd);
-  const timeout = validationTimeout(agent, parsedConfig);
-  log(`Running validation${isArgv ? "" : " (shell form)"}: ${isArgv ? cmd.join(" ") : cmd} (timeout ${formatValidationTimeout(timeout)}${timeout.fromHardCap ? ", hard cap" : ""})`);
-
-  const options = {
-    cwd: agent.worktree,
-    encoding: "utf-8",
-    stdio: ["ignore", "pipe", "pipe"],
-    shell: !isArgv,
-    timeout: timeout.ms,
-  };
-
-  const result = isArgv
-    ? spawnSync(cmd[0], cmd.slice(1), options)
-    : spawnSync(cmd, options);
-
-  if (result.error) {
-    if (result.error.code === "ETIMEDOUT") {
-      const message = `Validation timed out after ${formatValidationTimeout(timeout)}.`;
-      const out = validationOutput(result);
-      log(message);
-      return { passed: false, log: out ? `${message}\n${out}` : message };
-    }
-    log(`Validation invocation failed: ${result.error.message}`);
-    return { passed: false, log: result.error.message };
-  }
-  if (result.status !== 0) {
-    const out = validationOutput(result);
-    const exit = result.signal ? `signal ${result.signal}` : `exit ${result.status}`;
-    log(`Validation failed (${exit}).`);
-    return { passed: false, log: out };
-  }
-  log(`Validation passed.`);
-  return { passed: true, log: "" };
-}
-
 function validationTimeout(agent, parsedConfig = {}) {
   const configured = firstPositiveNumber(agent.validation_timeout_mins, agent.timeout_mins, parsedConfig.default_timeout_mins);
   // Never return null: a hung validation suite would block the whole loop and
@@ -1731,8 +2003,94 @@ function formatValidationTimeout(timeout) {
   return `${timeout.ms}ms (${timeout.mins} minute${timeout.mins === 1 ? "" : "s"})`;
 }
 
-function validationOutput(result) {
-  return `${result.stdout || ""}\n${result.stderr || ""}`.trim();
+function hasValidationCommand(cmd) {
+  if (!cmd || cmd === "null") return false;
+  if (Array.isArray(cmd) && cmd.length === 0) return false;
+  return true;
+}
+
+function formatValidationCommandForLog(cmd) {
+  return Array.isArray(cmd) ? cmd.join(" ") : String(cmd);
+}
+
+function isValidationRunning(agent) {
+  return agent &&
+    agent.validation &&
+    agent.validation.state === VALIDATION_STATE.RUNNING;
+}
+
+function readValidationResult(validation) {
+  if (!validation || !validation.result_file || !fs.existsSync(validation.result_file)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(validation.result_file, "utf-8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return {
+      passed: false,
+      log: `Validation result file is malformed: ${validation.result_file}`,
+      error: "malformed validation result",
+      completed_at: new Date().toISOString(),
+    };
+  }
+}
+
+function missingValidationResultIfStale(agent, validation, parsedConfig = {}) {
+  const startedMs = Date.parse(validation.started_at || "");
+  if (!Number.isFinite(startedMs)) return null;
+  const timeoutMs = Number.isFinite(validation.timeout_ms)
+    ? validation.timeout_ms
+    : validationTimeout(agent, parsedConfig).ms;
+  const pid = Number(validation.pid);
+  if (Number.isInteger(pid) && pid > 0 && !processAlive(pid) && Date.now() - startedMs > 500) {
+    return {
+      passed: false,
+      log: "Validation runner exited before writing a result.",
+      error: "missing validation result",
+      completed_at: new Date().toISOString(),
+    };
+  }
+  const staleAfterMs = timeoutMs + Math.max(5000, Math.min(30_000, timeoutMs));
+  if (Date.now() - startedMs > staleAfterMs) {
+    return {
+      passed: false,
+      log: `Validation runner did not write a result within ${Math.ceil(staleAfterMs)}ms.`,
+      error: "missing validation result",
+      completed_at: new Date().toISOString(),
+    };
+  }
+  return null;
+}
+
+function writeValidationResultFile(resultFile, result) {
+  try {
+    writeAtomic(resultFile, JSON.stringify(result, null, 2) + "\n");
+  } catch {}
+}
+
+function safeValidationFileSegment(value) {
+  return String(value || "agent").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "agent";
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function killValidationRunner(pid, agentName, log) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  try {
+    process.kill(-pid, "SIGTERM");
+    log(`Sent SIGTERM to validation runner for ${agentName} (PGID ${pid}).`);
+  } catch {
+    try {
+      process.kill(pid, "SIGTERM");
+      log(`Sent SIGTERM to validation runner for ${agentName} (PID ${pid}).`);
+    } catch {}
+  }
 }
 
 function checkCompletionOwnership(agentName, agent, paths, log) {
