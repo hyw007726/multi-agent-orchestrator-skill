@@ -18,7 +18,10 @@ const {
   waitFor,
 } = require('./helpers/temp-project');
 
-const { captureRecoveryAndReset } = require(path.join(repoRoot(), 'scripts', 'orchestrator-loop.js'));
+const {
+  captureRecoveryAndReset,
+  collectOwnershipChangedFiles,
+} = require(path.join(repoRoot(), 'scripts', 'orchestrator-loop.js'));
 
 describe('loop behavior', () => {
   // 1. Restart cap parks an agent for human attention.
@@ -527,6 +530,29 @@ describe('loop behavior', () => {
       assert.strictEqual(fs.readFileSync(path.join(submodulePath, 'nested.txt'), 'utf-8'), 'nested state\n');
       assert.strictEqual(fs.existsSync(path.join(worktree, 'scratch.txt')), false,
         'ordinary untracked files should still be cleaned');
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
+  it('discovers the default base ref for ownership when agent base_ref is missing', () => {
+    let project;
+    try {
+      project = createTempProject('ownership-base-ref-');
+      gitCommand(project.root, ['branch', '-M', 'trunk']);
+      gitCommand(project.root, ['update-ref', 'refs/remotes/origin/trunk', 'HEAD']);
+      gitCommand(project.root, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/trunk']);
+      gitCommand(project.root, ['checkout', '-b', 'agent-branch']);
+
+      fs.writeFileSync(path.join(project.root, 'owned.txt'), 'owned change\n', 'utf-8');
+      gitCommand(project.root, ['add', 'owned.txt']);
+      gitCommand(project.root, ['commit', '-m', 'Agent change']);
+
+      const logs = [];
+      const changed = collectOwnershipChangedFiles(project.root, undefined, (message) => logs.push(message));
+      assert.deepStrictEqual(changed.errors, []);
+      assert.deepStrictEqual(changed.files, ['owned.txt']);
+      assert.deepStrictEqual(logs, []);
     } finally {
       if (project) project.cleanup();
     }
@@ -1359,3 +1385,10 @@ describe('loop behavior', () => {
     }
   });
 });
+
+function gitCommand(cwd, args) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf-8' });
+  assert.strictEqual(result.status, 0,
+    `git ${args.join(' ')} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  return result;
+}

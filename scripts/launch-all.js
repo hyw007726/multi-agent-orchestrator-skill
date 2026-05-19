@@ -11,6 +11,7 @@ const { cliTemplateProcessMatch } = require('./lib/cli-template');
 const { renderWorkerPrompt } = require('./lib/prompt-render');
 const { formatModelHeadsUp } = require('./lib/model-headsup');
 const { validateContext, formatValidationReport } = require('./lib/context-validation');
+const { discoverDefaultBaseBranch } = require('./lib/git-base');
 
 if (require.main === module) {
   launchAll();
@@ -93,7 +94,7 @@ function runLaunch(args, projectRoot, contextPath) {
 
   const baseBranch = captureBaseBranch(projectRoot, config);
   const workerClis = Array.from(new Set(Object.values(tasks).map((agentRecord) => agentRecord.cli || config.default_cli)));
-  console.log(formatModelHeadsUp(config, { workerClis }));
+  console.log(formatModelHeadsUp(config, { workerClis, baseBranch }));
   console.log('');
 
   // Without this check, `git worktree add -b <agentName>` later in the spawn
@@ -528,15 +529,7 @@ function parseSpawnResult(stdout) {
 }
 
 function captureBaseBranch(projectRoot, config) {
-  try {
-    const result = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: projectRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    if (result.status === 0 && result.stdout?.trim()) {
-      return result.stdout.trim();
-    }
-  } catch {}
-  return 'main';
+  return discoverDefaultBaseBranch(projectRoot).ref;
 }
 
-module.exports = { parseSpawnResult, lookupOrphanedAgentRecord };
+module.exports = { parseSpawnResult, lookupOrphanedAgentRecord, captureBaseBranch };

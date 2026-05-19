@@ -64,6 +64,9 @@ function formatModelHeadsUp(config, options = {}) {
   const checkedClis = unique(options.checkedClis || []);
 
   const lines = ["Model heads-up:"];
+  if (typeof options.baseBranch === "string" && options.baseBranch.trim() !== "") {
+    lines.push(`  Git base ref: ${options.baseBranch.trim()}`);
+  }
 
   lines.push("  Worker CLI(s):");
   for (const cli of workerClis) {

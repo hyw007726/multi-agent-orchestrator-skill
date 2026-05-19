@@ -19,7 +19,7 @@ const {
   cleanupProcess,
 } = require('./helpers/temp-project');
 
-const { parseSpawnResult, lookupOrphanedAgentRecord } = require(path.join(repoRoot(), 'scripts', 'launch-all.js'));
+const { parseSpawnResult, lookupOrphanedAgentRecord, captureBaseBranch } = require(path.join(repoRoot(), 'scripts', 'launch-all.js'));
 
 const fakeCliPath = path.join(repoRoot(), 'tests/helpers/fake-cli.js');
 
@@ -71,6 +71,7 @@ describe('launch-all smoke test', () => {
 
       const launchScript = path.join(repoRoot(), 'scripts', 'launch-all.js');
       const launchResult = runLaunchAll(launchScript, project.root);
+      assert.match(launchResult.stdout, /Git base ref:/);
 
       const loopPidMatch = launchResult.stdout.match(/Orchestrator loop backgrounded \(PID:\s*(\d+)\)/);
       const loopPid = loopPidMatch ? parseInt(loopPidMatch[1], 10) : null;
@@ -807,6 +808,37 @@ describe('launch-all orphan PID recovery', () => {
   });
 });
 
+describe('launch-all base branch discovery', () => {
+  it('prefers origin HEAD over the current feature branch', () => {
+    let project;
+    try {
+      project = createTempProject('base-origin-head-');
+      git(project.root, ['branch', '-M', 'trunk']);
+      git(project.root, ['update-ref', 'refs/remotes/origin/trunk', 'HEAD']);
+      git(project.root, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/trunk']);
+      git(project.root, ['checkout', '-b', 'feature-work']);
+
+      assert.strictEqual(captureBaseBranch(project.root, {}), 'origin/trunk');
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
+  it('uses init.defaultBranch before falling back to the current branch', () => {
+    let project;
+    try {
+      project = createTempProject('base-config-default-');
+      git(project.root, ['branch', 'develop']);
+      git(project.root, ['checkout', '-b', 'feature-work']);
+      git(project.root, ['config', 'init.defaultBranch', 'develop']);
+
+      assert.strictEqual(captureBaseBranch(project.root, {}), 'develop');
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+});
+
 function runLaunchAll(scriptPath, cwd, extraArgs = []) {
   const result = runLaunchAllRaw(scriptPath, cwd, extraArgs);
   if (result.error) {
@@ -907,4 +939,11 @@ function writeNodeProjectConfig(projectRoot, cliPath) {
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function git(cwd, args) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf-8' });
+  assert.strictEqual(result.status, 0,
+    `git ${args.join(' ')} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  return result;
 }

@@ -14,6 +14,7 @@ const { appendEvent } = require("./lib/events");
 const { cliTemplateMode, cliTemplateProcessMatch, spawnCliTemplate } = require("./lib/cli-template");
 const { extractJsonObject } = require("./lib/provider-output");
 const { tailLines } = require("./lib/log-tail");
+const { discoverDefaultBaseBranch } = require("./lib/git-base");
 
 const RECENT_DECISION_LIMIT = 30;
 const HEARTBEAT_GRACE_PHASES = new Set(["starting", "reading", "planning", "testing", "running_tests", "building", "installing", "debugging"]);
@@ -2360,7 +2361,8 @@ function collectOwnershipChangedFiles(worktree, baseRef, log) {
 
 function resolveOwnershipBaseRef(worktree, baseRef) {
   const requested = typeof baseRef === "string" && baseRef.trim() ? baseRef.trim() : "";
-  const candidates = requested ? [requested] : ["main", "master"];
+  const discovered = requested ? null : discoverDefaultBaseBranch(worktree);
+  const candidates = requested ? [requested] : (discovered.ref ? [discovered.ref] : []);
   for (const candidate of candidates) {
     const result = spawnSync("git", ["rev-parse", "--verify", `${candidate}^{commit}`], {
       cwd: worktree,
@@ -2372,7 +2374,7 @@ function resolveOwnershipBaseRef(worktree, baseRef) {
   if (requested) {
     return { ref: "", error: `base_ref "${requested}" does not resolve to a commit.` };
   }
-  return { ref: "", error: "No default base ref (main or master) resolves to a commit." };
+  return { ref: "", error: "No default base ref resolves to a commit (tried origin/HEAD, init.defaultBranch, then current branch)." };
 }
 
 function addGitLines(files, cwd, args, errors, label) {

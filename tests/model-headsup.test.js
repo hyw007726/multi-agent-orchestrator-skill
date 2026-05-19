@@ -52,9 +52,10 @@ describe('model heads-up', () => {
       },
     };
 
-    const output = formatModelHeadsUp(config, { workerClis: ['kilo', 'codex'] });
+    const output = formatModelHeadsUp(config, { workerClis: ['kilo', 'codex'], baseBranch: 'origin/trunk' });
 
     assert.match(output, /Model heads-up:/);
+    assert.match(output, /Git base ref: origin\/trunk/);
     assert.match(output, /kilo: model selected by kilo's CLI config\/default/);
     assert.match(output, /codex: model gpt-5\.4-mini/);
     assert.match(output, /claude: model claude-sonnet-4-6/);

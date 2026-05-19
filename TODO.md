@@ -56,7 +56,7 @@ Pointers into the detailed entries below; full context and C-tag are on the body
   - `scripts/orchestrator-loop.js:81` only checks for `existsSync(abort.flag)` and unlinks it after handling. If a prior run was killed before unlinking (or the user wrote it manually for testing), the next loop boots, sees the flag, aborts immediately, and unlinks it — wasting one full launch cycle.
   - *Fix:* Write the abort flag as JSON `{ pid, written_at }`. On startup, ignore flags whose `written_at` predates the current `current_run.json` started_at. Dashboard's Ctrl+C writer should include those fields.
 
-- **[C2] `default_base_branch` discovery falls back to literal `"main"`**
+- ~~**[C2] `default_base_branch` discovery falls back to literal `"main"`**~~ - _fixed: launch and ownership checks now discover origin/HEAD, then init.defaultBranch, then current branch, and launch surfaces the resolved base ref._
   - `scripts/launch-all.js:530-540` returns `"main"` if `git rev-parse --abbrev-ref HEAD` fails or is empty. `scripts/orchestrator-loop.js:1771` then probes `["main", "master"]` for the ownership base. Repos using `trunk`, `develop`, or other defaults silently use a wrong base for ownership and `git diff` snapshots.
   - *Fix:* Read `git symbolic-ref refs/remotes/origin/HEAD` (or `git config --get init.defaultBranch`) and fall back to the current branch only if both fail. Surface the resolved base in the `Model heads-up` block at launch.
 
