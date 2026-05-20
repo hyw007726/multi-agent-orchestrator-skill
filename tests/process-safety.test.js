@@ -210,6 +210,14 @@ describe('process safety helpers', () => {
       false,
       'the recorded fallback must also match the expected CLI token',
     );
+    assert.strictEqual(
+      pidMatchesCli(pid, 'codex', {
+        recordedCmdline: recorded,
+        cmdMap: new Map([[pid, '/bin/sh -c vim codex']]),
+      }),
+      false,
+      'should not match if the token is just a filename argument to vim',
+    );
   });
 
   // 7. After REFUSAL_FALLBACK_THRESHOLD refused checks, safeKill signals anyway

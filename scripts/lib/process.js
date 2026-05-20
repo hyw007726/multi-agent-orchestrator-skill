@@ -237,7 +237,19 @@ function eventsConfirmWeSpawned(coordDir, pid) {
 
 function commandLineContainsCliToken(cmdline, expectedBin) {
   if (!expectedBin) return false;
-  return commandLineTokens(cmdline).some((token) => cliBasename(token) === expectedBin);
+  const tokens = commandLineTokens(cmdline);
+  for (let i = 0; i < tokens.length; i++) {
+    if (cliBasename(tokens[i]) === expectedBin) {
+      // If it's the first token, it's the executable.
+      if (i === 0) return true;
+      // If preceded by a known wrapper/interpreter/shell-flag, it's likely the executable.
+      const prev = cliBasename(tokens[i - 1]);
+      if (["node", "sh", "bash", "zsh", "sudo", "env", "python", "python3", "perl", "ruby", "-c", "--"].includes(prev)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function commandLineTokens(value) {
