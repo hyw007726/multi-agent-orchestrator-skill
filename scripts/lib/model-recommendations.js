@@ -10,8 +10,8 @@ const SECOND_TIER_RECOMMENDATIONS = {
   openai: {
     family: "openai",
     label: "OpenAI/Codex",
-    model: "gpt-5.4-mini",
-    reason: "GPT-5.4 mini is the cost-efficient Codex-compatible worker tier below the default frontier model.",
+    model: "gpt-4o-mini",
+    reason: "GPT-4o mini is the cost-efficient Codex-compatible worker tier below the default frontier model.",
   },
   google: {
     family: "google",
