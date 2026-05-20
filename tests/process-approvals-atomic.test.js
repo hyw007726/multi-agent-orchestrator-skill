@@ -23,7 +23,7 @@ describe('processApprovals crash-atomicity', () => {
   // We simulate the audit-write failure by replacing coord/decisions.jsonl with
   // a directory. fs.appendFileSync against a directory raises EISDIR, which is
   // caught by the loop's per-cycle try/catch.
-  it('flips request status before the audit write, so an audit failure leaves no pending request to re-decide', () => {
+  it('flips request status before the audit write, so a reboot does not re-decide it', () => {
     let project;
     try {
       project = createTempProject('approvals-atomic-');
@@ -31,14 +31,23 @@ describe('processApprovals crash-atomicity', () => {
       // Fake orchestrator CLI: approve any pending request, then echo a
       // benign payload for any other prompt mode.
       const fakeCliPath = path.join(project.root, 'approve-cli.js');
+      const callCountPath = path.join(project.root, 'approve-cli-calls.json');
       fs.writeFileSync(fakeCliPath, [
         '#!/usr/bin/env node',
         "'use strict';",
         'const fs = require("fs");',
+        `const callCountPath = ${JSON.stringify(callCountPath)};`,
+        'function bumpArbitrationCalls() {',
+        '  let current = { arbitration: 0 };',
+        '  try { current = JSON.parse(fs.readFileSync(callCountPath, "utf-8")); } catch {}',
+        '  current.arbitration = (current.arbitration || 0) + 1;',
+        '  fs.writeFileSync(callCountPath, JSON.stringify(current), "utf-8");',
+        '}',
         'const args = process.argv.slice(2);',
         'if (args[0] === "--version") { console.log("approve-cli 1.0"); process.exit(0); }',
         'const prompt = fs.readFileSync(args[0], "utf-8");',
         'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  bumpArbitrationCalls();',
         '  const start = prompt.indexOf("## New Requests from Agents");',
         '  const end = prompt.indexOf("## Your Responsibilities", start + 1);',
         '  const section = prompt.slice(start, end === -1 ? undefined : end);',
@@ -129,6 +138,17 @@ describe('processApprovals crash-atomicity', () => {
       // fail. This is what makes the test meaningful: we know the flip ran
       // even though the audit step blew up.
       assert.ok(fs.statSync(auditPath).isDirectory(), 'decisions.jsonl audit path remained a directory (audit write failed)');
+      assert.strictEqual(JSON.parse(fs.readFileSync(callCountPath, 'utf-8')).arbitration, 1,
+        'first boot should arbitrate the pending request exactly once');
+
+      // Reboot the loop against the same coord state. The request has already
+      // been flipped out of "pending", so even with the failed audit path still
+      // present the loop must not ask the orchestrator CLI to decide it again.
+      const reboot = runLoop(project.root);
+      assert.strictEqual(reboot.status, 0,
+        `orchestrator reboot failed\nstdout:\n${reboot.stdout}\nstderr:\n${reboot.stderr}`);
+      assert.strictEqual(JSON.parse(fs.readFileSync(callCountPath, 'utf-8')).arbitration, 1,
+        'reboot must not re-arbitrate a request whose status flip already landed');
     } finally {
       if (project) project.cleanup();
     }
