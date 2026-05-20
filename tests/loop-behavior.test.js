@@ -537,6 +537,138 @@ describe('loop behavior', () => {
     }
   });
 
+  it('hard restart preserves a submodule path declared by staged .gitmodules', () => {
+    let project;
+    try {
+      project = createTempProject('hard-restart-staged-submodule-');
+
+      const cliPath = path.join(project.root, 'hard-submodule-cli.js');
+      fs.writeFileSync(cliPath, [
+        '#!/usr/bin/env node',
+        "'use strict';",
+        'const fs = require("fs");',
+        'const args = process.argv.slice(2);',
+        'if (args[0] === "--version") { console.log("hard-submodule-cli 1.0"); process.exit(0); }',
+        'const promptFile = args[0];',
+        'const prompt = promptFile ? fs.readFileSync(promptFile, "utf-8") : "";',
+        'if (prompt.includes("system orchestrator for a multi-agent project")) {',
+        '  const start = prompt.indexOf("## New Requests from Agents");',
+        '  const end = prompt.indexOf("## Your Responsibilities", start + 1);',
+        '  const section = prompt.slice(start, end === -1 ? undefined : end);',
+        '  const match = section.match(/\\[[\\s\\S]*\\]/);',
+        '  const requests = match ? JSON.parse(match[0]) : [];',
+        '  const approved = requests.map((r) => ({',
+        '    request_id: r.request_id,',
+        '    decision: "Approved " + r.request_id,',
+        '    reason: "Hard restart staged submodule test."',
+        '  }));',
+        '  const actions = requests.map((r) => ({',
+        '    type: "hard_restart",',
+        '    agent: r.agent,',
+        '    instruction: "Restart after preserving staged submodule metadata."',
+        '  }));',
+        '  console.log(JSON.stringify({ approved, rejected: [], actions }, null, 2));',
+        '  process.exit(0);',
+        '}',
+        'setTimeout(() => process.exit(0), 25);',
+      ].join('\n'), 'utf-8');
+
+      fs.writeFileSync(path.join(project.root, 'orchestrator.config.js'), [
+        'module.exports = {',
+        '  default_cli: "hard-submodule",',
+        '  orchestrator_cli: "hard-submodule",',
+        `  cli_templates: { "hard-submodule": 'node "${cliPath}" {prompt_file}' },`,
+        '  cli_health_checks: { "hard-submodule": "node -e \\"process.exit(0)\\"" },',
+        '  default_max_restarts: 1,',
+        '  poll_min_ms: 250,',
+        '  poll_max_ms: 500,',
+        '  launch_dashboard: false,',
+        '  launch_review_terminal: false,',
+        '};',
+      ].join('\n') + '\n', 'utf-8');
+
+      bootstrapProject(project.root, 'Hard restart staged submodule test project');
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.tasks = {
+        'agent-submodule': {
+          description: 'Exercise hard restart recovery with staged .gitmodules.',
+          cli: 'hard-submodule',
+          allowed_paths: ['.gitmodules', 'vendor/**', 'scratch.txt'],
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2), 'utf-8');
+
+      addKiloWorktree(project.root, 'agent-submodule');
+      const worktree = path.join(project.root, '.agents', 'worktrees', 'agent-submodule');
+      const submodulePath = path.join(worktree, 'vendor', 'lib');
+      fs.mkdirSync(submodulePath, { recursive: true });
+      gitCommand(submodulePath, ['init']);
+      gitCommand(submodulePath, ['config', 'user.email', 'test@test.test']);
+      gitCommand(submodulePath, ['config', 'user.name', 'Test']);
+      fs.writeFileSync(path.join(submodulePath, 'nested.txt'), 'nested state\n', 'utf-8');
+      gitCommand(submodulePath, ['add', 'nested.txt']);
+      gitCommand(submodulePath, ['commit', '-m', 'Nested initial commit']);
+
+      fs.writeFileSync(path.join(worktree, '.gitmodules'), [
+        '[submodule "vendor/lib"]',
+        '\tpath = vendor/lib',
+        '\turl = ./vendor/lib',
+        '',
+      ].join('\n'), 'utf-8');
+      gitCommand(worktree, ['add', '.gitmodules']);
+      assert.match(gitCommand(worktree, ['diff', '--staged', '--name-only']).stdout, /^\.gitmodules$/m,
+        '.gitmodules should be staged before the hard restart runs');
+      fs.writeFileSync(path.join(worktree, 'scratch.txt'), 'untracked parent state\n', 'utf-8');
+
+      const nowIso = new Date().toISOString();
+      fs.writeFileSync(path.join(project.root, 'coord', 'agents.json'), JSON.stringify({
+        'agent-submodule': {
+          task: 'Exercise hard restart recovery with staged .gitmodules.',
+          status: 'running',
+          pid: 0,
+          cli: 'hard-submodule',
+          process_match: 'node',
+          worktree,
+          started_at: nowIso,
+          current_started_at: nowIso,
+          last_spawned_at: nowIso,
+          last_heartbeat: nowIso,
+          restart_count: 0,
+          base_ref: 'main',
+        },
+      }, null, 2) + '\n', 'utf-8');
+      fs.writeFileSync(path.join(project.root, 'coord', 'requests.jsonl'), JSON.stringify({
+        request_id: 'agent-submodule-hard-restart',
+        agent: 'agent-submodule',
+        type: 'question',
+        priority: 'medium',
+        status: 'pending',
+        content: 'Trigger a hard restart.',
+        created_at: nowIso,
+      }) + '\n', 'utf-8');
+
+      const loop = runLoop(project.root);
+      assert.strictEqual(loop.status, 0,
+        `loop failed\nstdout:\n${loop.stdout}\nstderr:\n${loop.stderr}`);
+
+      assert.ok(fs.existsSync(path.join(submodulePath, '.git')),
+        'declared submodule git metadata should survive hard restart clean');
+      assert.strictEqual(fs.readFileSync(path.join(submodulePath, 'nested.txt'), 'utf-8'), 'nested state\n');
+      assert.strictEqual(fs.existsSync(path.join(worktree, 'scratch.txt')), false,
+        'ordinary untracked parent state should still be cleaned during hard restart');
+
+      const events = readJsonl(path.join(project.root, 'coord', 'events.jsonl'));
+      const recoveryEvent = events.find((event) =>
+        event.event === 'recovery_tag_created' &&
+        event.agent === 'agent-submodule'
+      );
+      assert.ok(recoveryEvent, 'hard restart should create a recovery tag for staged .gitmodules state');
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
   it('discovers the default base ref for ownership when agent base_ref is missing', () => {
     let project;
     try {
