@@ -196,9 +196,7 @@ function rejectPendingRequestsForAgent(response, pending, agentName, reason) {
 
 module.exports = {
   processApprovals,
-  resetMilestonesOnWaitResolutions,
   appendDecisionRecords,
   completionRequestDecisions,
-  markPendingRequestsById,
   rejectPendingRequestsForAgent,
 };

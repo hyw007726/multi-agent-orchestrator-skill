@@ -731,21 +731,8 @@ function processMatchForCli(cli, parsedConfig) {
 }
 
 module.exports = {
-  RESTART_PROMPT_KEEP,
   processActions,
-  dropUnknownAgentAction,
-  beginCompletionValidation,
   processFinishedValidations,
-  completeValidatedEndAgent,
-  handleValidationFailure,
-  bumpRestartAndRespawn,
-  markCompletionRequestsValidating,
-  validationArbitrationFromState,
-  resolveCompletionRequestsAfterValidationFailure,
-  rejectCompletionRequestsForAgent,
-  finalizeEndAgentCompletion,
-  resolveEndAgentApprovalBeforeSignal,
   sweepRestartPrompts,
   expectedProcessForAgent,
-  processMatchForCli,
 };
