@@ -15,10 +15,7 @@ Each item is tagged with a complexity rating:
 
 ## Medium (UX gaps, missing safety nets)
 
-## Test gaps
-
-- [x] **[C2] Crash mid-`processApprovals`**: write a test that injects a fault between `appendDecisionRecords` and `updateJSONL`, then reboots the loop and confirms no request is re-arbitrated.
-- [x] **[C2] Concurrent lock acquire**: spawn N parallel `acquireLock` callers against the same file and assert no caller sees a half-formed lock (no missing pid file, no premature stale-cleanup).
-- [x] **[C2] Per-cycle subprocess count**: assert that with 10 running agents, one main-loop tick spawns at most one `ps` and at most one `git` per agent (regression for the perf fix above).
-- [x] **[C2] Coord symlink subtree ownership**: simulate a worker writing `coord/requests/foo.json` via the symlink and assert ownership check passes.
-- [x] **[C2] Submodule survives `captureRecoveryAndReset`**: stage a `.gitmodules` entry in a worker worktree, trigger a hard restart, and assert the submodule path is preserved (or the hard restart refuses).
+- [x] **[C2] Add `--json` mode to scripts the LLM consumes**: emit a stable schema from `preflight.js`, `validate-context.js`, `launch-all.js`, and a new `status.js` so the caller LLM can branch on structured fields instead of string-matching stdout. Human-readable output stays the default.
+- [x] **[C1] Add `scripts/status.js`**: read `coord/agents.json`, `coord/events.jsonl`, and any `coord/orchestrator-stalled.flag`, then emit `{ loop_state, agents: [{ name, state, last_event_seq, blocker? }] }`. Supports both human text and `--json`. Becomes the canonical "what's happening right now" probe so SKILL.md can stop pointing at multiple files.
+- [x] **[C1] Slim SKILL.md by collapsing alternative paths**: for each phase, name exactly one canonical command (`prepare-run.js`, `launch-all.js`, `status.js`). Move "or you could also…" variants to a Power-user appendix. Goal is to reduce context bloat without losing any capability.
+- [x] **[C1] Trim repeated rationale prose in SKILL.md**: drop duplicated "IMPORTANT/CRITICAL/Action:" callouts where the same point is restated; the runtime shape is fine, the prose is the bloat.
