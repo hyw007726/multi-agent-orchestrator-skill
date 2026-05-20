@@ -40,6 +40,12 @@ function tailLines(filePath, lineCount, { maxBytes = DEFAULT_TAIL_BYTES } = {}) 
     const readSize = Math.min(cap, size);
     const buf = Buffer.allocUnsafe(readSize);
     const start = size - readSize;
+    let byteBefore = 0;
+    if (start > 0) {
+      const b = Buffer.alloc(1);
+      fs.readSync(fd, b, 0, 1, start - 1);
+      byteBefore = b[0];
+    }
     fs.readSync(fd, buf, 0, readSize, start);
 
     const text = buf.toString("utf-8");
@@ -49,7 +55,7 @@ function tailLines(filePath, lineCount, { maxBytes = DEFAULT_TAIL_BYTES } = {}) 
     // The 64 KB window may start mid-line. Drop the first fragment so we don't
     // surface a truncated head of an earlier line — but only when we have more
     // than one line to spare.
-    if (start > 0 && split.length > 1) split.shift();
+    if (start > 0 && split.length > 1 && byteBefore !== 10) split.shift();
 
     const tail = split.slice(-limit).join("\n");
     return tail ? `${tail}${hadTrailingNewline ? "\n" : ""}` : "";
