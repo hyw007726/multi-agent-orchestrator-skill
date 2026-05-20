@@ -64,6 +64,27 @@ describe("tailLines", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("does not lose the leading complete line when the window starts at a line boundary", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "log-tail-boundary-"));
+    try {
+      const file = path.join(dir, "boundary.log");
+      // Line 1: 50 bytes, Line 2: 50 bytes.
+      const line1 = "L1".padEnd(49, ".") + "\n";
+      const line2 = "L2".padEnd(49, ".") + "\n";
+      fs.writeFileSync(file, line1 + line2, "utf-8");
+
+      // Exactly line 2.
+      const tail = tailLines(file, 10, { maxBytes: 50 });
+      assert.strictEqual(tail, line2);
+
+      // Window starts at the \n of line 1.
+      const tail2 = tailLines(file, 10, { maxBytes: 51 });
+      assert.strictEqual(tail2, line2);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("rotateLogIfTooLarge", () => {
