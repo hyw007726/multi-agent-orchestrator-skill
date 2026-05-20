@@ -1847,7 +1847,7 @@ function appendLog(logFile, message) {
   const timestamp = new Date().toISOString();
   const line = `[${timestamp}] ${message}\n`;
   fs.appendFileSync(logFile, line);
-  console.log(line.trim());
+  if (process.stdout.isTTY !== false) console.log(line.trim());
 }
 
 function shellQuote(value) {
