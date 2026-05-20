@@ -13,18 +13,39 @@ const { formatModelHeadsUp } = require('./lib/model-headsup');
 const { validateContext, formatValidationReport } = require('./lib/context-validation');
 const { discoverDefaultBaseBranch } = require('./lib/git-base');
 
+// Tracks the in-flight run for the --json reporter so the failure exit paths
+// have something concrete to serialize. Reset on every launchAll() entry.
+const jsonState = {
+  enabled: false,
+  spawnedAgents: [],
+  loopPid: null,
+  errors: [],
+};
+
 if (require.main === module) {
   launchAll();
 }
 
 function launchAll() {
   const args = parseArgs();
+  jsonState.enabled = args.json;
+  jsonState.spawnedAgents = [];
+  jsonState.loopPid = null;
+  jsonState.errors = [];
+
+  // In JSON mode every existing human print goes to stderr so stdout stays
+  // reserved for the single JSON envelope.
+  if (args.json) {
+    const originalLog = console.log;
+    console.log = (...parts) => console.error(...parts);
+    process.once('exit', () => { console.log = originalLog; });
+  }
+
   const projectRoot = process.cwd();
 
   const contextPath = path.resolve(args.coordDir, 'context.json');
   if (!fs.existsSync(contextPath)) {
-    console.error(`Error: ${contextPath} not found. Run bootstrap first.`);
-    process.exit(1);
+    failLaunch(`${contextPath} not found. Run bootstrap first.`);
   }
 
   // Serialize concurrent launches against the same coord/. Without this, two
@@ -48,7 +69,7 @@ function runLaunch(args, projectRoot, contextPath) {
     context = JSON.parse(fs.readFileSync(contextPath, 'utf-8'));
   } catch (err) {
     console.error(`Error: Failed to parse ${contextPath}: ${err.message}`);
-    process.exit(1);
+    failLaunch(`Failed to parse ${contextPath}: ${err.message}`);
   }
 
   const config = loadConfig();
@@ -64,11 +85,11 @@ function runLaunch(args, projectRoot, contextPath) {
     validateCommand: `node ${path.join(__dirname, 'validate-context.js')} --coord ${args.coordDir}`,
   });
   if (validationText) {
-    const stream = validation.errors.length > 0 ? process.stderr : process.stdout;
+    const stream = (validation.errors.length > 0 || jsonState.enabled) ? process.stderr : process.stdout;
     stream.write(`${validationText}\n\n`);
   }
   if (validation.errors.length > 0) {
-    process.exit(1);
+    failLaunch(`Context validation failed: ${validation.errors[0]}`);
   }
 
   const tasks = context.tasks;
@@ -84,7 +105,7 @@ function runLaunch(args, projectRoot, contextPath) {
   const templatePath = path.resolve(__dirname, '..', 'references', 'worker-prompt-template.md');
   if (!fs.existsSync(templatePath)) {
     console.error(`Error: Template file not found at ${templatePath}`);
-    process.exit(1);
+    failLaunch(`Template file not found at ${templatePath}`);
   }
   const template = fs.readFileSync(templatePath, 'utf-8');
 
@@ -114,7 +135,7 @@ function runLaunch(args, projectRoot, contextPath) {
       `If you intended to resume a preserved worktree, ensure the worktree directory ` +
       `still exists and rerun with --resume.`,
     );
-    process.exit(1);
+    failLaunch(`Stale agent branches block launch: ${staleBranches.map((e) => e.agent).join(', ')}`);
   }
 
   for (const [agentName, agentRecord] of Object.entries(tasks)) {
@@ -127,14 +148,14 @@ function runLaunch(args, projectRoot, contextPath) {
       if (!args.resume) {
         console.error(`Error: Worktree ${worktreePath} already exists for agent ${agentName}. Pass --resume to validate and reuse preserved worktrees.`);
         rollbackIfNeeded(spawnedPids, createdWorktrees, projectRoot);
-        process.exit(1);
+        failLaunch(`Worktree ${worktreePath} already exists for agent ${agentName}; pass --resume to reuse.`);
       }
 
       const resumeCheck = validateExistingWorktree(projectRoot, worktreePath, agentName);
       if (!resumeCheck.ok) {
         console.error(`Error: Cannot resume agent ${agentName} from ${worktreePath}: ${resumeCheck.error}`);
         rollbackIfNeeded(spawnedPids, createdWorktrees, projectRoot);
-        process.exit(1);
+        failLaunch(`Cannot resume agent ${agentName} from ${worktreePath}: ${resumeCheck.error}`);
       }
       console.log(`Resuming existing worktree ${worktreePath} for agent ${agentName}.`);
     } else {
@@ -147,7 +168,7 @@ function runLaunch(args, projectRoot, contextPath) {
         console.error(`Error: Failed to create worktree for ${agentName}:`);
         console.error(addResult.stderr || addResult.stdout);
         rollback(spawnedPids, createdWorktrees, projectRoot);
-        process.exit(1);
+        failLaunch(`Failed to create worktree for ${agentName}: ${(addResult.stderr || addResult.stdout || '').trim()}`);
       }
 
       createdWorktrees.push({ name: agentName, path: worktreePath });
@@ -215,7 +236,7 @@ function runLaunch(args, projectRoot, contextPath) {
       console.error(spawnResult.stderr || spawnResult.stdout);
       recoverOrphanForRollback(spawnedPids, args.coordDir, agentName, cli, config);
       rollback(spawnedPids, createdWorktrees, projectRoot);
-      process.exit(1);
+      failLaunch(`Failed to spawn agent ${agentName}: ${(spawnResult.stderr || spawnResult.stdout || '').trim()}`);
     }
 
     const result = parseSpawnResult(spawnResult.stdout);
@@ -224,13 +245,14 @@ function runLaunch(args, projectRoot, contextPath) {
       console.error(spawnResult.stdout);
       recoverOrphanForRollback(spawnedPids, args.coordDir, agentName, cli, config);
       rollback(spawnedPids, createdWorktrees, projectRoot);
-      process.exit(1);
+      failLaunch(`Could not capture a PID for agent ${agentName} from spawn-agent.js output.`);
     }
     try { fs.unlinkSync(promptFile); } catch {}
     const { pid, logFile: logPath = 'coord/logs/', templateMode = 'unknown' } = result;
 
     spawnedAgents.push({ name: agentName, pid, logPath, templateMode });
     spawnedPids.push({ pid, cli, processMatch: cliTemplateProcessMatch(cli, config.cli_templates[cli]), name: agentName });
+    jsonState.spawnedAgents.push({ name: agentName, pid, log_path: logPath, template_mode: templateMode, cli });
     console.log(`Agent '${agentName}' spawned (PID: ${pid}, template: ${templateMode}, log: ${logPath})`);
   }
 
@@ -251,6 +273,16 @@ function runLaunch(args, projectRoot, contextPath) {
 
   console.log(`Orchestrator loop backgrounded (PID: ${loop.pid})`);
   console.log(`Dashboard: node ${path.join(__dirname, 'dashboard.js')} --coord ${args.coordDir}`);
+
+  jsonState.loopPid = loop.pid;
+  emitJsonEnvelopeIfEnabled({
+    ok: true,
+    errors: [],
+    coord_dir: args.coordDir,
+    agents: jsonState.spawnedAgents,
+    loop_pid: loop.pid,
+    dashboard_command: `node ${path.join(__dirname, 'dashboard.js')} --coord ${args.coordDir}`,
+  });
 
   // Single-use helper — only called from the spawn loop above.
   // If spawn-agent.js panicked between its agents.json write and the
@@ -294,12 +326,33 @@ function runLaunch(args, projectRoot, contextPath) {
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const config = { coordDir: './coord', resume: false };
+  const config = { coordDir: './coord', resume: false, json: false };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--coord') config.coordDir = args[++i];
     else if (args[i] === '--resume' || args[i] === '--force-existing-worktrees') config.resume = true;
+    else if (args[i] === '--json') config.json = true;
   }
   return config;
+}
+
+// Emits a single JSON envelope on stdout when --json mode is active. No-op
+// otherwise so the human path is unaffected.
+function emitJsonEnvelopeIfEnabled(envelope) {
+  if (!jsonState.enabled) return;
+  process.stdout.write(JSON.stringify(envelope, null, 2) + '\n');
+}
+
+// Exit the launch with an error, emitting the JSON envelope first if --json
+// mode is active. Mirrors `process.exit(1)` for the human path.
+function failLaunch(message) {
+  jsonState.errors.push(message);
+  emitJsonEnvelopeIfEnabled({
+    ok: false,
+    errors: jsonState.errors,
+    agents: jsonState.spawnedAgents,
+    loop_pid: jsonState.loopPid,
+  });
+  process.exit(1);
 }
 
 // Acquires an advisory mutex on the coord/ directory so two concurrent
@@ -323,7 +376,7 @@ function acquireLaunchLock(coordDir) {
         `If you're certain no other launch is running (e.g. it crashed without ` +
         `cleanup), remove the stale marker:  rm -rf '${marker}.lock'`,
       );
-      process.exit(1);
+      failLaunch(`Another launch-all is already running for '${coordDir}'.`);
     }
     throw err;
   }
