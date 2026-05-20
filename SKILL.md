@@ -367,6 +367,13 @@ When you receive this instruction to perform the final integration, you should:
    git branch -d <agent-name>
    ```
 
+### Power-user spawn options
+
+The `scripts/spawn-agent.js` script supports a `--` passthrough. Any arguments following `--` are appended directly to the CLI command template defined in `orchestrator.config.jsonc`.
+
+> [!WARNING]
+> Arguments passed via `--` are NOT sanitized and are appended as-is to the shell command or argv list. Use this only for temporary debugging (e.g., `-- --verbose` or `-- --model <other-id>`) or project-specific overrides that don't warrant a permanent config change.
+
 ## For Maintainers
 
 Run `node scripts/run-tests.js` to syntax-check scripts and execute dependency-free smoke tests.
