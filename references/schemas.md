@@ -479,3 +479,98 @@ shape — every field the loop actually depends on — is:
   }
 }
 ```
+
+## CLI `--json` envelopes
+
+The scripts the orchestrator session consumes (`scripts/preflight.js`,
+`scripts/validate-context.js`, `scripts/launch-all.js`, `scripts/status.js`) all
+accept a `--json` flag. When passed, the script emits a single JSON document on
+stdout and writes no other human-readable text on stdout (fatal diagnostics
+still go to stderr). The envelopes share a `{ ok: boolean, errors: string[] }`
+top level so callers can branch on structured fields instead of string-matching
+human output. Exit codes match the human path: `0` on success, non-zero on
+failure.
+
+### `scripts/preflight.js --json`
+
+```json
+{
+  "ok": true,
+  "errors": ["string — present only on failure"],
+  "checked_clis": ["string — CLI names probed in this run"],
+  "with_auth": true,
+  "results": [
+    {
+      "cli": "string",
+      "phase": "install | template | auth",
+      "ok": true,
+      "message": "string — one-line summary or failure tail"
+    }
+  ]
+}
+```
+
+### `scripts/validate-context.js --json`
+
+```json
+{
+  "ok": true,
+  "errors": ["string — context.json validator errors blocking launch"],
+  "warnings": ["string — non-blocking validator warnings"],
+  "coord_dir": "string — value of --coord",
+  "context_path": "string — relative path to context.json"
+}
+```
+
+### `scripts/launch-all.js --json`
+
+```json
+{
+  "ok": true,
+  "errors": ["string — present only on failure"],
+  "coord_dir": "string — value of --coord",
+  "agents": [
+    {
+      "name": "string",
+      "pid": 12345,
+      "log_path": "string",
+      "template_mode": "argv | shell | builtin",
+      "cli": "string"
+    }
+  ],
+  "loop_pid": 23456,
+  "dashboard_command": "string — copy-pasteable dashboard launch command"
+}
+```
+
+On failure, `agents` reflects whatever workers were spawned before the abort
+(the loop is not running) and `loop_pid` is `null`.
+
+### `scripts/status.js --json`
+
+```json
+{
+  "ok": true,
+  "errors": ["string — only when coord/ contents could not be read"],
+  "coord_dir": "string — value of --coord",
+  "loop_state": "no_run | running | needs_attention | stalled | aborting | completed",
+  "stalled": null,
+  "abort_requested": false,
+  "agents": [
+    {
+      "name": "string",
+      "status": "running | needs_attention | completed | terminated | exited | errored | unknown",
+      "last_event_seq": 42,
+      "last_event": "agent_spawned",
+      "blocker": "string — omitted when no blocker is known"
+    }
+  ]
+}
+```
+
+`last_event_seq` is the 1-based line number in `coord/events.jsonl` of the most
+recent event whose `agent` field matches the agent name (null when the agent
+has no events yet). `stalled` mirrors the payload of
+`coord/orchestrator-stalled.flag` when present, otherwise `null`.
+`status.js` exits `0` even for the `no_run` case — that is a structured
+"nothing to report" result, not an error.
