@@ -5,6 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { tailLines } = require("./lib/log-tail");
+const { readLoopPid } = require("./lib/locking");
 
 if (require.main === module) {
   try {
@@ -113,7 +114,7 @@ function inspectLiveWorkspace(workspace) {
   const requests = readJsonlIfExists(path.join(coordDir, "requests.jsonl"));
   const decisions = readJsonIfExists(path.join(coordDir, "decisions.json")) || [];
   const events = readJsonlIfExists(path.join(coordDir, "events.jsonl"));
-  const loopPid = readTextIfExists(path.join(coordDir, "orchestrator.instance.lock", "pid"))?.trim() || null;
+  const loopPid = readLoopPid(coordDir);
   const reviewStreams = findReviewStreams(coordDir);
   const logFiles = findLogFiles(coordDir, agents);
   const roles = normalizeSessionRoles(session);

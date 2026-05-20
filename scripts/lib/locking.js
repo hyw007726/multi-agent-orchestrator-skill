@@ -144,14 +144,20 @@ function acquireInstanceLock(coordDir) {
     return runId;
   }
 
-  function readLockPid(lockMarker) {
-    try {
-      const value = parseInt(fs.readFileSync(path.join(lockMarker, "pid"), "utf-8"), 10);
-      return Number.isInteger(value) && value > 0 ? value : null;
-    } catch {
-      return null;
-    }
   }
+}
+ 
+function readLockPid(lockMarker) {
+  try {
+    const value = parseInt(fs.readFileSync(path.join(lockMarker, "pid"), "utf-8"), 10);
+    return Number.isInteger(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+ 
+function readLoopPid(coordDir) {
+  return readLockPid(path.join(coordDir, "orchestrator.instance.lock"));
 }
 
 function instanceLockError(coordDir, { pid = null, cmd = null, detectedVia, lockMarker = null } = {}) {
@@ -377,4 +383,4 @@ function writeAtomic(filePath, content) {
   }
 }
 
-module.exports = { acquireInstanceLock, readCurrentRunId, updateJSON, updateJSONL, appendJSONL, readJSON, readJSONL, acquireLock, writeAtomic };
+module.exports = { acquireInstanceLock, readCurrentRunId, updateJSON, updateJSONL, appendJSONL, readJSON, readJSONL, acquireLock, writeAtomic, readLoopPid };
