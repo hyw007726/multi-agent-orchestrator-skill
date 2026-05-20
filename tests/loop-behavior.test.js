@@ -560,7 +560,7 @@ describe('loop behavior', () => {
     }
   });
 
-  it('ignores changed files under a runtime coord symlink during ownership checks', () => {
+  it('passes ownership when a worker writes coord/requests/foo.json through the coord symlink', () => {
     let project;
     const coordTarget = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'coord-target-'));
     try {
@@ -575,7 +575,9 @@ describe('loop behavior', () => {
       fs.rmSync(path.join(project.root, 'coord'), { recursive: true, force: true });
       fs.mkdirSync(path.join(coordTarget, 'requests'), { recursive: true });
       fs.symlinkSync(coordTarget, path.join(project.root, 'coord'), 'dir');
-      fs.writeFileSync(path.join(project.root, 'coord', 'requests', 'new.json'), '{}\n', 'utf-8');
+      fs.writeFileSync(path.join(project.root, 'coord', 'requests', 'foo.json'), '{}\n', 'utf-8');
+      assert.ok(fs.existsSync(path.join(coordTarget, 'requests', 'foo.json')),
+        'worker-style write should land in the coord symlink target subtree');
       gitCommand(project.root, ['add', '-A']);
 
       const contextPath = path.join(coordTarget, 'context.json');
