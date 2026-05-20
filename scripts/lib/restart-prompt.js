@@ -3,6 +3,8 @@ const path = require("path");
 const { readJSON } = require("./locking");
 const { renderWorkerPrompt, renderWorkerRestartPrompt } = require("./prompt-render");
 
+let cachedTemplate = null;
+
 /**
  * Render the prompt fed to a worker that is being restarted or resumed.
  *
@@ -35,8 +37,11 @@ function renderRestartPrompt({ name, instruction, worktree, paths, log }) {
       const task = context.tasks?.[name];
       if (!task) return "";
 
-      const templatePath = path.resolve(__dirname, "..", "..", "references", "worker-prompt-template.md");
-      const template = fs.readFileSync(templatePath, "utf-8");
+      if (!cachedTemplate) {
+        const templatePath = path.resolve(__dirname, "..", "..", "references", "worker-prompt-template.md");
+        cachedTemplate = fs.readFileSync(templatePath, "utf-8");
+      }
+      const template = cachedTemplate;
       const contractPrompt = renderWorkerPrompt(template, {
         ASSIGNED_TASK: task.description || "",
         PROJECT_DESCRIPTION: context.project || "",
