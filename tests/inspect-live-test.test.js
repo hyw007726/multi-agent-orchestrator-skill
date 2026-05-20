@@ -96,7 +96,7 @@ describe("live test inspection", () => {
       assert.strictEqual(info.session_id, "live-gemini-arbitrator--abc123");
       assert.strictEqual(info.provider, "gemini");
       assert.strictEqual(info.test, "arbitrator");
-      assert.strictEqual(info.orchestrator_pid, "12345");
+      assert.strictEqual(info.orchestrator_pid, 12345);
       assert.strictEqual(info.roles.arbitrator.provider, "gemini");
       assert.strictEqual(info.pending_requests.length, 1);
       assert.strictEqual(info.recent_events.length, 1);
