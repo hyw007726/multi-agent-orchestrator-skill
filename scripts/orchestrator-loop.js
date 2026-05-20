@@ -2680,6 +2680,10 @@ async function callOrchestratorCli(prompt, parsedConfig, maxRetries, log, abortF
     const mode = template ? cliTemplateMode(template) : "missing-template";
     log(`Calling orchestrator CLI '${cli}' via ${mode} mode (attempt ${attempt}/${maxRetries}, timeout ${timeoutMs}ms)...`);
     const { stdout, error } = await invokeOrchestratorCli(cli, template, prompt, timeoutMs);
+    if (abortFlagPath && fs.existsSync(abortFlagPath)) {
+      log(`Orchestrator CLI call aborted via flag.`);
+      return null;
+    }
     if (error) {
       log(`Orchestrator CLI failed: ${error}`);
       if (attempt === maxRetries) return null;
