@@ -2822,6 +2822,8 @@ function clearStalledFlag(coordDir, log) {
   const stalledFlag = path.join(coordDir, "orchestrator-stalled.flag");
   if (fs.existsSync(stalledFlag)) {
     try {
+      const info = JSON.parse(fs.readFileSync(stalledFlag, "utf-8"));
+      appendEvent(coordDir, "orchestrator_cli_stalled_cleared", { data: info });
       fs.unlinkSync(stalledFlag);
       log("Cleared stalled flag — orchestrator CLI recovered.");
     } catch {}
