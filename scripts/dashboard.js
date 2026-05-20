@@ -25,6 +25,8 @@ for (let i = 2; i < argv.length; i++) {
     intervalMs = parseInt(argv[++i], 10) || 2000;
   } else if (arg === "--no-clear") {
     clearScreen = false;
+  } else if (arg === "--no-color") {
+    process.env.NO_COLOR = "1";
   }
 }
 

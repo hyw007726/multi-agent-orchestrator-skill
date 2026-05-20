@@ -135,6 +135,27 @@ describe('dashboard CLI', () => {
       fs.rmSync(coord, { recursive: true, force: true });
     }
   });
+
+  it('resolves --coord correctly when preceded by --no-color', async () => {
+    const coord = makeCoord('dashboard-flags-');
+    let child;
+    try {
+      child = spawn(process.execPath, [dashboardPath, '--no-color', '--no-clear', '--coord', coord], {
+        cwd: repoRoot(),
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      child.output = '';
+      child.stdout.setEncoding('utf-8');
+      child.stdout.on('data', (chunk) => { child.output += chunk; });
+
+      // If it resolved coord correctly, it should find the empty agents.json we created.
+      await waitForOutput(child, (text) => text.includes('No agents running yet.'));
+      assert.ok(!child.output.includes('Waiting for agents.json...'));
+    } finally {
+      cleanupProcess(child);
+      fs.rmSync(coord, { recursive: true, force: true });
+    }
+  });
 });
 
 function makeCoord(prefix) {
