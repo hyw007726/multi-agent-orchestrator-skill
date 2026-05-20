@@ -23,6 +23,7 @@ const { VALIDATION_STATE, VALIDATION_HARD_CAP_MINS, validationTimeout, firstPosi
 const { hasPendingProgressTimeoutRequest, buildProgressTimeoutRequest, progressTimeoutHistory, parseIsoMs, stampProgressMilestone, buildProgressEscalation, buildDeterministicProgressInstruction, readProgressHeartbeat, heartbeatChanged, shouldGrantHeartbeatGrace, normalizeHeartbeatPhase, limitHeartbeatData, formatHeartbeatForRequest, formatList, readDiffSnapshot, readDiffHash } = require("./lib/progress-tracking");
 const { RECENT_DECISION_LIMIT, ARBITRATION_PROMPT_CAP_BYTES, collectWorktreeStates, buildBoundedArbitrationPrompt, truncateMiddle, buildOrchestratorPrompt, callOrchestratorCli } = require("./lib/arbitration");
 const { shellQuote, runAppleScriptTerminal, writeStalledFlag, clearStalledFlag, finalize, buildFinalSummary } = require("./lib/finalize");
+const { processApprovals, resetMilestonesOnWaitResolutions, appendDecisionRecords, completionRequestDecisions, markPendingRequestsById, rejectPendingRequestsForAgent } = require("./lib/approvals");
 
 const RESTART_PROMPT_KEEP = 10;
 const LEGACY_ABORT_FLAG_STARTUP_GRACE_MS = 10_000;
@@ -86,6 +87,10 @@ async function runLoop() {
   let pollMs = parsedConfig.poll_min_ms;
   let aborted = false;
   const POLL_BACKOFF = 1.5;
+  // Shared context for lib/approvals.js + lib/actions.js helpers that were
+  // previously runLoop-scope closures. Captures the per-run state they need
+  // (paths, log, runId) so they can live as top-level functions.
+  const ctx = { paths, log, runId };
 
   while (true) {
     consolidateStagedRequests(paths);
@@ -332,7 +337,7 @@ async function runLoop() {
             clearStalledFlag(config.coordDir, log);
           }
           processActions(response.actions || [], paths, parsedConfig, log, { response, pending });
-          processApprovals(response, paths, log, { pending });
+          processApprovals(ctx, response, { pending });
         }
       } else {
         // ── All-done check ────────────────────────────────────────────────
@@ -889,181 +894,6 @@ async function runLoop() {
     }
   }
 
-
-  // Marks resolved/rejected requests in requests.jsonl, appends the full disposition
-  // audit log, and keeps decisions.json as a bounded recent window for prompts/dashboard.
-  // Workers never write this file directly; new staged requests are consolidated before
-  // arbitration, and status updates are serialized through updateJSONL.
-  // Crash-atomic resolution: flip the matching requests.jsonl entries OUT of
-  // 'pending' first, then write the decision audit. The orchestrator's restart
-  // invariant for "should this be re-arbitrated?" is `request.status === 'pending'`,
-  // so the only acceptable failure mode for a partial write is a missing audit
-  // entry — never a re-arbitration of an already-decided request. The previous
-  // order (audit first, flip second) allowed exactly that re-arbitration:
-  // decisions.jsonl claimed the request was resolved while requests.jsonl still
-  // showed it pending, and the next loop tick double-decided.
-  function processApprovals(response, paths, log, { pending = [] } = {}) {
-    const resolvedAt = new Date().toISOString();
-    const currentRequests = readJSONL(paths.requests);
-    const pendingById = new Map();
-    for (const request of currentRequests) {
-      if (request && request.status === "pending" && request.request_id && !pendingById.has(request.request_id)) {
-        pendingById.set(request.request_id, request);
-      }
-    }
-
-    // Collect (request_id, intended disposition, decision payload) for every
-    // approval/rejection that matches a still-pending request. Dedup on
-    // request_id so a malformed response that lists the same id twice doesn't
-    // produce two audit entries.
-    const resolutions = [];
-    const seenIds = new Set();
-    for (const approved of response.approved || []) {
-      const req = pendingById.get(approved.request_id);
-      if (!req || req.status !== "pending" || seenIds.has(approved.request_id)) continue;
-      seenIds.add(approved.request_id);
-      resolutions.push({
-        request_id: approved.request_id,
-        status: "resolved",
-        disposition: "approved",
-        decision: approved.decision,
-        reason: approved.reason,
-      });
-    }
-    for (const rejected of response.rejected || []) {
-      const req = pendingById.get(rejected.request_id);
-      if (!req || req.status !== "pending" || seenIds.has(rejected.request_id)) continue;
-      seenIds.add(rejected.request_id);
-      resolutions.push({
-        request_id: rejected.request_id,
-        status: "rejected",
-        disposition: "rejected",
-        decision: "Request rejected",
-        reason: rejected.reason,
-      });
-    }
-
-    // Step 1 (must come first): flip request status. After this lands, the
-    // next loop tick will not include these in `pending`, so a crash here is
-    // recoverable — we just lose the audit row.
-    const flippedCounts = new Map();
-    updateJSONL(paths.requests, (current) => {
-      for (const resolution of resolutions) {
-        const count = markPendingRequestsById(current, resolution.request_id, resolution.status);
-        if (count > 0) flippedCounts.set(resolution.request_id, count);
-      }
-    });
-
-    // Step 2: append the decision audit for the resolutions we actually flipped.
-    const decisionsToAdd = [];
-    for (const resolution of resolutions) {
-      const count = flippedCounts.get(resolution.request_id) || 0;
-      if (count === 0) continue;
-      decisionsToAdd.push({
-        request_id: resolution.request_id,
-        disposition: resolution.disposition,
-        decision: resolution.decision,
-        reason: resolution.reason,
-        resolved_at: resolvedAt,
-      });
-      const verbed = resolution.disposition === "approved" ? "Approved" : "Rejected";
-      const trailingText = resolution.disposition === "approved" ? resolution.decision : resolution.reason;
-      log(`${verbed} Request ${resolution.request_id}: ${trailingText}${count > 1 ? ` (${count} matching pending entries)` : ""}`);
-    }
-    appendDecisionRecords(paths, decisionsToAdd, log);
-
-    resetMilestonesOnWaitResolutions(response, pending, paths, log);
-  }
-
-  // Single-use helper — called from processApprovals above. A progress_timeout
-  // request that is approved without a soft/hard restart action targeting the
-  // same agent counts as a "wait" resolution: the orchestrator chose to let
-  // the agent continue. Treat that as a milestone so subsequent stalls don't
-  // immediately escalate based on the stale history.
-  function resetMilestonesOnWaitResolutions(response, pending, paths, log) {
-    const approvedIds = new Set(
-      (response.approved || [])
-        .map((entry) => entry && entry.request_id)
-        .filter(Boolean),
-    );
-    if (approvedIds.size === 0) return;
-
-    const restartActionAgents = new Set(
-      (response.actions || [])
-        .filter((action) => action && (action.type === "soft_restart" || action.type === "hard_restart" || action.type === "restart_agent" || action.type === "end_agent"))
-        .map((action) => action.agent)
-        .filter(Boolean),
-    );
-
-    const waitAgents = new Set();
-    for (const request of pending) {
-      if (!request || request.type !== "progress_timeout") continue;
-      if (!approvedIds.has(request.request_id)) continue;
-      if (restartActionAgents.has(request.agent)) continue;
-      waitAgents.add(request.agent);
-    }
-
-    for (const agentName of waitAgents) {
-      const stamp = stampProgressMilestone(paths, agentName, "wait_resolution");
-      if (stamp) log(`Agent ${agentName}: arbitration approved progress_timeout without a restart; resetting progress-timeout window at ${stamp}.`);
-    }
-  }
-
-  function appendDecisionRecords(paths, decisionsToAdd, log) {
-    if (decisionsToAdd.length === 0) return;
-    // Stamp every decision with the current run_id so readRecentDecisions can skip
-    // prior-run history. Done here (rather than at each call site) so a missed
-    // call site can't silently emit unstamped decisions.
-    const stamped = decisionsToAdd.map((d) => (runId && d && d.run_id === undefined ? { ...d, run_id: runId } : d));
-    appendJSONL(paths.decisionsAudit, stamped);
-    updateJSON(paths.decisions, (decisions) => {
-      decisions.push(...stamped);
-      if (decisions.length > RECENT_DECISION_LIMIT) {
-        const archive = decisions.length - RECENT_DECISION_LIMIT;
-        log(`Trimming ${archive} old decisions from decisions.json; full audit remains in decisions.jsonl.`);
-        decisions.splice(0, archive);
-      }
-    });
-  }
-
-  function completionRequestDecisions(action, arbitration = {}) {
-    const response = arbitration.response || {};
-    const pending = Array.isArray(arbitration.pending) ? arbitration.pending : [];
-    const approvedById = new Map();
-    for (const approved of response.approved || []) {
-      if (approved && approved.request_id && !approvedById.has(approved.request_id)) {
-        approvedById.set(approved.request_id, approved);
-      }
-    }
-    const rejectedIds = new Set((response.rejected || [])
-      .filter((rejected) => rejected && rejected.request_id)
-      .map((rejected) => rejected.request_id));
-
-    const completionRequests = pending.filter((request) =>
-      request &&
-      request.agent === action.agent &&
-      request.type === "review_request" &&
-      (request.status === "pending" || request.status === "validating") &&
-      request.request_id
-    );
-    const explicitlyApproved = completionRequests.filter((request) => approvedById.has(request.request_id));
-    const notRejected = completionRequests.filter((request) => !rejectedIds.has(request.request_id));
-    const selected = explicitlyApproved.length > 0
-      ? explicitlyApproved
-      : notRejected.length === 1
-        ? notRejected
-        : [];
-
-    return selected.map((request) => {
-      const approved = approvedById.get(request.request_id);
-      return {
-        request_id: request.request_id,
-        decision: approved?.decision || `Completion approved for ${action.agent}`,
-        reason: approved?.reason || "The orchestrator returned end_agent for this completion review request.",
-      };
-    });
-  }
-
   function markCompletionRequestsValidating(paths, agentName, requestIds) {
     const ids = new Set((requestIds || []).filter(Boolean));
     if (ids.size === 0) return;
@@ -1136,7 +966,7 @@ async function runLoop() {
         resolved_at: resolvedAt,
       });
     }
-    appendDecisionRecords(paths, decisionsToAdd, log);
+    appendDecisionRecords(ctx, decisionsToAdd);
   }
 
   function rejectCompletionRequestsForAgent(arbitration, paths, agentName, reason, log) {
@@ -1175,7 +1005,7 @@ async function runLoop() {
       });
       log(`Rejected Request ${request.request_id}: ${reason}${count > 1 ? ` (${count} matching entries)` : ""}`);
     }
-    appendDecisionRecords(paths, decisionsToAdd, log);
+    appendDecisionRecords(ctx, decisionsToAdd);
   }
 
   // Resolves the agent's pending completion approval and then immediately marks
@@ -1254,35 +1084,9 @@ async function runLoop() {
       });
       log(`Approved Request ${request.request_id}: ${decision}${count > 1 ? ` (${count} matching pending entries)` : ""}`);
     }
-    appendDecisionRecords(paths, decisionsToAdd, log);
+    appendDecisionRecords(ctx, decisionsToAdd);
   }
 
-  function markPendingRequestsById(requests, requestId, status) {
-    let count = 0;
-    for (const request of requests) {
-      if (request.request_id === requestId && request.status === "pending") {
-        request.status = status;
-        count++;
-      }
-    }
-    return count;
-  }
-
-  function rejectPendingRequestsForAgent(response, pending, agentName, reason) {
-    if (!response || !Array.isArray(pending)) return;
-    const ids = new Set(pending
-      .filter((request) => request && request.agent === agentName && request.status === "pending" && request.request_id)
-      .map((request) => request.request_id));
-    if (ids.size === 0) return;
-
-    response.approved = (response.approved || []).filter((entry) => !ids.has(entry.request_id));
-    const rejectedIds = new Set((response.rejected || []).map((entry) => entry.request_id));
-    response.rejected = response.rejected || [];
-    for (const requestId of ids) {
-      if (rejectedIds.has(requestId)) continue;
-      response.rejected.push({ request_id: requestId, reason });
-    }
-  }
 }
 
 // ─── Argument parsing ────────────────────────────────────────────────────────
