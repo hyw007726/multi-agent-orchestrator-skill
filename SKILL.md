@@ -7,85 +7,155 @@ description: Decompose a large coding task into parallel worker agents (Claude, 
 
 This skill defines a caller-neutral, CLI-agnostic multi-agent orchestration system.
 
-## Prerequisites & Recommendations
-Before using this skill, ensure you have:
-1. **A Headless Worker CLI**: Installed globally. This skill ships with `default_cli: kilo`, and can orchestrate **Claude Code**, **Codex**, **Gemini**, **Kilo Code**, **OpenCode**, or any other CLI added to `cli_templates` in `orchestrator.config.jsonc`. **Important:** The CLI must be fully configured ahead of time (e.g., signed in, API keys set, model selected, codebase context loaded, etc.). Because the agents run headlessly in the background **non-interactively**, they will crash or hang if they encounter interactive setup prompts.
+## Canonical commands
+
+Each phase has exactly one recommended command. Alternative entry points are documented in the [Power-user appendix](#power-user-appendix).
+
+| Phase | Canonical command |
+|-------|-------------------|
+| Phase 0 — Preflight | `scripts/preflight.js` |
+| Phases 1–2 — Decompose, bootstrap, materialize | `scripts/prepare-run.js` |
+| Phase 1.5 — Plan review (optional) | `scripts/review-plan.js` |
+| Phase 4 — Launch | `scripts/launch-all.js` |
+| Monitoring | `scripts/status.js` |
+
+`status.js` is the single "what's happening right now" probe. It reads
+`coord/agents.json`, `coord/events.jsonl`, and `coord/orchestrator-stalled.flag`
+and emits a structured snapshot. The four scripts the orchestrator session
+consumes (`preflight.js`, `validate-context.js`, `launch-all.js`, `status.js`)
+all accept `--json` for stable machine-readable output — see
+`references/schemas.md`.
+
+## Prerequisites
+
+- **A headless worker CLI is installed and fully configured.** The skill ships
+  with `default_cli: kilo` and can also drive Claude Code, Codex, Gemini,
+  Kilo Code, OpenCode, or any custom CLI added to `cli_templates`. Each CLI
+  must already be signed in, have a model selected, and run non-interactively —
+  workers run with permission-bypass flags (`--dangerously-skip-permissions`,
+  `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--auto`), so any
+  unhandled interactive prompt will hang or crash a worker.
+- **No npm install.** All scripts use Node.js built-ins.
 
 ## Caveats
 
-- Worker CLIs run non-interactively with autonomous or permission-bypass flags such as `--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, or `--auto`, depending on the configured CLI template.
-- Every worker, orchestrator, and reviewer CLI must already be installed, authenticated, and configured with a usable model. Run `scripts/preflight.js` and stop on failures before decomposition or launch.
-- The caller session owns shared foundation work before launch and final diff review, validation, merge, and worktree cleanup after workers finish. The runtime supervises workers, but it does not replace final human or caller-session integration review.
-- Git worktrees reduce accidental overlap, but they do not guarantee conflict-free results. Models can still touch shared files, make incompatible choices, or require manual reconciliation even when prompts and path boundaries are explicit.
+- The caller session owns shared foundation work before launch and final diff
+  review, validation, merge, and worktree cleanup after workers finish. The
+  runtime supervises workers but does not replace integration review.
+- Git worktrees reduce accidental overlap, not all overlap. Workers can still
+  touch shared files or make incompatible choices that need manual reconciliation.
 
-## Caller Support
+## Caller support
 
-Use this workflow from any local coding-agent caller that can read `SKILL.md` and run shell commands:
+Use this workflow from any local coding-agent caller that can read `SKILL.md`
+and run shell commands:
 
-- **Claude Code**: Install this folder as a Claude Code skill.
-- **Codex**: Install this folder as a Codex skill. `agents/openai.yaml` provides Codex UI metadata, and `AGENTS.md` provides a short repository-level caller guide.
-- **Gemini CLI**: Install this folder as a Gemini extension. `gemini-extension.json` loads `GEMINI.md`, which imports this `SKILL.md`; `skills/multi-agent-orchestrator/` exposes a native skill wrapper; and `commands/multi-agent-orchestrator.toml` exposes a `/multi-agent-orchestrator` command.
-- **Other local callers**: Explicitly instruct the caller to read this `SKILL.md` and use the absolute path to this repository when running scripts.
+- **Claude Code**: install this folder as a Claude Code skill.
+- **Codex**: install this folder as a Codex skill (`agents/openai.yaml` for UI metadata, `AGENTS.md` for a repo-level caller guide).
+- **Gemini CLI**: install this folder as a Gemini extension (`gemini-extension.json` loads `GEMINI.md` which imports this `SKILL.md`).
+- **Other local callers**: instruct the caller to read this `SKILL.md` and use the absolute path to this repository when running scripts.
 
-The runtime itself is independent of the caller. The caller only performs decomposition, file edits, script launches, and final integration.
+The runtime is independent of the caller. The caller only performs
+decomposition, file edits, script launches, and final integration.
 
+## Intelligence boundaries
 
-> **Architectural Recommendation & Intelligence Boundaries:**
-> This skill is optimized to keep architectural judgment in the interactive caller session while using configurable CLIs only where headless execution is necessary. It relies on **three distinct contexts**:
->
-> 1. **Initial Decomposition (Interactive Session):** Your active caller session is the primary architect. It analyzes the task, chooses the topology, writes or edits the draft plan, materializes `coord/context.json`, and launches workers only after approval.
-> 2. **The Background Orchestrator Loop (Headless Script):** Once launched, the background loop has **no access to your chat history**. It invokes **`orchestrator_cli`** only for request arbitration: pending worker questions, synthetic `progress_timeout` requests, and `end_agent` / `soft_restart` / `hard_restart` actions. If omitted, `orchestrator_cli` follows `default_cli`.
-> 3. **Final Integration (Interactive Session):** After the background loop completes, it writes a deterministic `coord/review-summary.txt` from worker self-reports. You return to the caller session to review diffs and safely merge completed worktrees.
->
-> **Model Selection Strategy:** Use a powerful reasoning model for your interactive caller sessions (Contexts 1 & 3). Configure your **Worker CLI** (`default_cli`) to use cost-efficient fast models for bulk coding. Set `orchestrator_cli` only when request arbitration should use a different CLI/model from the workers.
->
-> **How to pin a model:** Model selection stays attached to the CLI mechanism that actually launches the worker. If the CLI supports a launch-time model flag, pin it in `cli_templates` — e.g. `{ cmd: "claude", args: ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--model", "claude-sonnet-4-6"], stdin: { prompt_file: true } }` for Sonnet, or add `--model gpt-5.4-mini` to Codex args. If a CLI does not support a launch-time model flag, select the model in that CLI's own settings. Unpinned templates use the CLI's current config/default.
->
-> **`claude` is the one CLI where pinning is effectively required, not optional.** Other CLIs can also be pinned when they expose model flags, but when unpinned they normally read their model from independent CLI config/defaults. `claude` is different when this runtime is launched from Claude Code — without `--model`, the spawned worker can inherit the model of the parent Claude Code session running this skill (for example, an expensive high-tier orchestrator model), routing bulk worker coding to the orchestrator's model. The shipped `cli_templates.claude` already pins Sonnet 4.6 for this reason.
->
-> There is intentionally no separate `default_model` config key, because each CLI uses different flag names and model-id namespaces (and some don't take a flag at all), so keeping it close to the actual mechanism avoids a leaky aliasing layer.
->
-> **Provider-family worker recommendations:** The runtime prints advisory second-tier worker recommendations during preflight and on model/auth failures. Keep these refreshed over time. Current recommendations are Claude `claude-sonnet-4-6`, Codex/OpenAI `gpt-5.4-mini`, and Gemini `gemini-2.5-flash-lite`. These are user actions, not automatic fallbacks: persist the accepted choice in `orchestrator.config.local.jsonc` for personal setup or `orchestrator.config.jsonc` for shared policy, then rerun preflight.
->
-> **Per-worker model differences:** Do not add `tasks.<name>.model`. Define separate CLI aliases instead, such as `claude-sonnet-worker` and `claude-fast-worker`, each with its own `cli_templates.<alias>` and `cli_health_checks.<alias>`, then set `tasks.<name>.cli` to the alias.
->
-> **Default worker CLI:** The shipped default is `default_cli: kilo`, but there is no universal default worker model. Pin a model in `cli_templates` when the selected CLI supports a model flag, or configure the model in that CLI's own settings. Then run `node <skill>/scripts/preflight.js` to confirm the chain (API key + provider + model selection) is actually exercising the API, not just confirming the binary is installed.
+This skill keeps architectural judgment in the interactive caller session and
+uses configurable CLIs only where headless execution is necessary. It relies on
+**three distinct contexts**:
 
-## ⚙️ Configuration (`orchestrator.config.jsonc`)
-Before beginning Phase 1, you MUST check if an `orchestrator.config.jsonc` file exists in the project root. This JSONC file acts as the shared source of truth for project/team preferences. The loader also accepts pure `orchestrator.config.json` and legacy executable `orchestrator.config.js`; if multiple shared files exist, preference order is JSONC, then JSON, then JS.
+1. **Initial decomposition (interactive)** — your caller session analyzes the
+   task, chooses the topology, writes the draft plan, materializes
+   `coord/context.json`, and launches workers only after approval.
+2. **Background loop (headless)** — once launched, the loop has no access to
+   your chat history. It invokes `orchestrator_cli` (falls back to
+   `default_cli`) only for request arbitration: pending worker questions,
+   synthetic `progress_timeout` requests, and `end_agent` / `soft_restart` /
+   `hard_restart` actions.
+3. **Final integration (interactive)** — after the loop completes it writes a
+   deterministic `coord/review-summary.txt`. Return to the caller session to
+   review diffs and merge.
 
-After the shared config, the loader applies an optional untracked local override file: `orchestrator.config.local.jsonc` (or pure `orchestrator.config.local.json`). Use it only for personal machine-specific differences such as local CLI choice, dashboard behavior, or local wrapper commands. It can be as small as `{}` and should not duplicate shared defaults.
+**Model selection.** Use a powerful reasoning model for the caller sessions
+(contexts 1 and 3). Configure the worker CLI (`default_cli`) for cost-efficient
+bulk coding. Set `orchestrator_cli` only when arbitration should use a
+different CLI/model from the workers.
 
-The shipped config includes a `$schema` reference to the published `references/orchestrator-config.schema.json`. Editors that understand JSON Schema use it for autocomplete, descriptions, allowed values, and validation, so optional settings should be discovered through completion instead of commented-out duplicate config blocks.
+**Pinning a model.** Selection stays attached to the CLI that launches the
+worker. If the CLI takes a launch-time model flag, pin it in `cli_templates` —
+for example `{ cmd: "claude", args: ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--model", "claude-sonnet-4-6"], stdin: { prompt_file: true } }`, or add `--model gpt-5.4-mini` to a Codex template. CLIs without a launch-time
+model flag must select the model in their own settings. Unpinned templates use
+the CLI's current default.
 
-If it exists, read it to determine:
-- **`default_cli`**: The Worker CLI to use for spawning coding agents.
-- **`orchestrator_cli`**: Optional CLI used by the background loop for request arbitration. If omitted, it follows `default_cli`. Set this independently from `default_cli` only when you want arbitration to use a different CLI/model than your workers.
-- **`cli_templates`**: The template definitions used to spawn worker CLIs and drive `orchestrator_cli` arbitration calls. Prefer structured `{ cmd, args }` entries so they run with `shell:false`; keep string templates when you intentionally need shell behavior. **This is also where you pin a model when the CLI supports a model flag** — add the CLI's model flag (`--model <id>`, `-m <id>`, `--llm <id>`, etc.) to the template args/string and that model is used for every spawn driven by it. If a CLI cannot pin the model at launch time, select the model in that CLI's own settings instead of adding a generic `default_model` key.
-- **`reviewers`**: Optional Phase 1.5 read-only plan reviewer CLIs. Each entry has `name`, `cli`, `review_focus`, optional `model`, optional `model_flag`, optional `template_args`, and optional `timeout_mins`. Every reviewer `cli` must have matching `cli_templates.<cli>` and `cli_health_checks.<cli>` entries.
-- **`max_plan_review_iterations`**: `"auto"` by default, or a positive integer. In `"auto"` mode, run at least one review iteration when reviewers are configured, then explicitly decide after reconciliation whether another pass is worth it. Numeric mode means run exactly that many iterations.
-- **`default_timeout_mins`**: The default time before an agent is considered hanging (Liveness).
-- **`default_progress_timeout_mins`**: The default time before an active agent with zero code changes is considered stuck (Progress).
-- **`default_max_restarts`**: The maximum number of times the loop will respawn the same agent before marking it `errored` (defaults to 3). Counted across validation-failure restarts, progress-timeout arbitration restarts, and explicit arbitrator restarts.
-- **`orchestrator_failure_threshold`**: Consecutive arbitration-CLI failures before the loop writes `coord/orchestrator-stalled.flag` (which the dashboard surfaces). Defaults to 5. `claude_failure_threshold` remains accepted as a deprecated alias for existing configs.
-- **`poll_min_ms` / `poll_max_ms`**: Adaptive polling bounds for the orchestrator loop. The loop polls at `poll_min_ms` (default 1000) right after seeing pending requests, then exponentially backs off (×1.5 per idle cycle) up to `poll_max_ms` (default 15000). Pass `--poll-interval <ms>` to the loop to disable the heuristic and force a fixed cadence.
-- **`cli_health_checks`**: Per-CLI probe commands run by `scripts/preflight.js` to fail fast on install / auth issues. Defaults to `<cli> --version` for every supported CLI.
-- **`launch_dashboard` / `launch_review_terminal`**: Optional GUI terminal auto-launch. `launch_dashboard` defaults to `"auto"`: it opens a dashboard terminal on local macOS, skips auto-launch in CI/SSH/non-macOS, and can be forced with `true` or disabled with `false`.
+`claude` is the one CLI where pinning is effectively required: when launched
+from Claude Code without `--model`, the spawned worker inherits the parent
+session's (often expensive) model. The shipped `cli_templates.claude` already
+pins Sonnet 4.6.
 
-Example `orchestrator.config.jsonc`:
+There is intentionally no `default_model` config key — each CLI uses different
+flag names and model-id namespaces, so keeping selection next to the launch
+mechanism avoids a leaky aliasing layer.
+
+**Provider-family recommendations.** Preflight prints advisory second-tier
+worker recommendations on model/auth failures. These are user actions, not
+automatic fallbacks: current picks are Claude `claude-sonnet-4-6`, Codex/OpenAI
+`gpt-5.4-mini`, and Gemini `gemini-2.5-flash-lite`. Persist accepted choices in
+`orchestrator.config.local.jsonc` (personal) or `orchestrator.config.jsonc`
+(shared), then rerun preflight.
+
+**Per-worker model differences.** Do not add `tasks.<name>.model`. Define
+separate CLI aliases instead (e.g. `claude-sonnet-worker`, `claude-fast-worker`),
+each with its own `cli_templates.<alias>` and `cli_health_checks.<alias>`, and
+set `tasks.<name>.cli` to the alias.
+
+## Configuration (`orchestrator.config.jsonc`)
+
+Before Phase 1, check whether `orchestrator.config.jsonc` exists in the project
+root. The loader accepts pure `orchestrator.config.json` and legacy
+`orchestrator.config.js`; if multiple shared files exist, preference is JSONC,
+then JSON, then JS. An optional untracked
+`orchestrator.config.local.jsonc` (or `.json`) is layered on top for
+personal/machine-specific overrides — keep shared defaults out of it.
+
+The shipped config carries a `$schema` reference to
+`references/orchestrator-config.schema.json` for editor autocomplete and
+validation; discover optional settings through completion rather than
+commented-out duplicates.
+
+Key settings:
+
+- **`default_cli`**: worker CLI for spawned agents.
+- **`orchestrator_cli`**: optional CLI used by the background loop for request
+  arbitration. Defaults to `default_cli`.
+- **`cli_templates`**: spawn templates for each CLI. Prefer structured
+  `{ cmd, args }` (runs with `shell: false`); keep string templates only when
+  you need shell behavior. Pin the model here when the CLI supports a
+  launch-time flag.
+- **`reviewers`**: optional Phase 1.5 plan reviewer CLIs. Each entry needs
+  `name`, `cli`, `review_focus`, and optional `model` / `model_flag` /
+  `template_args` / `timeout_mins`. Every reviewer CLI must have matching
+  `cli_templates.<cli>` and `cli_health_checks.<cli>` entries.
+- **`max_plan_review_iterations`**: `"auto"` (default) or a positive integer.
+- **`default_timeout_mins`** / **`default_progress_timeout_mins`**: liveness
+  and progress thresholds.
+- **`default_max_restarts`**: cap on respawns per agent (default 3) across
+  validation failures, progress-timeout arbitration, and explicit restarts.
+- **`orchestrator_failure_threshold`**: consecutive arbitration-CLI failures
+  before the loop writes `coord/orchestrator-stalled.flag` (default 5).
+  `claude_failure_threshold` remains a deprecated alias.
+- **`poll_min_ms` / `poll_max_ms`**: adaptive polling bounds (defaults 1000 /
+  15000). `--poll-interval <ms>` on the loop forces a fixed cadence.
+- **`cli_health_checks`**: per-CLI probe commands. Defaults to `<cli> --version`.
+- **`launch_dashboard` / `launch_review_terminal`**: optional GUI terminal
+  auto-launch. `launch_dashboard` defaults to `"auto"` (macOS local on, CI/SSH/
+  non-macOS off).
+
+Example:
+
 ```jsonc
 {
   "$schema": "https://raw.githubusercontent.com/hyw007726/multi-agent-orchestrator-skill/main/references/orchestrator-config.schema.json",
-
-  // The background CLI worker to execute tasks.
   "default_cli": "kilo",
-
-  // Command templates for supported CLIs.
-  // Prefer structured argv templates. Use { "prompt_file": true } to pass the
-  // generated prompt file path as one argv item, { "prompt_text": true } to pass
-  // the prompt contents as one argv item, or stdin: { "prompt_file": true } for
-  // CLIs that read prompts from stdin. String templates remain supported for
-  // CLIs that genuinely need shell behavior.
   "cli_templates": {
     "claude": { "cmd": "claude", "args": ["-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--model", "claude-sonnet-4-6"], "stdin": { "prompt_file": true } },
     "codex": { "cmd": "codex", "args": ["exec", "--dangerously-bypass-approvals-and-sandbox"], "stdin": { "prompt_file": true } },
@@ -96,156 +166,176 @@ Example `orchestrator.config.jsonc`:
 }
 ```
 
-If no shared or local config file exists, you MUST dynamically evaluate the overall size and complexity of the user's project to determine sensible default bounds (e.g., a simple script might only need a 5-minute progress timeout and 3 iterations, while a complex React app might need a 20-minute progress timeout and 10 iterations). You can also offer to create the shared config file for the user so they can explicitly customize workflow bounds in the future!
+If no shared or local config exists, evaluate the project's size and complexity
+to pick sensible defaults (a small script might use 5-minute progress timeouts
+and 3 iterations; a complex app might need 20 minutes and 10). Offer to create
+the shared config so the user can customize it later.
 
-> **Note:** All worker CLIs are automatically launched with their respective "bypass permissions" flags (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--auto`) so they run fully autonomously in the background. The Orchestrator Loop will remember which CLI tool you spawned the agent with and will automatically use the exact same tool if it needs to respawn the agent after a rollback!
+> Worker CLIs are launched with bypass-permission flags
+> (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`,
+> `--yolo`, `--auto`) so they run fully autonomously. The loop remembers which
+> CLI spawned each agent and uses the same CLI on respawn.
 
-## Phase 0 — Setup
-
-These three steps run unconditionally on every invocation, before any task reasoning begins.
-
-**Step 1 — No setup required:** The skill has no external dependencies — all scripts use Node.js built-in modules only. No `npm install`, no global packages, no build step. Proceed directly to Step 2.
-
-**Step 2 — Read configuration:** Read `orchestrator.config.jsonc` from the project root, falling back to `orchestrator.config.json` or legacy `orchestrator.config.js`, then apply optional `orchestrator.config.local.jsonc` / `orchestrator.config.local.json`, to load the user's preferred CLI and default bounds.
-
-**Step 3 — Preflight CLI health check (REQUIRED):** Verify the worker CLI and orchestrator CLI are runnable before any decomposition or spawning — an unauthenticated CLI will hang on an interactive prompt for the full liveness timeout otherwise.
+## Phase 0 — Preflight
 
 ```bash
-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/preflight.js
+node <SKILL>/scripts/preflight.js
 ```
 
-The script checks `default_cli`, `orchestrator_cli`, and any configured plan reviewer CLIs by default. Before probing, it prints a model heads-up: pinned template models are shown by name, unpinned templates are called out as using CLI config/defaults unless pinned in `cli_templates`, and reviewer-specific `model` / `template_args` overrides are listed. It then runs two probes per CLI: a `--version` install check, then an auth probe that exercises the spawn template with a tiny prompt to verify API keys, BYOK provider configuration, and model selection. Pass `--skip-auth` for install-only checks (CI / offline). If any check fails, abort and surface the diagnostic — typical fixes are installing the CLI, putting it on `$PATH`, signing in, or selecting a default model.
+Runs unconditionally on every invocation. Reads
+`orchestrator.config.jsonc` (then layered local override), prints a model
+heads-up (pinned templates by name, unpinned templates called out, reviewer
+overrides listed), and probes each CLI twice: a `--version` install check and
+an auth probe that exercises the spawn template with a tiny prompt. Use
+`--skip-auth` for install-only checks (CI/offline). On failure, abort and
+surface the diagnostic — typical fixes are installing the CLI, putting it on
+`$PATH`, signing in, or selecting a default model.
 
-## Phase 1 — Task Evaluation, Topology Selection & Decomposition
+## Phase 1 — Task evaluation, topology, and decomposition
 
-Evaluate whether the user's overall task is suitable for multi-agent orchestration.
-- Before splitting work, propose an execution topology:
-  - `direct`: small or tightly coupled sequential work that does not justify orchestration. Stop using this skill for the task; handle it in the caller session and do not bootstrap or launch workers.
-  - `single_worker`: substantial but mostly sequential work that benefits from delegated background execution. Create exactly one worker task.
-  - `parallel`: genuinely independent task boundaries with non-overlapping file ownership and worker-specific validation. Use this only when workers can proceed at the same time safely.
-  - `phased`: shared foundations must be handled first, then independent leaves can fan out to workers. Implement and commit the shared foundation in the caller session before writing the final worker task map.
-- Record the candidate topology before decomposition: `execution_mode`, rejected alternatives with reasons, `reason`, `dependency_notes`, shared-foundation notes, machine-readable `foundation` state, and the mode-specific task decomposition.
-- Treat the topology as a candidate until after optional Phase 1.5 review and reconciliation. The main caller may change the mode before writing final `coord/context.json`, or decide not to launch workers.
-- **Handle Overlapping Foundations First (CRITICAL):** True non-overlapping boundaries are rare. If agents will need to touch shared files (e.g., `package.json`, generic `types.ts`, test config, database schemas, router setups), **you must handle these sequentially before spawning agents.** If you spawn parallel worktrees that modify the same foundational files, you will create impossible merge conflicts.
-  - *Action:* Tell the user: "I need to set up the shared foundation (schemas, package.json, etc.) first to prevent merge conflicts."
-  - *Action:* Implement these shared foundations yourself in the current session.
-  - *Action:* Commit the foundation.
-  - *Action:* Record the committed foundation paths and commit in the draft/context `foundation` block.
-  - *Action:* Only then, split the remaining work into truly parallel, isolated agent tasks.
-- **Proceed** only for `single_worker`, `parallel`, or `phased` after the foundation is either already set or has just been completed by you.
+Evaluate whether the user's task is suitable for multi-agent orchestration.
+Choose an execution topology before decomposing:
 
-If proceeding:
-1. Break the work down into non-overlapping agent boundaries.
-2. Explicitly map out what files each agent is allowed to touch.
-3. List `read_first` files/paths for each agent so workers begin with targeted source context instead of broad repo scans.
-4. Fill the `foundation` block: `not_required` with empty paths, `completed_committed` with paths and commit, or `owned_by_worker` with paths and owner.
-5. Determine a `validation_command` for each agent. **Prefer JSON-argv form** so the loop can run it with no shell expansion (e.g. `--validate '["npm","run","test","--","src/foo"]'`); fall back to a shell string only when you need pipes / `&&` / env expansion (e.g. `--validate "npm run lint && npm test"`). Use `null` if no automated validation is possible/needed.
-6. Prepare a mapping of agent names to their task descriptions.
+- `direct`: small or tightly coupled sequential work. Stop using this skill;
+  handle it in the caller session.
+- `single_worker`: substantial sequential work that benefits from delegated
+  background execution. One task.
+- `parallel`: genuinely independent boundaries with non-overlapping file
+  ownership and worker-specific validation.
+- `phased`: shared foundations must come first, then independent leaves fan
+  out. **Implement and commit the foundation in the caller session before
+  writing the final task map** — otherwise parallel worktrees will try to
+  modify the same files and produce impossible merge conflicts. Common
+  foundation files: `package.json`, generic `types.ts`, test config, database
+  schemas, router setups.
 
-### Guided Starter Helper
+Record the candidate topology before decomposition: `execution_mode`, rejected
+alternatives with reasons, `reason`, `dependency_notes`, shared-foundation
+notes, machine-readable `foundation` state, and the mode-specific task
+decomposition. Treat the topology as a candidate until after optional Phase
+1.5 review and reconciliation.
 
-Instead of running the starter scripts one by one, the caller may use the guided helper from the target project root:
+For each `single_worker` / `parallel` / `phased` task:
+
+1. Carve non-overlapping agent boundaries.
+2. Map the files each agent may touch (`allowed_paths`, `forbidden_paths`).
+3. List `read_first` files for targeted source context.
+4. Fill the `foundation` block: `not_required` (empty paths),
+   `completed_committed` (paths + commit), or `owned_by_worker` (paths + owner).
+5. Pick a `validation_command`. **Prefer JSON-argv form** so the loop runs it
+   with no shell expansion (`--validate '["npm","run","test","--","src/foo"]'`);
+   fall back to a shell string only when you need pipes/`&&`/env expansion.
+   `null` disables validation.
+6. Map agent names to task descriptions.
+
+### Guided helper
 
 ```bash
-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/prepare-run.js \
+node <SKILL>/scripts/prepare-run.js \
   --project "Short project description" \
   --task "The user's requested implementation" \
   --coord ./coord
 ```
 
-Default mode runs preflight, bootstraps `coord/` when needed, writes a caller-authored `coord/plan-reviews/draft-plan-v1.json` template plus `draft-plan-v1.instructions.md`, and then stops. The caller session must replace every TODO placeholder, choose the topology, define worker boundaries, and review the draft before approval.
+Default mode runs preflight, bootstraps `coord/` if needed, writes
+`coord/plan-reviews/draft-plan-v1.json` (caller-authored template) plus
+`draft-plan-v1.instructions.md`, then stops. Replace every TODO placeholder,
+choose the topology, define worker boundaries, and review the draft.
 
-After caller approval:
+After approval:
 
 ```bash
-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/prepare-run.js \
+node <SKILL>/scripts/prepare-run.js \
   --approve-draft \
   --draft-plan ./coord/plan-reviews/draft-plan-v1.json \
   --coord ./coord
 ```
 
-Approval mode materializes `context.json`, `DECISIONS.md`, and `CALLER_CONTEXT.md`, validates the generated context, and prints the final `launch-all.js` command. It still does not launch workers automatically.
+Approval mode materializes `context.json`, `DECISIONS.md`, and
+`CALLER_CONTEXT.md`, validates the generated context, and prints the final
+`launch-all.js` command. It does not launch workers automatically.
 
-## Phase 1.5 — Optional Plan Review
+## Phase 1.5 — Optional plan review
 
-If `reviewers` is configured, do not write the final `coord/context.json` task map yet. First draft the decomposition as `coord/plan-reviews/draft-plan-v1.json`. The caller session should normally write this draft itself. If you explicitly want an optional read-only helper, you may run:
-
-```bash
-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/draft-plan.js \
-  --task "The user's requested implementation" \
-  --project "Short project description" \
-  --coord ./coord
-```
-
-The optional helper uses `orchestrator_cli` (falling back to `default_cli` through normal config), writes `coord/plan-reviews/draft-plan-v1.prompt.md`, `coord/plan-reviews/draft-plan-v1.raw.md`, and the canonical `coord/plan-reviews/draft-plan-v1.json`, and must not launch workers or edit project files. The caller still owns review and approval. Include the user requirements, constraints, candidate execution topology, rejected topology alternatives, topology reason, dependency notes, candidate file ownership, shared-foundation assumptions, machine-readable foundation state, mode-specific task decomposition, validation commands, known risks, and any sequencing dependencies.
-
-Run one read-only review iteration:
+If `reviewers` is configured, draft the decomposition as
+`coord/plan-reviews/draft-plan-v1.json` before writing the final task map. The
+caller session normally writes the draft directly. Run one read-only review
+iteration:
 
 ```bash
-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/review-plan.js \
+node <SKILL>/scripts/review-plan.js \
   --iteration 1 \
   --draft-plan ./coord/plan-reviews/draft-plan-v1.json \
   --coord ./coord
 ```
 
-The runner invokes all configured reviewers in parallel for that iteration and writes:
+The runner invokes all configured reviewers in parallel and writes:
+
 - live reviewer streams to `coord/plan-reviews/iteration-<N>/<reviewer>.md`;
 - parsed valid reviewer JSON to `coord/plan-reviews/iteration-<N>/<reviewer>.json`;
-- the draft plan audit copy to `coord/plan-reviews/draft-plan-v<N>.json`.
+- the draft audit copy to `coord/plan-reviews/draft-plan-v<N>.json`.
 
-Each reviewer must return JSON with `iteration`, `reviewer`, `summary`, `execution_mode_issues`, `blockers`, `overlaps`, `missing_foundation_work`, `sequencing_risks`, `validation_gaps`, and `suggested_changes`. Reviewers must critique both the selected execution mode and the resulting task decomposition, including whether the mode is too heavy, too weak, incorrectly sequenced, whether `parallel` should really be `phased`, whether `single_worker` or `direct` would avoid unnecessary coordination, and whether worker boundaries are safe for the chosen mode. Invalid JSON is a reviewer failure, but the workflow can continue if at least one reviewer returns valid JSON.
+Each reviewer must return JSON with `iteration`, `reviewer`, `summary`,
+`execution_mode_issues`, `blockers`, `overlaps`, `missing_foundation_work`,
+`sequencing_risks`, `validation_gaps`, and `suggested_changes`. Reviewers
+critique both the execution mode and the resulting decomposition (too heavy,
+too weak, incorrectly sequenced, parallel-that-should-be-phased,
+single_worker/direct that would avoid coordination overhead, unsafe
+boundaries). Invalid JSON is a reviewer failure but the workflow continues if
+at least one reviewer returns valid JSON.
 
-After every iteration, the main caller reconciles the feedback and writes `coord/plan-reviews/iteration-<N>/reconciliation.json` with accepted and rejected feedback plus rationale. Reviewer feedback informs the final decomposition, but reviewers never mutate `coord/context.json` or `coord/DECISIONS.md` directly.
+After every iteration, the main caller writes
+`coord/plan-reviews/iteration-<N>/reconciliation.json` (accepted/rejected
+feedback plus rationale). Reviewer feedback informs the final decomposition;
+reviewers never mutate `coord/context.json` or `coord/DECISIONS.md` directly.
 
-If `max_plan_review_iterations` is a positive integer, run exactly that many iterations, writing an updated `draft-plan-v<N+1>.json` and passing the prior reconciliation before each later iteration:
+If `max_plan_review_iterations` is a positive integer, run exactly that many
+iterations, writing `draft-plan-v<N+1>.json` and passing the prior
+reconciliation:
 
 ```bash
-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/review-plan.js \
+node <SKILL>/scripts/review-plan.js \
   --iteration 2 \
   --draft-plan ./coord/plan-reviews/draft-plan-v2.json \
   --previous-reconciliation ./coord/plan-reviews/iteration-1/reconciliation.json \
   --coord ./coord
 ```
 
-If `max_plan_review_iterations` is `"auto"`, run at least one iteration and then stop after each reconciliation to explicitly decide whether another pass is worth running. Do not let the runner self-continue. Reviewers never chat with each other; the main caller owns synthesis between iterations. Only after reconciling the final chosen/configured iteration should you write the final `coord/context.json` and update `coord/DECISIONS.md`.
+If `max_plan_review_iterations` is `"auto"`, run at least one iteration and
+then explicitly decide whether another pass is worth it. The runner never
+self-continues. Reviewers do not chat with each other; the main caller owns
+synthesis. Only after the final iteration is reconciled should you write the
+final `coord/context.json` and update `coord/DECISIONS.md`.
 
-To materialize an approved draft plan into the launchable coordination files, either edit `coord/context.json` and `coord/DECISIONS.md` manually, or run:
+`prepare-run.js --approve-draft` materializes the approved draft into the
+launchable files (see [appendix](#power-user-appendix) for the standalone
+`materialize-plan.js` invocation).
 
-```bash
-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/materialize-plan.js \
-  --draft-plan ./coord/plan-reviews/draft-plan-v1.json \
-  --coord ./coord
-```
+## Phase 2 — Coordination files
 
-The materializer preserves existing compact `chat_context`, writes the final execution topology, foundation contract, and task map to `context.json`, writes topology rationale, rejected alternatives, shared-foundation assumptions, foundation contract, durable requirements, constraints, file ownership, sequencing notes, validation commands, and known risks to `DECISIONS.md`, writes user intent, important chat nuance, environment assumptions, and non-durable rationale to `CALLER_CONTEXT.md`, then validates the generated context. It refuses to overwrite an existing non-empty task map unless `--force` is passed. If the final topology is `direct`, it writes no worker tasks and tells the caller not to run `launch-all.js`.
-
-## Phase 2 — Bootstrap
-When starting a new orchestrated project, create the `coord/` directory at the project root and initialize these files.
-
-**Important Path Resolution:** The scripts required for this workflow are located in the `scripts/` directory next to this `SKILL.md` file. Before running the commands below, determine the absolute path to this skill folder (e.g., if you are reading this from `~/Desktop/multi-agent-orchestrator/SKILL.md`, the path is `~/Desktop/multi-agent-orchestrator`).
-
-```bash
-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/bootstrap.js \
-  --project "Your project description" \
-  --coord ./coord
-```
-
-`bootstrap.js` refuses to overwrite existing coordination state by default. Use `--force` only when intentionally discarding the current `coord/` run state.
+`prepare-run.js` (canonical entry) writes the `coord/` skeleton and, after
+approval, materializes the final files. Standalone `bootstrap.js` is available
+in the appendix when you only want the skeleton.
 
 ### `coord/context.json`
-Because the orchestrator loop runs after your interactive caller session is done, it has **zero access** to your original chat history. **You must heavily compress all user preferences, architectural nuances, and conversational context into a structured `chat_context` object.** Keep `context.json` compact: it is serialized into arbitration prompts. Do not paste long specs, transcripts, file contents, or diffs here.
 
-You should also include the final execution topology, machine-readable foundation contract, and the tasks you generated in Phase 1 under the `"tasks"` key. If the final mode is `direct`, do not create or launch an orchestrated run.
+The background loop has zero access to your original chat history. Heavily
+compress user preferences, architectural nuances, and conversational context
+into a structured `chat_context` object. `context.json` is serialized into
+arbitration prompts — keep it compact. Long specs, transcripts, file contents,
+and diffs do not belong here.
 
-`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`, `execution_topology: { execution_mode: "", reason: "", dependency_notes: [] }`, `foundation: { status: "", paths: [] }`, `tasks: {}`). After running it, edit `context.json` with the structured shape below or run `scripts/materialize-plan.js` from an approved draft before you spawn any workers. Put durable requirements, architecture, shared contracts, topology rationale, foundation rationale, and file ownership in `coord/DECISIONS.md`; put user intent, important chat nuance, environment assumptions, and non-durable rationale in `coord/CALLER_CONTEXT.md`; use `context.json` as the compact run index.
+Include the final execution topology, machine-readable foundation contract,
+and the per-agent task map under `"tasks"`. If the final mode is `direct`, do
+not create or launch an orchestrated run.
 
 ```json
 {
   "project": "<one-line description of the user's task>",
   "chat_context": {
-    "preferences": ["<e.g., Use explicit typing>", "<e.g., Prefer functional components>"],
-    "architecture": ["<e.g., MVVM pattern>", "<e.g., Redux for state>"],
-    "naming_conventions": ["<e.g., camelCase for variables>", "<e.g., PascalCase for interfaces>"],
+    "preferences": ["<e.g., Use explicit typing>"],
+    "architecture": ["<e.g., MVVM pattern>"],
+    "naming_conventions": ["<e.g., camelCase for variables>"],
     "gotchas": ["<e.g., User is using an older version of Node>"]
   },
   "execution_topology": {
@@ -259,14 +349,14 @@ You should also include the final execution topology, machine-readable foundatio
     "commit": "<required git commit/revision when completed_committed>",
     "owner": "<required task name when owned_by_worker>"
   },
-  "requirements": ["<compact requirement summary 1>", "<compact requirement summary 2>"],
-  "constraints": ["<compact constraint summary 1>", "<compact constraint summary 2>"],
+  "requirements": ["<compact requirement summary>"],
+  "constraints": ["<compact constraint summary>"],
   "created_at": "<ISO 8601 timestamp>",
   "tasks": {
     "agent-name": {
       "description": "description of the boundary",
-      "read_first": ["src/path/to/read.ts", "tests/path/to/read.test.ts"],
-      "allowed_paths": ["src/owned/**", "tests/owned/**"],
+      "read_first": ["src/path/to/read.ts"],
+      "allowed_paths": ["src/owned/**"],
       "forbidden_paths": ["package.json", "coord/"],
       "validation_command": ["npm", "test", "--", "owned"],
       "timeout_mins": 10,
@@ -277,103 +367,246 @@ You should also include the final execution topology, machine-readable foundatio
 ```
 
 ### `coord/DECISIONS.md`
-To ensure critical architectural rules are never lost in JSON compression, write a human-readable `coord/DECISIONS.md` file. This file is the curated source of truth for durable requirements, shared API contracts, data models, file ownership, and structural decisions made in Phase 1. The background loop includes `DECISIONS.md` in arbitration prompts, preserves approved and rejected request dispositions in `coord/decisions.jsonl`, and keeps only the latest 30 in `coord/decisions.json`; it does not automatically rewrite `DECISIONS.md`. If a runtime approval should become durable project policy, update `DECISIONS.md` from the orchestrator session.
+
+Curated source of truth for durable requirements, shared API contracts, data
+models, file ownership, and structural decisions made in Phase 1. The
+background loop includes `DECISIONS.md` in arbitration prompts, preserves
+approved/rejected request dispositions in `coord/decisions.jsonl`, and keeps
+the latest 30 in `coord/decisions.json`. It does not rewrite `DECISIONS.md`.
+If a runtime approval should become durable project policy, update
+`DECISIONS.md` from the orchestrator session.
 
 ### `coord/CALLER_CONTEXT.md`
-To keep `context.json` compact while still giving the headless loop enough caller context, write a human-readable `coord/CALLER_CONTEXT.md` file. This file is for compressed user intent, important chat nuance, local environment assumptions, and temporary planning rationale that should not become durable project policy. The background loop includes it in arbitration prompts and worker restart prompts. Workers are instructed to read it after `DECISIONS.md`. Do not put stable architecture contracts or file ownership rules here; those belong in `DECISIONS.md`.
 
-### Validating the materialized context
+Human-readable file for compressed user intent, important chat nuance, local
+environment assumptions, and temporary planning rationale that should not
+become durable project policy. The background loop includes it in arbitration
+prompts and worker restart prompts; workers are instructed to read it after
+`DECISIONS.md`. Stable architecture contracts and file ownership belong in
+`DECISIONS.md`, not here.
 
-Before launching, you can confirm `coord/context.json` is launchable with the shared validator:
+## Phase 3 — Prompt generation
 
-```bash
-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/validate-context.js --coord ./coord
-```
-
-The validator checks the execution topology, foundation status, committed foundation cleanliness, per-task name safety, allowed/forbidden path shape, CLI references against `cli_templates`, and common foundation-path leaks. `scripts/materialize-plan.js`, `scripts/prepare-run.js --approve-draft`, and `scripts/launch-all.js` all call the same validator internally; running it standalone is useful after hand-edits to `context.json`.
-
-## Phase 3 — Prompt Generation
-
-Prompts are rendered automatically by `scripts/launch-all.js` during Phase 4; the orchestrator session no longer hand-substitutes placeholders. `launch-all.js` reads `references/worker-prompt-template.md` and machine-substitutes the placeholders defined in the grammar table of `references/schemas.md` from each agent's `tasks{}` record. Ensure every agent record is fully populated before you launch.
+Prompts render automatically in Phase 4. `launch-all.js` reads
+`references/worker-prompt-template.md` and substitutes the placeholders
+defined in `references/schemas.md` from each agent's `tasks{}` record. Ensure
+every agent record is fully populated before launch.
 
 ## Phase 4 — Launch
 
 ```bash
-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/launch-all.js --coord ./coord
+node <SKILL>/scripts/launch-all.js --coord ./coord
 ```
 
-`launch-all.js` first runs the shared `validateContext` check against `coord/context.json` and aborts with a diagnostic before any worktree is created if the context is not launchable (bad topology, missing/forbidden paths, broken CLI references, foundation-path leaks). When validation passes, it iterates every entry under `tasks{}`, and for each agent: creates a git worktree at `.kilocode/worktrees/<agent>` (Kilo) or `.agents/worktrees/<agent>` (other CLIs), renders the worker prompt by machine-substituting the placeholders defined in `references/schemas.md`, writes the rendered prompt to a tmp file, and shells out to `scripts/spawn-agent.js`. After every `spawn-agent` call succeeds, it backgrounds `scripts/orchestrator-loop.js` with `nohup` and exits non-blocking.
+`launch-all.js` runs the shared `validateContext` check against
+`coord/context.json` and aborts before any worktree is created if the context
+is not launchable. When validation passes, it iterates every entry under
+`tasks{}`, creates a git worktree at `.kilocode/worktrees/<agent>` (Kilo) or
+`.agents/worktrees/<agent>` (other CLIs), renders the worker prompt, writes
+the rendered prompt to a tmp file, and shells out to `scripts/spawn-agent.js`.
+After every spawn succeeds, it backgrounds `scripts/orchestrator-loop.js` with
+`nohup` and exits non-blocking.
 
-After an abort that preserved worker worktrees, rerun launch with `--resume` (alias: `--force-existing-worktrees`). In resume mode, existing worktree paths are reused only after Git confirms the path is a registered worktree checked out on the expected agent branch; prompts are rendered again from the current `context.json`, and workers are respawned into the preserved worktrees. Without `--resume`, launch still refuses existing worktree paths.
+Use `--resume` (alias: `--force-existing-worktrees`) to reuse preserved
+worktrees after an abort. In resume mode, existing worktree paths are reused
+only after Git confirms the path is a registered worktree checked out on the
+expected agent branch; prompts are re-rendered from the current `context.json`
+and workers are respawned. Without `--resume`, launch refuses existing
+worktree paths.
 
-On success it prints a one-line summary per agent (name, PID, log path), the orchestrator loop PID, and a dashboard hint. On failure it stops the loop, leaves already-spawned agents alive for inspection, and exits non-zero with a diagnostic.
+On success the script prints one summary line per agent (name, PID, log path),
+the orchestrator loop PID, and a dashboard hint. On failure it stops the loop,
+leaves already-spawned agents alive for inspection, and exits non-zero.
 
-**Once the loop is started, your job as the starter session is done. You should politely inform the user that the orchestration loop is running in the background and exit.**
+**Once the loop is started, the starter session's job is done.** Tell the user
+the loop is running in the background, then exit.
 
-> **Tip for Kilo Code Users:** Because the agents are physically spawned inside the `.kilocode/worktrees/` directory path by default, they will automatically appear in your **Kilo Code Agent Manager UI** inside VS Code! You can monitor the specific files they are editing in real-time natively in your IDE.
+> **Kilo Code users:** because agents spawn under `.kilocode/worktrees/`, they
+> appear in the Kilo Code Agent Manager UI inside VS Code and you can monitor
+> per-file edits in real time.
 
-By default the dashboard auto-launches on local macOS and stays manual in CI/SSH/non-macOS environments. To monitor progress manually, run:
+### Monitoring
+
+The dashboard auto-launches on local macOS by default. To check status from
+any caller, use the canonical probe:
+
 ```bash
-node <ABSOLUTE_PATH_TO_THIS_SKILL_FOLDER>/scripts/dashboard.js --coord ./coord
+node <SKILL>/scripts/status.js --coord ./coord            # human
+node <SKILL>/scripts/status.js --coord ./coord --json     # machine-readable
 ```
 
-### Progress Monitoring
-The orchestrator loop doesn't just watch for crashes; it monitors for **actual code progress**.
-- **The "Killer" Timeout (Liveness Detection)**: If an agent stops emitting logs for the configured `timeout_mins` duration, it is assumed hanging, killed, and marked as errored.
-- **Progress Timeout (Progress Detection)**: If an agent is alive but fails to accumulate any git commits or unstaged code changes (`git diff --stat`) for the configured `progress_timeout_mins` duration (e.g., 15 minutes), the loop writes a synthetic `progress_timeout` request into `coord/requests.jsonl` for normal arbitration.
+`status.js` reports `loop_state`, agents (status, last event sequence,
+blockers), and surfaces `coord/orchestrator-stalled.flag` /
+`coord/abort.flag`. It is safe to run before, during, or after a run.
 
-**Progress heartbeat**: Workers may write optional heartbeat files to `coord/progress/<agent>.json` using atomic tmp-file rename. These files can include `phase`, `summary`, `last_action`, `blocker`, and `updated_at`. The loop uses filesystem modification time as the wall-clock signal; models are not expected to perceive elapsed time accurately. A fresh heartbeat in an expected non-editing phase such as `reading`, `planning`, `testing`, `building`, `installing`, or `debugging` can grant one bounded progress grace after the last code change.
+### Progress monitoring (loop internals)
 
-**Synthetic progress-timeout request**: The generated request includes a deterministic recommended instruction, escalation fields (`escalation_level`, `progress_timeout_count`, `restart_count`, `restarts_remaining`, `suggested_action`), the current task, allowed/forbidden path context, validation command, heartbeat snapshot, diff/progress snapshot, and the last 50 log lines. The existing `orchestrator_cli` arbitration path decides whether to `soft_restart`, `hard_restart`, wait, or reject for manual inspection. This avoids a separate one-off review LLM call while keeping stall handling in the same decision log as worker questions.
+- **Liveness timeout.** No log output for `timeout_mins` → the agent is killed
+  and marked errored.
+- **Progress timeout.** Logs flow but no git commits or unstaged diff for
+  `progress_timeout_mins` → the loop writes a synthetic `progress_timeout`
+  request into `coord/requests.jsonl` for normal arbitration.
+- **Progress heartbeat (optional).** Workers may write
+  `coord/progress/<agent>.json` via atomic rename. The loop uses filesystem
+  mtime as the wall-clock signal (models are not expected to perceive elapsed
+  time). A fresh heartbeat in a non-editing phase (`reading`, `planning`,
+  `testing`, `building`, `installing`, `debugging`) can grant one bounded
+  progress grace after the last code change.
+- **Synthetic timeout requests** carry a deterministic recommended
+  instruction, escalation fields (`escalation_level`, `progress_timeout_count`,
+  `restart_count`, `restarts_remaining`, `suggested_action`), task context,
+  validation command, heartbeat snapshot, diff snapshot, and the last 50 log
+  lines. Existing arbitration decides `soft_restart` / `hard_restart` / wait /
+  reject.
+- **Escalation ladder.** First timeout → `soft_restart`; second → stronger
+  `soft_restart`; third+ → `hard_restart` unless a recovery tag exists or the
+  budget is exhausted. The arbitrator makes the final call.
 
-**Escalation ladder**: The first progress timeout recommends a deterministic `soft_restart`; the second recommends a stronger `soft_restart`; the third and later timeouts recommend `hard_restart` unless a recovery tag already exists or the restart budget is exhausted, in which case the request recommends manual inspection. The arbitrator still makes the final decision.
-
-### Action Types
+### Action types
 
 | Action | Effect |
 |--------|--------|
-| `end_agent` | Orchestrator loop runs the agent's `validation_command` (if configured) inside its worktree. If it **passes**, it auto-commits any uncommitted worker changes (`git add -A` + `git commit -m "agent-<name>: <task>"`) so the final merge picks them up, sends SIGTERM, and marks the agent `"completed"`. If validation **fails**, the loop automatically triggers a `soft_restart`, packaging the stderr/stdout back to the agent with instructions to fix its code. |
-| `soft_restart` | Orchestrator loop kills the rogue process, creates a `WIP` commit to preserve uncommitted work, and respawns the agent with new `instruction`s (e.g., test failure logs or an instruction approved during progress-timeout arbitration) so it can correct its course. |
-| `hard_restart` | Orchestrator loop kills the process, captures any uncommitted+untracked work as a `recovery/<agent>/<timestamp>` git tag, then resets the worktree clean and respawns the agent. The tag preserves the wiped state so it can be inspected with `git show <tag>` or recovered later. Useful for escaping hallucination loops. |
+| `end_agent` | Loop runs the agent's `validation_command` (if configured) in its worktree. Pass → auto-commits any uncommitted work (`git add -A` + `git commit -m "agent-<name>: <task>"`), SIGTERMs, marks `"completed"`. Fail → triggers an automatic `soft_restart` with stderr/stdout fed back. |
+| `soft_restart` | Loop kills the process, makes a `WIP` commit to preserve uncommitted work, respawns with new `instruction`s (e.g. test failures or arbitration guidance). |
+| `hard_restart` | Loop kills the process, captures uncommitted+untracked work as a `recovery/<agent>/<timestamp>` git tag, resets the worktree clean, respawns. The tag preserves the wiped state for `git show <tag>` recovery. |
 
-**Restart cap:** Every restart (soft or hard, whether triggered by validation failure, progress-timeout arbitration, or an orchestrator action) increments the agent's `restart_count`. Once it exceeds `default_max_restarts` (default 3), the loop stops respawning the agent and marks it `errored` so failures can't thrash forever.
+**Restart cap.** Every restart increments `restart_count`. Past
+`default_max_restarts` (default 3), the loop stops respawning and marks the
+agent `errored`.
 
-**PID/process-group safety:** Before sending any signal the loop validates that the stored PID still matches the spawned worker CLI's command line (POSIX `ps`). If the PID has been recycled to an unrelated process, the signal is skipped. On POSIX the worker is launched as a detached process group, so stops/restarts signal the whole group rather than only the wrapper PID.
+**PID/process-group safety.** Before signalling, the loop validates the stored
+PID still matches the worker CLI's cmdline (POSIX `ps`). On POSIX, workers
+launch as detached process groups so stops/restarts hit the whole group.
 
-**Aborting:** Closing the dashboard window (SIGHUP/SIGTERM) leaves the agents running. Pressing Ctrl+C asks for confirmation, then writes `coord/abort.flag`. The loop's abort path performs a soft stop only — it kills the running agent processes and marks them `terminated`, but **does not** `git reset --hard` the worktrees and **does not** delete `coord/`. Any in-flight work is preserved and can be inspected with `git status` in each worktree, while `coord/logs/`, `coord/events.jsonl`, requests, and decisions remain available for post-abort diagnosis. To continue from that state, inspect any preserved changes you care about, update `coord/context.json` if needed, then run `launch-all.js --coord ./coord --resume`.
+**Aborting.** Closing the dashboard window leaves agents running. Pressing
+Ctrl+C asks for confirmation, then writes `coord/abort.flag`. The loop's abort
+path kills running agent processes and marks them `terminated` but **does
+not** `git reset --hard` worktrees and **does not** delete `coord/`. In-flight
+work is preserved (`git status` in each worktree); `coord/logs/`,
+`events.jsonl`, requests, and decisions remain for diagnosis. To continue,
+inspect preserved changes, update `context.json` if needed, then
+`launch-all.js --coord ./coord --resume`.
 
-**Stalled CLI surfacing:** If the orchestrator CLI fails `orchestrator_failure_threshold` cycles in a row (default 5), the loop writes `coord/orchestrator-stalled.flag` with a diagnostic payload. The dashboard renders a red banner so you can see at a glance that arbitration is stuck (e.g., the configured `orchestrator_cli` is unauthenticated, rate-limited, or down). The flag is removed automatically as soon as a cycle succeeds.
+**Stalled-CLI surfacing.** If the orchestrator CLI fails
+`orchestrator_failure_threshold` cycles (default 5), the loop writes
+`coord/orchestrator-stalled.flag` with a diagnostic. The dashboard and
+`status.js` surface this. The flag is cleared automatically on the first
+successful cycle.
 
-**Event log:** Every state transition the loop and `spawn-agent.js` make — spawns, completions, validation failures, restart scheduling, recovery-tag creation, heartbeat graces, abort signals — is appended as a structured JSON line to `coord/events.jsonl`. It is best-effort and append-only; failures to write are swallowed. Use it as the chronological audit trail when reconstructing what happened in a finished run.
+**Event log.** Every state transition (`spawn-agent.js` and
+`orchestrator-loop.js` both write) appends a JSON line to `coord/events.jsonl`.
+Best-effort, append-only — the canonical chronological audit trail.
 
-## Phase 5 — Review and Integration
+## Phase 5 — Review and integration
 
-When all worker agents finish, the `orchestrator-loop.js` script will automatically:
-1. **Aggregate Worker Self-Reports**: Read `agents.json` and each worker's resolved `review_request` content.
-2. **Write Deterministic Summary**: Generate `coord/review-summary.txt` without making a final AI call.
-3. **Optional Popup Notification**: If `launch_review_terminal` is enabled, open a **new terminal window** displaying this summary.
-4. **Exit**: The orchestrator loop will then safely terminate.
+When all workers finish, `orchestrator-loop.js` automatically:
 
-At this point, the user will return to the interactive orchestrator session. They can either use their original chat window, or open a completely new chat window. They will give you a command like *"The agents are done. Please review and integrate their work."*
+1. **Aggregates worker self-reports** from `agents.json` and each worker's
+   resolved `review_request` content.
+2. **Writes `coord/review-summary.txt`** deterministically (no AI call).
+3. **Optionally opens a popup terminal** with the summary if
+   `launch_review_terminal` is enabled.
+4. **Exits.**
 
-When you receive this instruction to perform the final integration, you should:
-1. Identify the completed agent worktrees (look in both `.kilocode/worktrees/` and `.agents/worktrees/`).
-2. Run `git diff main...<agent-name>` for each to review the code.
-3. Provide a summary of the work to the user.
-4. Once the user approves, perform the merge:
+The user returns to the interactive orchestrator session — either the original
+chat window or a new one — and gives an instruction like *"The agents are
+done. Please review and integrate."* Then:
+
+1. Identify completed worktrees (look in `.kilocode/worktrees/` and
+   `.agents/worktrees/`).
+2. Run `git diff main...<agent-name>` for each.
+3. Summarize the work for the user.
+4. After approval, merge:
    ```bash
    git merge <agent-name>
    git worktree remove <worktree-path>/<agent-name>
    git branch -d <agent-name>
    ```
 
-### Power-user spawn options
+## Power-user appendix
 
-The `scripts/spawn-agent.js` script supports a `--` passthrough. Any arguments following `--` are appended directly to the CLI command template defined in `orchestrator.config.jsonc`.
+Alternative entry points that preserve capability but are not the canonical
+recommended path.
 
-> [!WARNING]
-> Arguments passed via `--` are NOT sanitized and are appended as-is to the shell command or argv list. Use this only for temporary debugging (e.g., `-- --verbose` or `-- --model <other-id>`) or project-specific overrides that don't warrant a permanent config change.
+### Direct bootstrap (skip `prepare-run.js`)
 
-## For Maintainers
+```bash
+node <SKILL>/scripts/bootstrap.js \
+  --project "Your project description" \
+  --coord ./coord
+```
 
-Run `node scripts/run-tests.js` to syntax-check scripts and execute dependency-free smoke tests.
+`bootstrap.js` only scaffolds an empty skeleton (`chat_context: {}`,
+`execution_topology: { execution_mode: "", reason: "", dependency_notes: [] }`,
+`foundation: { status: "", paths: [] }`, `tasks: {}`). After running it, edit
+`context.json` to populate the structured shape above, or run
+`scripts/materialize-plan.js` from an approved draft before launch.
+`bootstrap.js` refuses to overwrite existing coordination state by default —
+use `--force` only when intentionally discarding the current run state.
+
+### Read-only draft helper
+
+```bash
+node <SKILL>/scripts/draft-plan.js \
+  --task "The user's requested implementation" \
+  --project "Short project description" \
+  --coord ./coord
+```
+
+Uses `orchestrator_cli` (falls back to `default_cli`) to produce
+`coord/plan-reviews/draft-plan-v1.prompt.md`, `draft-plan-v1.raw.md`, and the
+canonical `draft-plan-v1.json`. Read-only — does not launch workers or edit
+project files. The caller still owns review and approval.
+
+### Standalone materializer
+
+```bash
+node <SKILL>/scripts/materialize-plan.js \
+  --draft-plan ./coord/plan-reviews/draft-plan-v1.json \
+  --coord ./coord
+```
+
+Preserves existing compact `chat_context`, writes the final execution
+topology, foundation contract, and task map to `context.json`, writes durable
+rationale to `DECISIONS.md`, writes non-durable rationale to
+`CALLER_CONTEXT.md`, then validates the generated context. Refuses to
+overwrite an existing non-empty task map unless `--force` is passed. If the
+final topology is `direct`, it writes no worker tasks and tells the caller not
+to run `launch-all.js`.
+
+### Standalone context validator
+
+```bash
+node <SKILL>/scripts/validate-context.js --coord ./coord
+```
+
+Checks execution topology, foundation status, committed foundation
+cleanliness, per-task name safety, allowed/forbidden path shape, CLI
+references against `cli_templates`, and common foundation-path leaks.
+`materialize-plan.js`, `prepare-run.js --approve-draft`, and `launch-all.js`
+all call the same validator internally. Useful as a standalone safety check
+after hand-edits to `context.json`. `--json` prints a machine-readable report.
+
+### Manual dashboard launch
+
+```bash
+node <SKILL>/scripts/dashboard.js --coord ./coord
+```
+
+Opens the TUI dashboard. Auto-launched on local macOS by default. Outside
+macOS / over SSH / in CI, run manually.
+
+### Spawn-agent passthrough
+
+`scripts/spawn-agent.js` supports `--`. Arguments after `--` are appended
+directly to the CLI command template defined in `orchestrator.config.jsonc`.
+
+> **Warning:** `--` arguments are NOT sanitized — they are appended as-is to
+> the shell command or argv list. Use only for temporary debugging
+> (`-- --verbose`, `-- --model <other-id>`) or project-specific overrides that
+> don't warrant a permanent config change.
+
+## For maintainers
+
+Run `node scripts/run-tests.js` to syntax-check scripts and execute
+dependency-free smoke tests.
