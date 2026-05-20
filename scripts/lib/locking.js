@@ -143,8 +143,6 @@ function acquireInstanceLock(coordDir) {
     }
     return runId;
   }
-
-  }
 }
  
 function readLockPid(lockMarker) {
