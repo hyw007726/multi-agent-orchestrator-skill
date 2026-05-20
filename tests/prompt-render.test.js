@@ -14,7 +14,7 @@ const {
   buildOrchestratorPrompt,
   buildBoundedArbitrationPrompt,
   ARBITRATION_PROMPT_CAP_BYTES,
-} = require('../scripts/orchestrator-loop');
+} = require('../scripts/lib/arbitration');
 const { renderReviewerPrompt } = require('../scripts/review-plan');
 
 describe('worker prompt rendering', () => {

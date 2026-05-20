@@ -7,7 +7,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { createTempProject } = require('./helpers/temp-project');
-const { commitWorktree, stageAllChanges } = require('../scripts/orchestrator-loop');
+const { commitWorktree, stageAllChanges } = require('../scripts/lib/git-ops');
 
 describe('git commit message safety', () => {
   it('auto-commit messages treat quotes, newlines, and substitutions as literal text', () => {

@@ -823,7 +823,7 @@ describe('orchestrator loop failure paths', () => {
 });
 
 describe('buildFinalSummary tri-state title', () => {
-  const { buildFinalSummary } = require('../scripts/orchestrator-loop');
+  const { buildFinalSummary } = require('../scripts/lib/finalize');
 
   it('titles RUN INCOMPLETE when an agent failed/vanished (even alongside a parked one)', () => {
     const summary = buildFinalSummary({

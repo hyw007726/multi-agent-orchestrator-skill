@@ -18,12 +18,9 @@ const {
   waitFor,
 } = require('./helpers/temp-project');
 
-const {
-  checkCompletionOwnership,
-  captureRecoveryAndReset,
-  collectOwnershipChangedFiles,
-  sweepRestartPrompts,
-} = require(path.join(repoRoot(), 'scripts', 'orchestrator-loop.js'));
+const { checkCompletionOwnership, collectOwnershipChangedFiles } = require(path.join(repoRoot(), 'scripts', 'lib', 'ownership.js'));
+const { captureRecoveryAndReset } = require(path.join(repoRoot(), 'scripts', 'lib', 'worktree-recovery.js'));
+const { sweepRestartPrompts } = require(path.join(repoRoot(), 'scripts', 'lib', 'actions.js'));
 
 describe('loop behavior', () => {
   // 1. Restart cap parks an agent for human attention.

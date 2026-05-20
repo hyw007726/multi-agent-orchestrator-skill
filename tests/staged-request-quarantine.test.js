@@ -12,9 +12,8 @@ const {
   readJsonl,
 } = require('./helpers/temp-project');
 
-const { consolidateStagedRequests, getPaths } = require(
-  path.join(repoRoot(), 'scripts', 'orchestrator-loop.js'),
-);
+const { consolidateStagedRequests } = require(path.join(repoRoot(), 'scripts', 'lib', 'staged-requests.js'));
+const { getPaths } = require(path.join(repoRoot(), 'scripts', 'lib', 'paths.js'));
 
 describe('staged request quarantine', () => {
   it('quarantines a malformed staged request while still consolidating the valid ones', () => {

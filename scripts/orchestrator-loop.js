@@ -8,16 +8,14 @@ const { acquireInstanceLock, readJSON, readJSONL, updateJSON, appendJSONL } = re
 const { STATUS, transitionAgentStatus, parkAgentForAttention, parkRationale } = require("./lib/status");
 const { appendEvent } = require("./lib/events");
 const { tailLines } = require("./lib/log-tail");
-const { stageAllChanges, commitWorktree } = require("./lib/git-ops");
-const { captureRecoveryAndReset } = require("./lib/worktree-recovery");
-const { checkCompletionOwnership, collectOwnershipChangedFiles, pathPatternMatches } = require("./lib/ownership");
 const { consolidateStagedRequests, readStagedRequests } = require("./lib/staged-requests");
 const { isValidationRunning, killValidationRunner } = require("./lib/validation-control");
-const { hasPendingProgressTimeoutRequest, buildProgressTimeoutRequest, progressTimeoutHistory, stampProgressMilestone, readProgressHeartbeat, heartbeatChanged, shouldGrantHeartbeatGrace, readDiffSnapshot, readDiffHash } = require("./lib/progress-tracking");
-const { RECENT_DECISION_LIMIT, ARBITRATION_PROMPT_CAP_BYTES, collectWorktreeStates, buildBoundedArbitrationPrompt, buildOrchestratorPrompt, callOrchestratorCli } = require("./lib/arbitration");
-const { shellQuote, runAppleScriptTerminal, writeStalledFlag, clearStalledFlag, finalize, buildFinalSummary } = require("./lib/finalize");
+const { hasPendingProgressTimeoutRequest, buildProgressTimeoutRequest, stampProgressMilestone, readProgressHeartbeat, heartbeatChanged, shouldGrantHeartbeatGrace, readDiffSnapshot, readDiffHash } = require("./lib/progress-tracking");
+const { RECENT_DECISION_LIMIT, collectWorktreeStates, buildBoundedArbitrationPrompt, callOrchestratorCli } = require("./lib/arbitration");
+const { shellQuote, runAppleScriptTerminal, writeStalledFlag, clearStalledFlag, finalize } = require("./lib/finalize");
 const { processApprovals } = require("./lib/approvals");
 const { processActions, processFinishedValidations, sweepRestartPrompts, expectedProcessForAgent } = require("./lib/actions");
+const { getPaths } = require("./lib/paths");
 
 const LEGACY_ABORT_FLAG_STARTUP_GRACE_MS = 10_000;
 
@@ -421,20 +419,6 @@ function parseArgs() {
   return config;
 }
 
-function getPaths(coordDir) {
-  return {
-    requests: path.join(coordDir, "requests.jsonl"),
-    requestsDir: path.join(coordDir, "requests"),
-    decisions: path.join(coordDir, "decisions.json"),
-    decisionsAudit: path.join(coordDir, "decisions.jsonl"),
-    decisionsMd: path.join(coordDir, "DECISIONS.md"),
-    callerContextMd: path.join(coordDir, "CALLER_CONTEXT.md"),
-    context: path.join(coordDir, "context.json"),
-    agents: path.join(coordDir, "agents.json"),
-    progressDir: path.join(coordDir, "progress"),
-  };
-}
-
 function ensureDecisionAuditLog(paths, log) {
   if (fs.existsSync(paths.decisionsAudit)) return;
 
@@ -608,21 +592,3 @@ function readAgentCurrentStartMs(agent, { name, log } = {}) {
   }
   return 0;
 }
-
-module.exports = {
-  buildOrchestratorPrompt,
-  buildBoundedArbitrationPrompt,
-  ARBITRATION_PROMPT_CAP_BYTES,
-  buildFinalSummary,
-  captureRecoveryAndReset,
-  checkCompletionOwnership,
-  collectOwnershipChangedFiles,
-  commitWorktree,
-  pathPatternMatches,
-  stageAllChanges,
-  readAgentCurrentStartMs,
-  consolidateStagedRequests,
-  getPaths,
-  progressTimeoutHistory,
-  sweepRestartPrompts,
-};

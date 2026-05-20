@@ -3,7 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { progressTimeoutHistory } = require("../scripts/orchestrator-loop");
+const { progressTimeoutHistory } = require("../scripts/lib/progress-tracking");
 
 describe("progressTimeoutHistory windowing", () => {
   const baseRequests = [
