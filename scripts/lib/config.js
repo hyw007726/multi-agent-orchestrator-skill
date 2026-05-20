@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { DEFAULT_MAX_LOG_BYTES } = require("./log-tail");
  
 let warnedDeprecatedFailureThreshold = false;
 
@@ -71,9 +72,7 @@ const DEFAULT_CLI_TEMPLATES = {
   opencode: { cmd: "opencode", args: ["run", "--dangerously-skip-permissions", "--file", { prompt_file: true }, "Follow the instructions in the attached prompt file."] },
 };
 
-// 256 MB matches scripts/lib/log-tail.js's DEFAULT_MAX_LOG_BYTES. Keep them in
-// sync (the helper exports its default for callers that need raw access).
-const DEFAULT_WORKER_LOG_MAX_BYTES = 256 * 1024 * 1024;
+const DEFAULT_WORKER_LOG_MAX_BYTES = DEFAULT_MAX_LOG_BYTES;
 
 const DEFAULTS = {
   default_cli: "kilo",
