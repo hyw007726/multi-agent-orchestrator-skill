@@ -235,16 +235,25 @@ describe('locking primitives', () => {
     // the watcher ever sees the lock dir without a parseable pid file, the
     // half-formed window is back.
     const lockTarget = path.join(tmpDir, 'race.lock');
+    const holderFile = path.join(tmpDir, 'active-holder');
     fs.writeFileSync(lockTarget, '');
 
     const lockingModule = path.resolve(__dirname, '..', 'scripts', 'lib', 'locking');
     const workerSrc = `
+      const fs = require('fs');
       const { acquireLock } = require(${JSON.stringify(lockingModule)});
       const release = acquireLock(${JSON.stringify(lockTarget)}, { retries: 100, minTimeout: 5, maxTimeout: 20 });
-      // Hold briefly so peers race against a live holder.
-      const end = Date.now() + 10;
-      while (Date.now() < end) {}
-      release();
+      try {
+        // Detect premature stale-cleanup: two simultaneous lock holders would
+        // both reach this exclusive create and the second one would fail.
+        fs.writeFileSync(${JSON.stringify(holderFile)}, String(process.pid), { flag: 'wx' });
+        // Hold briefly so peers race against a live holder.
+        const end = Date.now() + 20;
+        while (Date.now() < end) {}
+      } finally {
+        try { fs.unlinkSync(${JSON.stringify(holderFile)}); } catch {}
+        release();
+      }
     `;
 
     let halfFormed = 0;
@@ -285,7 +294,7 @@ describe('locking primitives', () => {
       }
     })();
 
-    const workers = Array.from({ length: 8 }, () => new Promise((resolve, reject) => {
+    const workers = Array.from({ length: 16 }, () => new Promise((resolve, reject) => {
       const child = spawn(process.execPath, ['-e', workerSrc], { stdio: 'pipe' });
       let stderr = '';
       child.stderr.on('data', (d) => { stderr += d.toString(); });
@@ -302,6 +311,7 @@ describe('locking primitives', () => {
     assert.strictEqual(halfFormed, 0, `observed ${halfFormed} half-formed lock states across ${peeks} peeks`);
     // After all workers finish, the lock dir should be gone.
     assert.strictEqual(fs.existsSync(`${lockTarget}.lock`), false);
+    assert.strictEqual(fs.existsSync(holderFile), false, 'no live-holder sentinel should remain');
   });
 });
 
