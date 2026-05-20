@@ -12,7 +12,22 @@ const { tailLines } = require("./lib/log-tail");
 // the spawn-agent rotation kicked in and we should refresh.
 const logTailCache = new Map();
 
-const coordDir = process.argv[2] === "--coord" ? process.argv[3] : "./coord";
+let coordDir = "./coord";
+let intervalMs = 2000;
+let clearScreen = true;
+
+const argv = process.argv;
+for (let i = 2; i < argv.length; i++) {
+  const arg = argv[i];
+  if (arg === "--coord" && i + 1 < argv.length) {
+    coordDir = argv[++i];
+  } else if (arg === "--interval" && i + 1 < argv.length) {
+    intervalMs = parseInt(argv[++i], 10) || 2000;
+  } else if (arg === "--no-clear") {
+    clearScreen = false;
+  }
+}
+
 const agentsFile = path.join(coordDir, "agents.json");
 const contextFile = path.join(coordDir, "context.json");
 const requestsFile = path.join(coordDir, "requests.jsonl");
@@ -55,11 +70,11 @@ function exitDashboard(message) {
   process.exit(0);
 }
 
-renderTimer = setInterval(render, 2000);
+renderTimer = setInterval(render, intervalMs);
 render();
 
 function render() {
-  process.stdout.write("\x1Bc");
+  if (clearScreen) process.stdout.write("\x1Bc");
   console.log(`=== ORCHESTRATOR DASHBOARD ===  [${new Date().toLocaleTimeString()}]`);
   console.log(`Press Ctrl+C to abort agents (with confirmation). Closing this window will NOT stop them.\n`);
 
