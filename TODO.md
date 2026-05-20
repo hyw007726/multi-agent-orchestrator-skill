@@ -8,73 +8,12 @@ Each item is tagged with a complexity rating:
 
 > Items already on `Roadmap.md` are not duplicated here.
 
-## Top 5 to fix first
-
-Pointers into the detailed entries below; full context and C-tag are on the body items.
-
-1. ~~**[C2] `runValidation` blocks the entire loop for up to 30 minutes**~~ — _fixed: completion validation now runs in an async helper with per-agent `validation` state, so the main loop keeps supervising peers._
-2. ~~**[C2] `processApprovals` is not crash-atomic**~~ — _fixed: flip-then-audit ordering in `processApprovals`._
-3. ~~**[C2] Per-cycle `ps`/`git` subprocess storm**~~ — _fixed: single `ps -eo` per tick + `cmdMap`; `readDiffHash` (1 git/agent) replaces `readDiffSnapshot` for change-detection._
-4. ~~**[C2] `acquireLock` race between `mkdir` and PID-file write**~~ — _fixed: stage-and-rename in `acquireLock`, atomic release._
-5. ~~**[C2] Worker-coord symlink failures are swallowed**~~ — _fixed: `ensureCoordSymlink` now exits non-zero with errno + workaround instructions._
-
 ---
 
 ## Critical (correctness, data loss, security)
 
-- ~~**[C2] `runValidation` can freeze the orchestrator for `VALIDATION_HARD_CAP_MINS` (30 min)**~~ — _fixed: validation runs asynchronously via `scripts/validation-runner.js`, with requests moved through `validating` and completion finalized when the result lands._
-  - `scripts/orchestrator-loop.js:1616` calls `spawnSync` synchronously inside the main loop. While a worker's test suite runs, every other agent's liveness check, progress timeout, and arbitration is paused; abort flag detection is also delayed.
-  - *Fix:* Run validation asynchronously, tracked by an `agent.validation` state field (idle / running / passed / failed). Keep the per-agent serialization, but let the main tick continue supervising peers. The hard cap can drop because the main loop is no longer at risk.
-
-- ~~**[C2] `updateJSONL` permanently drops malformed lines on rewrite**~~ — _fixed: canonical JSONL rewrites append skipped malformed/fenced lines verbatim to `<file>.malformed` before writing the cleaned file._
-  - `scripts/lib/locking.js:195-203` reads, filters out unparseable lines (with a `console.error`), and then writes the parsed array back. The malformed line is gone forever after the next mutation. If a corrupted line carried a pending request or decision, the audit log silently loses it.
-  - *Fix:* Before rewriting, append every dropped line verbatim to `<file>.malformed` (or quarantine via rename). The current `consolidateStagedRequests` policy for staging files is the right pattern — mirror it for the canonical JSONL writers.
-
-- ~~**[C2] `spawn-agent.js` has a window between `child.spawn` and the `agents.json` write where the worker is unmanaged**~~ — _fixed: `spawn-agent.js` registers a `spawning` PID immediately after `child.unref()` and promotes it to `running` before stdout result emission._
-  - `scripts/spawn-agent.js` spawns the detached child, writes the log marker, prints `__SPAWN_RESULT__`, and only then calls `updateJSON(agentsFile, …)`. A crash (EAGAIN, EPIPE on stdout) between the spawn and the JSON write leaves a worker running with no registry entry; `launch-all.js`'s `recoverOrphanForRollback` looks in `agents.json` and finds nothing.
-  - *Fix:* Write a minimal `{ pid, cli, started_at, status: "spawning" }` to `agents.json` immediately after `child.unref()`, before any stdout write. Promote to `running` once the marker/templateMode is committed. The orphan-recovery path then has a stable hook.
-
-- ~~**[C2] `captureRecoveryAndReset` destroys nested git state**~~ — _fixed: hard restart recovery detects declared submodule paths and excludes them from cleanup; undeclared nested Git state fails closed before reset._
-  - `scripts/orchestrator-loop.js:1601-1604`: `git reset --hard <head>` followed by `git clean -fd` deletes anything not tracked, including nested `.git` directories and submodule worktrees that a worker may have introduced. Once gone, they cannot be recovered from the recovery tag (only the parent commit's blobs were captured).
-  - *Fix:* Before `git clean -fd`, scan for `.gitmodules` and `submodule.*` entries in `git config --file .git/config`. If any exist, downgrade to `git clean -fdx --exclude="<submodule-paths>"` or refuse the hard restart and park the agent.
 
 ## Medium (UX gaps, missing safety nets)
-
-- ~~**[C2] `acquireInstanceLock` calls `process.exit(1)` from a library helper**~~ - _fixed: the helper now throws structured `ELOCKED` errors with detected PID/cmd metadata, and `orchestrator-loop.js` owns message formatting + exit._
-  - `scripts/lib/locking.js:29, 52` exits the process directly when it detects a competing loop. That makes the helper untestable in-process and leaves no room for callers to do their own cleanup (release temp files, flush logs, etc.).
-  - *Fix:* Throw a structured error (`code: "ELOCKED"`, attach the detected PID/cmd) and let `orchestrator-loop.js` format the message and exit. Update `tests/locking.test.js` to assert against the thrown error.
-
-- ~~**[C2] `pidMatchesCli` substring match is permissive**~~ - _fixed: matching now uses the first argv token basename, with a recorded-cmdline-gated fallback for shell/node wrappers and regression tests for filename false positives._
-  - `scripts/lib/process.js:54` does `cmdline.toLowerCase().includes(expectedCli.toLowerCase())`. An unrelated process whose cmdline happens to contain the CLI name (e.g., `vim cli-templates/codex.md`, `tail codex.log`) matches. Combined with PID recycling this can lead the loop into signalling the wrong process before the events-log fallback even engages.
-  - *Fix:* Compare the basename of the first argv token against `expectedCli` (path-aware), and only fall back to substring when the recorded `spawned_cmdline` also matches. Add tests for the false-positive cases.
-
-- ~~**[C2] `processApprovals` order also drops the `agent_completed` / decision audit if the `safeKill` happens to crash the loop**~~ - _fixed: `agent_completed` is emitted immediately after the COMPLETED transition, before signalling the worker._
-  - In `processActions`, the sequence for a passing validation is `finalizeEndAgentCompletion` → `safeKill` → `appendEvent("agent_completed")`. If `safeKill` raises (e.g., `process.kill` permission error path that escapes the try/catch via a future refactor), the `agent_completed` event is never written even though the agent is marked `completed`.
-  - *Fix:* Emit `agent_completed` immediately after the COMPLETED transition (already inside the lock), then signal the worker. The event is cheap and idempotent at the consumer.
-
-- ~~**[C2] `abort.flag` has no identity, so a stale flag from a prior run can short-circuit a fresh launch**~~ - _fixed: abort flags now carry `{ pid, written_at }`, stale pre-run flags are ignored and removed, and legacy/manual flags fall back to mtime._
-  - `scripts/orchestrator-loop.js:81` only checks for `existsSync(abort.flag)` and unlinks it after handling. If a prior run was killed before unlinking (or the user wrote it manually for testing), the next loop boots, sees the flag, aborts immediately, and unlinks it — wasting one full launch cycle.
-  - *Fix:* Write the abort flag as JSON `{ pid, written_at }`. On startup, ignore flags whose `written_at` predates the current `current_run.json` started_at. Dashboard's Ctrl+C writer should include those fields.
-
-- ~~**[C2] `default_base_branch` discovery falls back to literal `"main"`**~~ - _fixed: launch and ownership checks now discover origin/HEAD, then init.defaultBranch, then current branch, and launch surfaces the resolved base ref._
-  - `scripts/launch-all.js:530-540` returns `"main"` if `git rev-parse --abbrev-ref HEAD` fails or is empty. `scripts/orchestrator-loop.js:1771` then probes `["main", "master"]` for the ownership base. Repos using `trunk`, `develop`, or other defaults silently use a wrong base for ownership and `git diff` snapshots.
-  - *Fix:* Read `git symbolic-ref refs/remotes/origin/HEAD` (or `git config --get init.defaultBranch`) and fall back to the current branch only if both fail. Surface the resolved base in the `Model heads-up` block at launch.
-
-- ~~**[C2] `isRuntimeCoordSymlink` only excuses the top-level `coord` entry from ownership checks**~~ - _fixed: ownership filtering now drops `coord` and every `coord/...` path when top-level `coord` is a runtime symlink._
-  - `scripts/orchestrator-loop.js:1872-1879` filters the path `"coord"` itself when it is a symlink. But the ownership-check walker (`addGitLines`) emits entries below it (`coord/requests/<file>.json`, `coord/progress/<agent>.json`) when a worker writes through the symlink. Those slip past the filter and trip "outside allowed_paths" on completion.
-  - *Fix:* If the top-level `coord` is a symlink, also drop every changed file whose first path segment is `coord`. Add a regression that writes through the symlink and asserts ownership passes.
-
-- ~~**[C2] Tmp prompt files leak under `os.tmpdir()`**~~ - _fixed: launch-all temp prompts are deleted after successful spawn handoff, launch prompts are materialized under coord for workers, and restart prompts are capped per agent._
-  - `scripts/launch-all.js:167-169` writes `launch-all-prompt-<agent>-<ts>.txt` to `os.tmpdir()` and never deletes it. `scripts/orchestrator-loop.js` deletes the `orch-prompt-<pid>-<ts>.txt` files but not the per-restart `coord/prompts/restart-*.txt` (kept on purpose for forensics but unbounded).
-  - *Fix:* Delete each `launch-all-prompt-*.txt` after `spawn-agent.js` returns successfully. Add a small sweeper for `coord/prompts/` that keeps the N most-recent files per agent (mirroring the `loop-runs/` retention).
-
-- ~~**[C2] `processActions` silently ignores unknown agents in arbitration output**~~ - _fixed: unknown-agent arbitration actions now log a warning, emit `arbitration_action_dropped`, and appear in live inspection recent events._
-  - `scripts/orchestrator-loop.js:367-458`: an `end_agent` for an agent not in `agents.json` falls through `if (!snapshot)`; a `soft_restart`/`hard_restart` for an unknown agent makes `bumpRestartAndRespawn` no-op inside its `updateJSON` callback. Either way the loop emits no warning and the orchestrator CLI gets no feedback that its response was malformed.
-  - *Fix:* Log a clear `Arbitration action targeted unknown agent <name>` warning and emit an `arbitration_action_dropped` structured event (new `events.js` type) so it shows up in `inspect-live-test.js`.
-
-- ~~**[C2] `writeAtomic` skips fsync; rename-without-flush can lose committed state on power loss**~~ - _fixed: `writeAtomic` now writes through an fd, fsyncs before close/rename, cleans failed tmp files, and tests assert fsync-before-rename ordering._
-  - `scripts/lib/locking.js:291-295` writes to a tmp file then renames. On crash/poweroff between rename and the page cache flushing, the new content can be lost while the rename is observed. Most of the time this is fine, but `agents.json`, `current_run.json`, and `decisions.jsonl` represent committed state.
-  - *Fix:* Open the tmp file with `'w'`, write, then `fsyncSync(fd)` before `closeSync` and `renameSync`. Optional on append-only files where the loss is recoverable. Tests that don't care about fsync can stay green; add one that asserts the fsync was invoked via a stub.
 
 - **[C1] `gpt-5.4-mini` recommendation is not a real model id**
   - `scripts/lib/model-recommendations.js:13` lists `model: "gpt-5.4-mini"`. There is no published GPT‑5.4 line — the closest valid ids are `gpt-5-mini` (or the current `gpt-4o-mini` family for Codex-compatible deployments). Operators copying this into their config get a 404 from the provider.
