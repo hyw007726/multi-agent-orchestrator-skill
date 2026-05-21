@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 const { spawnSync, spawn } = require('child_process');
 const { loadConfig } = require('./lib/config');
-const { acquireLock } = require('./lib/locking');
+const { acquireLock, detectRunningLoop } = require('./lib/locking');
 const { safeKill } = require('./lib/process');
 const { cliTemplateProcessMatch } = require('./lib/cli-template');
 const { renderWorkerPrompt } = require('./lib/prompt-render');
@@ -47,6 +47,18 @@ function launchAll() {
   if (!fs.existsSync(contextPath)) {
     failLaunch(`${contextPath} not found. Run bootstrap first.`);
   }
+
+  // Refuse to spawn workers if an orchestrator loop is already running against
+  // this coord/. acquireLaunchLock only protects against concurrent launch-all
+  // invocations; it does NOT block a launch while a previously-spawned loop is
+  // still arbitrating. Without this check, --resume (or any rerun) could
+  // overwrite agents.json, rotate worker logs, and recreate worktrees on top
+  // of a live arbitrating loop, double-spawning the same agents and racing the
+  // running loop's restart_count writes. Detect the live loop the same way
+  // orchestrator-loop.js detects itself (ps scan + orchestrator.instance.lock).
+  // This runs BEFORE acquireLaunchLock so even the launch.lock marker is left
+  // untouched on refusal.
+  refuseIfLoopRunning(args.coordDir);
 
   // Serialize concurrent launches against the same coord/. Without this, two
   // parallel launch-all.js runs would race in spawn-agent.js (each overwrites
@@ -353,6 +365,34 @@ function failLaunch(message) {
     loop_pid: jsonState.loopPid,
   });
   process.exit(1);
+}
+
+// Refuse to launch (with a clear error and exit 1) when an orchestrator loop is
+// already arbitrating against this coord/. Called before acquireLaunchLock and
+// before any worktree/agents.json/worker-log writes so a refusal is fully
+// non-destructive. Covers fresh launches AND --resume: both paths would
+// otherwise mutate agents.json under a live loop.
+function refuseIfLoopRunning(coordDir) {
+  const live = detectRunningLoop(coordDir);
+  if (!live) return;
+  const pidText = live.pid ? ` (PID ${live.pid})` : '';
+  const lines = [
+    `An orchestrator loop is already running against '${coordDir}'${pidText}.`,
+    'Refusing to launch — re-spawning workers under a live loop would race agents.json writes, ' +
+      'double-spawn worker processes, and orphan the first run\'s supervision.',
+  ];
+  if (live.detectedVia === 'ps' && live.cmd) {
+    lines.push('', `Detected via ps scan: ${live.cmd}`);
+    if (live.pid) {
+      lines.push('', `If that loop is wedged, stop it explicitly (e.g. \`kill ${live.pid}\`) before retrying.`);
+    }
+  } else if (live.detectedVia === 'lock') {
+    const marker = live.lockMarker || path.join(coordDir, 'orchestrator.instance.lock');
+    lines.push('', `Detected via singleton lock marker: ${marker}`);
+    lines.push('', `If you're certain no loop is running (e.g. it crashed without cleanup), remove the stale marker:  rm -rf '${marker}'`);
+  }
+  console.error(lines.join('\n'));
+  failLaunch(`An orchestrator loop is already running against '${coordDir}'.`);
 }
 
 // Acquires an advisory mutex on the coord/ directory so two concurrent

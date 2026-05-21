@@ -572,6 +572,106 @@ describe('launch-all smoke test', () => {
     }
   });
 
+  it('refuses to launch (including --resume) while an orchestrator loop is live on the same coord', { timeout: 30000 }, async () => {
+    let project;
+    let fakeLoopChild;
+    try {
+      project = createTempProject('launch-all-active-loop-');
+
+      writeProjectConfig(project.root, fakeCliPath);
+      bootstrapProject(project.root, 'Active-orchestrator-loop double-spawn guard project');
+
+      const contextPath = path.join(project.root, 'coord', 'context.json');
+      const context = readJson(contextPath);
+      context.execution_topology = {
+        execution_mode: 'parallel',
+        reason: 'Fake workers own separate paths.',
+        dependency_notes: [],
+      };
+      context.foundation = { status: 'not_required', paths: [] };
+      context.tasks = {
+        'agent-alpha': {
+          description: 'alpha task',
+          cli: 'fake',
+          allowed_paths: ['alpha/**'],
+          forbidden_paths: ['beta/**', '.gitignore', 'orchestrator.config.js', 'coord/'],
+          validation_command: null,
+        },
+        'agent-beta': {
+          description: 'beta task',
+          cli: 'fake',
+          allowed_paths: ['beta/**'],
+          forbidden_paths: ['alpha/**', '.gitignore', 'orchestrator.config.js', 'coord/'],
+          validation_command: null,
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2) + '\n');
+
+      // Stand up a fake orchestrator-loop.js binary that just sleeps. The cmdline
+      // must literally contain "orchestrator-loop.js --coord <coord>" so the ps
+      // scan matches it the same way it would match the real loop.
+      const fakeLoopDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-loop-launch-'));
+      const fakeLoop = path.join(fakeLoopDir, 'orchestrator-loop.js');
+      fs.writeFileSync(fakeLoop, 'setInterval(() => {}, 1000);\n', 'utf-8');
+      fakeLoopChild = spawn(process.execPath, [fakeLoop, '--coord', './coord'], {
+        cwd: project.root,
+        stdio: 'ignore',
+        detached: false,
+      });
+
+      // Give ps a moment to see the process.
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Sanity-check: bail without failing if ps can't see the process (some
+      // CI/sandboxes restrict ps); the assertion would be meaningless.
+      const ps = spawnSync('ps', ['-eo', 'pid=,command='], { encoding: 'utf-8' });
+      const psSeesIt = (ps.stdout || '').split('\n').some((line) =>
+        line.includes('orchestrator-loop.js') &&
+        line.includes('--coord ./coord') &&
+        line.match(new RegExp(`\\b${fakeLoopChild.pid}\\b`)),
+      );
+      if (!psSeesIt) {
+        try { fs.rmSync(fakeLoopDir, { recursive: true, force: true }); } catch {}
+        return;
+      }
+
+      const launchScript = path.join(repoRoot(), 'scripts', 'launch-all.js');
+
+      // Fresh launch must be refused without touching worker state.
+      const fresh = runLaunchAllRaw(launchScript, project.root);
+      assert.notStrictEqual(fresh.status, 0, 'fresh launch must fail while a loop is live');
+      assert.match(fresh.stderr, /orchestrator loop is already running/i);
+      // No worktrees, no agents.json contents, no worker logs.
+      assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees', 'agent-alpha')));
+      assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees', 'agent-beta')));
+      const agentsPath = path.join(project.root, 'coord', 'agents.json');
+      if (fs.existsSync(agentsPath)) {
+        const agents = readJson(agentsPath);
+        assert.deepStrictEqual(agents, {}, 'agents.json must remain empty');
+      }
+      assert.ok(!fs.existsSync(path.join(project.root, 'coord', 'logs', 'agent-alpha.log')));
+      // launch.lock must not have been touched either — the guard runs BEFORE
+      // acquireLaunchLock so the refusal is fully non-destructive.
+      assert.ok(!fs.existsSync(path.join(project.root, 'coord', 'launch.lock')));
+
+      // --resume must be refused the same way.
+      const resume = runLaunchAllRaw(launchScript, project.root, ['--resume']);
+      assert.notStrictEqual(resume.status, 0, 'resume launch must fail while a loop is live');
+      assert.match(resume.stderr, /orchestrator loop is already running/i);
+      assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees', 'agent-alpha')));
+      assert.ok(!fs.existsSync(path.join(project.root, '.agents', 'worktrees', 'agent-beta')));
+
+      try { fs.rmSync(fakeLoopDir, { recursive: true, force: true }); } catch {}
+    } finally {
+      if (fakeLoopChild) {
+        try { fakeLoopChild.kill('SIGKILL'); } catch {}
+      }
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
+
   it('refuses to launch when a stale agent branch from a prior aborted run is present', () => {
     let project;
     try {

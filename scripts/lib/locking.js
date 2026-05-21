@@ -50,82 +50,6 @@ function acquireInstanceLock(coordDir) {
   }
 
   // Single-use helper — only called from acquireInstanceLock above.
-  // POSIX `ps` scan for a competing orchestrator-loop on the same coord directory.
-  // Returns { pid, cmd } if a live loop matches, otherwise null. Best-effort: on
-  // Windows or when `ps` is unavailable we return null and rely on the mkdir-lock.
-  //
-  // Path comparison resolves the other process's `--coord` relative to ITS cwd
-  // (via /proc/<pid>/cwd on Linux or `lsof` on macOS). Without that, identical
-  // relative spellings like `--coord ./coord` from two unrelated project dirs
-  // would falsely collide.
-  function findRunningLoop(coordDir) {
-    if (process.platform === "win32") return null;
-    const targetCoord = safeResolve(coordDir);
-    if (!targetCoord) return null;
-    const result = spawnSync("ps", ["-eo", "pid=,command="], { encoding: "utf-8", timeout: 2000 });
-    if (!result || result.status !== 0 || !result.stdout) return null;
-
-    for (const rawLine of result.stdout.split("\n")) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      const match = line.match(/^(\d+)\s+(.*)$/);
-      if (!match) continue;
-      const pid = Number(match[1]);
-      const cmd = match[2];
-      if (!Number.isInteger(pid) || pid === process.pid || pid === process.ppid) continue;
-      if (!cmd.includes("orchestrator-loop.js")) continue;
-
-      const otherCoord = extractCoordArg(cmd);
-      if (!otherCoord) continue;
-
-      // Absolute path ⇒ direct comparison is safe regardless of cwd.
-      if (path.isAbsolute(otherCoord)) {
-        if (safeResolve(otherCoord) === targetCoord) return { pid, cmd };
-        continue;
-      }
-
-      // Relative path ⇒ resolve against the other process's cwd, else skip. The
-      // mkdir-lock still catches same-cwd duplicates we miss here.
-      const otherCwd = readProcessCwd(pid);
-      if (!otherCwd) continue;
-      const otherResolved = safeResolve(path.resolve(otherCwd, otherCoord));
-      if (otherResolved && otherResolved === targetCoord) return { pid, cmd };
-    }
-    return null;
-
-    // Nested helpers — only used inside findRunningLoop.
-    function extractCoordArg(cmd) {
-      const eq = cmd.match(/--coord=("([^"]+)"|'([^']+)'|(\S+))/);
-      if (eq) return eq[2] || eq[3] || eq[4] || "";
-      const space = cmd.match(/--coord\s+("([^"]+)"|'([^']+)'|(\S+))/);
-      if (space) return space[2] || space[3] || space[4] || "";
-      return "";
-    }
-    function safeResolve(p) {
-      try { return path.resolve(p); } catch { return ""; }
-    }
-    function readProcessCwd(pid) {
-      // Linux: /proc/<pid>/cwd is a symlink to the cwd.
-      try {
-        const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
-        if (cwd) return cwd;
-      } catch {}
-      // macOS/BSD: ask lsof. `-Fn` prints only newline-prefixed name lines.
-      const lsof = spawnSync("lsof", ["-p", String(pid), "-a", "-d", "cwd", "-Fn"], {
-        encoding: "utf-8",
-        timeout: 2000,
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-      if (lsof && lsof.status === 0 && lsof.stdout) {
-        for (const ln of lsof.stdout.split("\n")) {
-          if (ln.startsWith("n")) return ln.slice(1);
-        }
-      }
-      return "";
-    }
-  }
-
-  // Single-use helper — only called from acquireInstanceLock above.
   // Mints a fresh run_id and writes coord/current_run.json. Stamp source for events,
   // decisions, and recovery tags throughout this run.
   function writeCurrentRunFile(coordDir) {
@@ -143,6 +67,111 @@ function acquireInstanceLock(coordDir) {
     }
     return runId;
   }
+}
+
+// Shared — used by acquireInstanceLock (defence #1 before the mkdir-lock) and
+// by launch-all's active-run guard so we can refuse to spawn workers if a loop
+// is already arbitrating against the same coord/. POSIX `ps` scan for a
+// competing orchestrator-loop on the same coord directory. Returns { pid, cmd }
+// if a live loop matches, otherwise null. Best-effort: on Windows or when `ps`
+// is unavailable we return null and rely on the mkdir-lock.
+//
+// Path comparison resolves the other process's `--coord` relative to ITS cwd
+// (via /proc/<pid>/cwd on Linux or `lsof` on macOS). Without that, identical
+// relative spellings like `--coord ./coord` from two unrelated project dirs
+// would falsely collide.
+function findRunningLoop(coordDir) {
+  if (process.platform === "win32") return null;
+  const targetCoord = safeResolveLoopPath(coordDir);
+  if (!targetCoord) return null;
+  const result = spawnSync("ps", ["-eo", "pid=,command="], { encoding: "utf-8", timeout: 2000 });
+  if (!result || result.status !== 0 || !result.stdout) return null;
+
+  for (const rawLine of result.stdout.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const match = line.match(/^(\d+)\s+(.*)$/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const cmd = match[2];
+    if (!Number.isInteger(pid) || pid === process.pid || pid === process.ppid) continue;
+    if (!cmd.includes("orchestrator-loop.js")) continue;
+
+    const otherCoord = extractCoordArg(cmd);
+    if (!otherCoord) continue;
+
+    // Absolute path ⇒ direct comparison is safe regardless of cwd.
+    if (path.isAbsolute(otherCoord)) {
+      if (safeResolveLoopPath(otherCoord) === targetCoord) return { pid, cmd };
+      continue;
+    }
+
+    // Relative path ⇒ resolve against the other process's cwd, else skip. The
+    // mkdir-lock still catches same-cwd duplicates we miss here.
+    const otherCwd = readProcessCwd(pid);
+    if (!otherCwd) continue;
+    const otherResolved = safeResolveLoopPath(path.resolve(otherCwd, otherCoord));
+    if (otherResolved && otherResolved === targetCoord) return { pid, cmd };
+  }
+  return null;
+
+  // Nested helpers — only used inside findRunningLoop.
+  function extractCoordArg(cmd) {
+    const eq = cmd.match(/--coord=("([^"]+)"|'([^']+)'|(\S+))/);
+    if (eq) return eq[2] || eq[3] || eq[4] || "";
+    const space = cmd.match(/--coord\s+("([^"]+)"|'([^']+)'|(\S+))/);
+    if (space) return space[2] || space[3] || space[4] || "";
+    return "";
+  }
+  function safeResolveLoopPath(p) {
+    try { return path.resolve(p); } catch { return ""; }
+  }
+  function readProcessCwd(pid) {
+    // Linux: /proc/<pid>/cwd is a symlink to the cwd.
+    try {
+      const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+      if (cwd) return cwd;
+    } catch {}
+    // macOS/BSD: ask lsof. `-Fn` prints only newline-prefixed name lines.
+    const lsof = spawnSync("lsof", ["-p", String(pid), "-a", "-d", "cwd", "-Fn"], {
+      encoding: "utf-8",
+      timeout: 2000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (lsof && lsof.status === 0 && lsof.stdout) {
+      for (const ln of lsof.stdout.split("\n")) {
+        if (ln.startsWith("n")) return ln.slice(1);
+      }
+    }
+    return "";
+  }
+}
+
+// Shared — used by launch-all's active-run guard. Reports a live orchestrator
+// loop bound to `coordDir` without acquiring anything. Returns either null or
+// an info object describing how the live loop was detected so callers can
+// surface a precise refusal message:
+//   { detectedVia: "ps",   pid, cmd }           — ps saw the process
+//   { detectedVia: "lock", pid, lockMarker }    — orchestrator.instance.lock is held
+// Mirrors acquireInstanceLock's two-layer detection so the launch-time guard
+// and the loop's own startup guard agree on what "live" means.
+function detectRunningLoop(coordDir) {
+  const live = findRunningLoop(coordDir);
+  if (live) {
+    return { detectedVia: "ps", pid: live.pid, cmd: live.cmd };
+  }
+  const lockMarker = path.join(coordDir, "orchestrator.instance.lock");
+  if (fs.existsSync(lockMarker)) {
+    const pid = readLockPid(lockMarker);
+    if (pid && processAlive(pid)) {
+      return { detectedVia: "lock", pid, lockMarker };
+    }
+  }
+  return null;
+}
+
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
 }
  
 function readLockPid(lockMarker) {
@@ -381,4 +410,4 @@ function writeAtomic(filePath, content) {
   }
 }
 
-module.exports = { acquireInstanceLock, readCurrentRunId, updateJSON, updateJSONL, appendJSONL, readJSON, readJSONL, acquireLock, writeAtomic, readLoopPid };
+module.exports = { acquireInstanceLock, detectRunningLoop, readCurrentRunId, updateJSON, updateJSONL, appendJSONL, readJSON, readJSONL, acquireLock, writeAtomic, readLoopPid };

@@ -12,10 +12,22 @@ Each item is tagged with a complexity rating:
 
 ## Critical (correctness, data loss, security)
 
+- [x] **[C3] Prevent double-spawn on active runs**: add an active-run guard before `launch-all.js` creates or resumes any worker worktree/process, including the `--resume` path. The guard should detect an existing live orchestrator loop for the same `coord/` and fail before touching `agents.json`, worker logs, or worktrees. Add a regression test for `launch-all --resume` while a run is active.
+
+- [ ] **[C2] Remove shell-based orchestrator loop launch**: replace the `shell: true` `nohup ... >> ... &` launch in `launch-all.js` with argv-based `spawn(process.execPath, [orchestratorLoopPath, "--coord", coordDir], ...)` and direct log-file stdio. Add a test proving shell metacharacters in `--coord` are treated as literal path text.
+
+- [ ] **[C3] Split worker access to coordination state**: stop exposing the whole `coord/` tree as a writable symlink inside worker worktrees. Provide read-only access to `DECISIONS.md`, `CALLER_CONTEXT.md`, `context.json`, and recent decisions, plus validated write-only ingress for `requests/` and `progress/`. Update prompts, spawn setup, staged-request handling, and ownership checks accordingly.
+
+- [ ] **[C3] Make arbitration request/action handling transactional**: validate arbitrator output before side effects, require every pending request to be approved or rejected, and persist action intent/request resolution before killing, committing, or respawning workers. Add tests for restart/end-agent responses that omit approvals and for crashes between action scheduling and request resolution.
+
+- [ ] **[C2] Investigate lock visibility race**: the full `node scripts/run-tests.js` run observed one half-formed lock state in `tests/locking.test.js`, while isolated rerun passed. Reproduce under stress, fix `acquireLock`/test TOCTOU as needed, and keep a regression that proves lock directories are never observable without a valid `pid`.
 
 ## Medium (UX gaps, missing safety nets)
 
-- [x] **[C2] Add `--json` mode to scripts the LLM consumes**: emit a stable schema from `preflight.js`, `validate-context.js`, `launch-all.js`, and a new `status.js` so the caller LLM can branch on structured fields instead of string-matching stdout. Human-readable output stays the default.
-- [x] **[C1] Add `scripts/status.js`**: read `coord/agents.json`, `coord/events.jsonl`, and any `coord/orchestrator-stalled.flag`, then emit `{ loop_state, agents: [{ name, state, last_event_seq, blocker? }] }`. Supports both human text and `--json`. Becomes the canonical "what's happening right now" probe so SKILL.md can stop pointing at multiple files.
-- [x] **[C1] Slim SKILL.md by collapsing alternative paths**: for each phase, name exactly one canonical command (`prepare-run.js`, `launch-all.js`, `status.js`). Move "or you could also…" variants to a Power-user appendix. Goal is to reduce context bloat without losing any capability.
-- [x] **[C1] Trim repeated rationale prose in SKILL.md**: drop duplicated "IMPORTANT/CRITICAL/Action:" callouts where the same point is restated; the runtime shape is fine, the prose is the bloat.
+- [ ] **[C2] Make manual resume failure-safe**: if `resume-agent.js` flips a parked agent to `running` but `spawn-agent.js` fails, restore or re-park the agent with clear `attention_reason` / `next_steps` instead of leaving a stale running record. Add a regression for resume relaunch failure.
+
+- [ ] **[C2] Make staged request ingestion idempotent**: prevent duplicate request ingestion if the loop crashes after appending staged requests to `requests.jsonl` but before deleting staged `.json` files. Deduplicate by `request_id` or move staged files through a processing/consumed state before append. Add a crash-replay regression.
+
+- [ ] **[C2] Bound all dynamic arbitration prompt sections**: `buildBoundedArbitrationPrompt` currently truncates request content and worktree state only. Add size caps for `context.json`, `DECISIONS.md`, `CALLER_CONTEXT.md`, and recent decisions, and log which sections were truncated so small-context arbitrator CLIs stay reliable.
+
+- [ ] **[C1] Add regression coverage for review-discovered edge cases**: cover active-run resume launch, shell-metacharacter coord paths, missing approval entries in arbitrator responses, staged request replay, resume spawn failure, and oversized non-request arbitration context.
