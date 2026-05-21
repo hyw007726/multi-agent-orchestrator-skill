@@ -14,7 +14,7 @@ Each item is tagged with a complexity rating:
 
 - [x] **[C3] Prevent double-spawn on active runs**: add an active-run guard before `launch-all.js` creates or resumes any worker worktree/process, including the `--resume` path. The guard should detect an existing live orchestrator loop for the same `coord/` and fail before touching `agents.json`, worker logs, or worktrees. Add a regression test for `launch-all --resume` while a run is active.
 
-- [ ] **[C2] Remove shell-based orchestrator loop launch**: replace the `shell: true` `nohup ... >> ... &` launch in `launch-all.js` with argv-based `spawn(process.execPath, [orchestratorLoopPath, "--coord", coordDir], ...)` and direct log-file stdio. Add a test proving shell metacharacters in `--coord` are treated as literal path text.
+- [x] **[C2] Remove shell-based orchestrator loop launch**: replace the `shell: true` `nohup ... >> ... &` launch in `launch-all.js` with argv-based `spawn(process.execPath, [orchestratorLoopPath, "--coord", coordDir], ...)` and direct log-file stdio. Add a test proving shell metacharacters in `--coord` are treated as literal path text.
 
 - [ ] **[C3] Split worker access to coordination state**: stop exposing the whole `coord/` tree as a writable symlink inside worker worktrees. Provide read-only access to `DECISIONS.md`, `CALLER_CONTEXT.md`, `context.json`, and recent decisions, plus validated write-only ingress for `requests/` and `progress/`. Update prompts, spawn setup, staged-request handling, and ownership checks accordingly.
 

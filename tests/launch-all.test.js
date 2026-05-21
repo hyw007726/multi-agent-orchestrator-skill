@@ -672,6 +672,101 @@ describe('launch-all smoke test', () => {
     }
   });
 
+  it('treats shell metacharacters in --coord as literal path text when spawning the orchestrator loop', { timeout: 30000 }, async () => {
+    let project;
+    let loopPid;
+    try {
+      project = createTempProject('launch-all-shell-meta-');
+
+      writeProjectConfig(project.root, fakeCliPath);
+
+      // The coord dir name contains `$(...)`, backticks, spaces, and `;`. If
+      // launch-all's orchestrator-loop spawn ever hits /bin/sh again, the
+      // substitutions would execute and `touch` two canary files (one from
+      // $(...), one from backticks) in the project cwd. The new argv-based
+      // spawn must never let those run.
+      const dollarCanary = 'SHELL_BREACH_DOLLAR';
+      const tickCanary = 'SHELL_BREACH_TICKS';
+      const coordDirName = `coord;$(touch ${dollarCanary}) and \`touch ${tickCanary}\` here`;
+      const coordPath = path.join(project.root, coordDirName);
+      const coordArg = `./${coordDirName}`;
+
+      bootstrapProjectWithCoord(project.root, 'Shell-metachar coord-path safety project', coordArg);
+
+      const contextPath = path.join(coordPath, 'context.json');
+      const context = readJson(contextPath);
+      context.execution_topology = {
+        execution_mode: 'parallel',
+        reason: 'Fake workers own separate paths.',
+        dependency_notes: [],
+      };
+      context.foundation = { status: 'not_required', paths: [] };
+      context.tasks = {
+        'agent-alpha': {
+          description: 'alpha task',
+          cli: 'fake',
+          allowed_paths: ['alpha/**'],
+          forbidden_paths: ['.gitignore', 'orchestrator.config.js', 'coord/'],
+          validation_command: null,
+        },
+      };
+      fs.writeFileSync(contextPath, JSON.stringify(context, null, 2) + '\n');
+
+      const launchScript = path.join(repoRoot(), 'scripts', 'launch-all.js');
+      const result = spawnSync('node', [launchScript, '--coord', coordArg], {
+        cwd: project.root,
+        encoding: 'utf-8',
+      });
+
+      try {
+        assert.strictEqual(
+          result.status,
+          0,
+          `launch-all should succeed with a shell-metachar coord path.\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+        );
+
+        // Critical assertion: neither shell substitution executed.
+        const dollarCanaryPath = path.join(project.root, dollarCanary);
+        const tickCanaryPath = path.join(project.root, tickCanary);
+        assert.strictEqual(
+          fs.existsSync(dollarCanaryPath),
+          false,
+          `$() substitution executed — canary file ${dollarCanaryPath} exists`,
+        );
+        assert.strictEqual(
+          fs.existsSync(tickCanaryPath),
+          false,
+          `backtick substitution executed — canary file ${tickCanaryPath} exists`,
+        );
+
+        // The orchestrator loop should be alive with the literal weird coord
+        // path. ps must show the unsubstituted argv.
+        const loopMatch = result.stdout.match(/Orchestrator loop backgrounded \(PID:\s*(\d+)\)/);
+        assert.ok(loopMatch, `expected loop PID line, got stdout:\n${result.stdout}`);
+        loopPid = parseInt(loopMatch[1], 10);
+
+        const ps = spawnSync('ps', ['-p', String(loopPid), '-o', 'command='], { encoding: 'utf-8' });
+        if (ps.status === 0 && ps.stdout) {
+          const cmd = ps.stdout.trim();
+          assert.ok(
+            cmd.includes(coordDirName),
+            `loop argv should contain literal coord dir name; got: ${cmd}`,
+          );
+        }
+      } finally {
+        if (loopPid) cleanupProcess(loopPid);
+        // Also try to take down the singleton lock so cleanup doesn't leave a
+        // dangling lock dir.
+        const lockDir = path.join(coordPath, 'orchestrator.instance.lock');
+        try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch {}
+      }
+    } finally {
+      if (project) {
+        project.cleanup();
+      }
+    }
+  });
+
   it('refuses to launch when a stale agent branch from a prior aborted run is present', () => {
     let project;
     try {
@@ -942,6 +1037,18 @@ describe('launch-all base branch discovery', () => {
     }
   });
 });
+
+function bootstrapProjectWithCoord(projectRoot, projectDescription, coordArg) {
+  const result = spawnSync('node', [
+    path.join(repoRoot(), 'scripts', 'bootstrap.js'),
+    '--project', projectDescription,
+    '--coord', coordArg,
+  ], { cwd: projectRoot, encoding: 'utf-8' });
+  if (result.status !== 0) {
+    throw new Error(`bootstrap failed (status ${result.status}):\n${result.stderr || result.stdout}`);
+  }
+  return result;
+}
 
 function runLaunchAll(scriptPath, cwd, extraArgs = []) {
   const result = runLaunchAllRaw(scriptPath, cwd, extraArgs);

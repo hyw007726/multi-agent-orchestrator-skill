@@ -274,13 +274,31 @@ function runLaunch(args, projectRoot, contextPath) {
   // are the only trace. Snapshot per-run copies under loop-runs/ and keep the
   // last N so the appended file can't grow unbounded.
   retainLoopOutSnapshot(args.coordDir, loopOutPath);
-  const cmd = `nohup node ${JSON.stringify(path.join(__dirname, 'orchestrator-loop.js'))} --coord ${JSON.stringify(args.coordDir)} >> ${JSON.stringify(loopOutPath)} 2>&1 &`;
-  const loop = spawn(cmd, [], {
-    cwd: projectRoot,
-    shell: true,
-    detached: true,
-    stdio: 'ignore',
-  });
+  // Argv-based spawn instead of `shell: true` + nohup. The previous shape
+  // interpolated args.coordDir into a shell command string; any metacharacter
+  // ($(...), ;, &&, backticks, embedded quotes, spaces) in --coord would be
+  // executed by /bin/sh instead of being treated as a literal path. With argv
+  // mode the path is passed as a single element of process.argv[2..] and never
+  // touches a shell.
+  //
+  // Reproduce nohup semantics manually: open the log file with fs.openSync and
+  // pass the fd as both stdout and stderr, detach to a new POSIX session so
+  // SIGHUP from launch-all's terminal doesn't propagate, then unref() so this
+  // process can exit while the loop runs on.
+  const loopOutFd = fs.openSync(loopOutPath, 'a');
+  let loop;
+  try {
+    loop = spawn(process.execPath, [path.join(__dirname, 'orchestrator-loop.js'), '--coord', args.coordDir], {
+      cwd: projectRoot,
+      detached: true,
+      stdio: ['ignore', loopOutFd, loopOutFd],
+    });
+  } finally {
+    // The child duplicates the fd into its own file table on spawn, so we can
+    // safely close ours immediately. Keeping it open would tie the file's
+    // lifetime to launch-all instead of to the loop.
+    try { fs.closeSync(loopOutFd); } catch {}
+  }
   loop.unref();
 
   console.log(`Orchestrator loop backgrounded (PID: ${loop.pid})`);
