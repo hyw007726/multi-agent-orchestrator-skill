@@ -278,7 +278,21 @@ describe('locking primitives', () => {
         }
         peeks++;
         if (!entries.includes('pid')) {
-          halfFormed++;
+          // macOS APFS readdir can transiently return [] for a dir being
+          // renamed-away or rm-recursive'd — the dir is end-of-life, not a
+          // freshly-created half-formed lock. Confirm by re-reading: if the
+          // dir is now gone (ENOENT) or has a pid, this was a TOCTOU, not a
+          // real half-formed state. We don't trust a *persistent* empty dir
+          // (the original bug), but we do tolerate a one-tick transient.
+          let transient = false;
+          try {
+            const reread = fs.readdirSync(lockDirPath);
+            if (reread.includes('pid')) transient = true;
+          } catch (err) {
+            if (err.code === 'ENOENT' || err.code === 'ENOTDIR') transient = true;
+            else throw err;
+          }
+          if (!transient) halfFormed++;
         } else {
           // pid file is listed — its contents must be parseable. Reading can
           // still race with cleanup; treat ENOENT as a TOCTOU and skip.

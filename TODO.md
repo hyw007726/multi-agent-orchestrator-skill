@@ -20,7 +20,7 @@ Each item is tagged with a complexity rating:
 
 - [x] **[C3] Make arbitration request/action handling transactional**: validate arbitrator output before side effects, require every pending request to be approved or rejected, and persist action intent/request resolution before killing, committing, or respawning workers. Add tests for restart/end-agent responses that omit approvals and for crashes between action scheduling and request resolution.
 
-- [ ] **[C2] Investigate lock visibility race**: the full `node scripts/run-tests.js` run observed one half-formed lock state in `tests/locking.test.js`, while isolated rerun passed. Reproduce under stress, fix `acquireLock`/test TOCTOU as needed, and keep a regression that proves lock directories are never observable without a valid `pid`.
+- [x] **[C2] Investigate lock visibility race**: the full `node scripts/run-tests.js` run observed one half-formed lock state in `tests/locking.test.js`, while isolated rerun passed. Reproduce under stress, fix `acquireLock`/test TOCTOU as needed, and keep a regression that proves lock directories are never observable without a valid `pid`.
 
 ## Medium (UX gaps, missing safety nets)
 
