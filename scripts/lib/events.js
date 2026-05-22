@@ -28,6 +28,7 @@ const VALID_EVENTS = new Set([
   "recovery_tag_created",
   "agent_parked",
   "agent_resumed",
+  "agent_resume_failed",
   "arbitration_action_dropped",
   "arbitration_response_rejected",
   "end_agent_intent",

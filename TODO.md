@@ -24,7 +24,7 @@ Each item is tagged with a complexity rating:
 
 ## Medium (UX gaps, missing safety nets)
 
-- [ ] **[C2] Make manual resume failure-safe**: if `resume-agent.js` flips a parked agent to `running` but `spawn-agent.js` fails, restore or re-park the agent with clear `attention_reason` / `next_steps` instead of leaving a stale running record. Add a regression for resume relaunch failure.
+- [x] **[C2] Make manual resume failure-safe**: if `resume-agent.js` flips a parked agent to `running` but `spawn-agent.js` fails, restore or re-park the agent with clear `attention_reason` / `next_steps` instead of leaving a stale running record. Add a regression for resume relaunch failure.
 
 - [ ] **[C2] Make staged request ingestion idempotent**: prevent duplicate request ingestion if the loop crashes after appending staged requests to `requests.jsonl` but before deleting staged `.json` files. Deduplicate by `request_id` or move staged files through a processing/consumed state before append. Add a crash-replay regression.
 

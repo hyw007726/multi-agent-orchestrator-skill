@@ -58,6 +58,7 @@ function resumeAgent() {
 
     const priorAttentionReason = agent.attention_reason;
     const priorAttentionAt = agent.attention_at;
+    const priorNextSteps = agent.next_steps;
 
     transitionAgentStatus(agent, config.agent, STATUS.RUNNING, "manual resume", log);
     delete agent.attention_reason;
@@ -91,6 +92,7 @@ function resumeAgent() {
       resetRestartCount: !config.preserveRestartCount,
       priorAttentionReason,
       priorAttentionAt,
+      priorNextSteps,
     };
   });
 
@@ -135,6 +137,34 @@ function resumeAgent() {
   const result = spawnSync("node", spawnArgs, { stdio: "inherit" });
   if (result.error || result.status !== 0) {
     const why = result.error ? result.error.message : `spawn-agent.js exited with status ${result.status}`;
+    // Re-park the agent: the running flip never produced a live worker, so
+    // leaving status=running with cleared attention_* hides a broken agent.
+    // Restore the prior attention_reason annotated with the spawn failure so
+    // the operator sees both the original park cause and why the relaunch
+    // failed. Best-effort: if this second updateJSON throws, surface that on
+    // top of the spawn failure rather than swallowing the original error.
+    try {
+      updateJSON(paths.agents, (agents) => {
+        const agent = agents[config.agent];
+        if (!agent) return;
+        const annotated = `manual resume relaunch failed: ${why}` +
+          (outcome.priorAttentionReason ? ` (was: ${outcome.priorAttentionReason})` : "");
+        transitionAgentStatus(agent, config.agent, STATUS.NEEDS_ATTENTION, "resume relaunch failed", log);
+        agent.attention_reason = annotated;
+        agent.attention_at = new Date().toISOString();
+        if (outcome.priorNextSteps !== undefined) agent.next_steps = outcome.priorNextSteps;
+      });
+      appendEvent(coordDir, "agent_resume_failed", {
+        agent: config.agent,
+        reason: why,
+        data: {
+          prior_attention_reason: outcome.priorAttentionReason,
+          prior_attention_at: outcome.priorAttentionAt,
+        },
+      });
+    } catch (restoreErr) {
+      console.error(`Error: failed to re-park '${config.agent}' after spawn failure: ${restoreErr.message}`);
+    }
     console.error(`Error: failed to relaunch '${config.agent}': ${why}`);
     process.exit(1);
   }

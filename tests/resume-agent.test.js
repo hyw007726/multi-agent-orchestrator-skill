@@ -123,6 +123,51 @@ describe('resume-agent primitive', () => {
     }
   });
 
+  it('re-parks the agent when spawn-agent.js fails so the operator sees the running flip and the failure cause', () => {
+    let project;
+    try {
+      project = setupParkedProject('resume-spawn-fail-');
+      const agentsPath = path.join(project.root, 'coord', 'agents.json');
+      const before = readJson(agentsPath)['agent-park'];
+
+      // Point the agent at a CLI name that the project config does not declare.
+      // spawn-agent.js will reject with a non-zero exit before registering
+      // anything, leaving resume-agent.js to either restore the parked state or
+      // (the bug we're guarding against) leave a stale RUNNING record.
+      const agents = readJson(agentsPath);
+      agents['agent-park'].cli = 'no-such-cli-template';
+      fs.writeFileSync(agentsPath, JSON.stringify(agents, null, 2), 'utf-8');
+
+      const result = runResume(project.root, ['--agent', 'agent-park', '--coord', './coord']);
+      assert.strictEqual(result.status, 1, 'resume should exit non-zero when spawn-agent fails');
+      assert.match(result.stderr, /failed to relaunch 'agent-park'/);
+
+      const after = readJson(agentsPath)['agent-park'];
+      assert.strictEqual(after.status, 'needs_attention', 're-parked, not left as running');
+      assert.ok(after.attention_at && !Number.isNaN(Date.parse(after.attention_at)),
+        'attention_at is a fresh ISO timestamp');
+      assert.match(
+        after.attention_reason,
+        /manual resume relaunch failed:/,
+        'attention_reason names the relaunch failure',
+      );
+      assert.match(
+        after.attention_reason,
+        /\(was: liveness timeout - idle 30 mins\)/,
+        'attention_reason preserves the original park cause',
+      );
+      assert.strictEqual(after.next_steps, before.next_steps, 'prior next_steps restored');
+
+      const events = readJsonl(path.join(project.root, 'coord', 'events.jsonl'));
+      const failEvent = events.find((e) => e.event === 'agent_resume_failed' && e.agent === 'agent-park');
+      assert.ok(failEvent, 'agent_resume_failed event appended');
+      assert.match(failEvent.reason, /spawn-agent\.js exited/);
+      assert.match(failEvent.data.prior_attention_reason, /liveness timeout - idle/);
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
+
   it('errors clearly when the agent name is unknown', () => {
     let project;
     try {
