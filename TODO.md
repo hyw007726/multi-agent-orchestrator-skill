@@ -30,4 +30,4 @@ Each item is tagged with a complexity rating:
 
 - [x] **[C2] Bound all dynamic arbitration prompt sections**: `buildBoundedArbitrationPrompt` currently truncates request content and worktree state only. Add size caps for `context.json`, `DECISIONS.md`, `CALLER_CONTEXT.md`, and recent decisions, and log which sections were truncated so small-context arbitrator CLIs stay reliable.
 
-- [ ] **[C1] Add regression coverage for review-discovered edge cases**: cover active-run resume launch, shell-metacharacter coord paths, missing approval entries in arbitrator responses, staged request replay, resume spawn failure, and oversized non-request arbitration context.
+- [x] **[C1] Add regression coverage for review-discovered edge cases**: cover active-run resume launch, shell-metacharacter coord paths, missing approval entries in arbitrator responses, staged request replay, resume spawn failure, and oversized non-request arbitration context.
