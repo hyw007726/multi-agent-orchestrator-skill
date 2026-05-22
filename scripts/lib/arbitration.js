@@ -45,33 +45,77 @@ function collectWorktreeStates(pending, agents) {
 // Cap-aware wrapper around buildOrchestratorPrompt. Smaller-context arbitration
 // CLIs silently degrade once their input drifts past ~30 KB, so when several
 // stalled agents each contribute a 50-line log tail + diff snapshot we compact
-// per-request content (and worktree state blobs) before re-rendering. The first
-// render is still attempted at full fidelity; only blobs are truncated on
-// overflow, never structural fields like request_id / type.
+// every dynamic blob before re-rendering. The first render is still attempted
+// at full fidelity; only blobs are truncated on overflow, never structural
+// fields like request_id / type.
 const ARBITRATION_PROMPT_CAP_BYTES = 32 * 1024;
 const ARBITRATION_PER_REQUEST_CAP_BYTES = 4 * 1024;
 const ARBITRATION_PER_STATE_CAP_BYTES = 2 * 1024;
+// Per-section caps for the four non-request blobs. Sized so the combined budget
+// (4 sections × 4 KB) leaves headroom for the prompt boilerplate, pending
+// requests, and worktree states under ARBITRATION_PROMPT_CAP_BYTES.
+const ARBITRATION_CONTEXT_CAP_BYTES = 4 * 1024;
+const ARBITRATION_DURABLE_CAP_BYTES = 4 * 1024;
+const ARBITRATION_RECENT_CAP_BYTES = 4 * 1024;
+const ARBITRATION_CALLER_CAP_BYTES = 4 * 1024;
 
 function buildBoundedArbitrationPrompt({ pending, context, durableDecisions, recentDecisions, worktreeStates, callerContext, log }) {
   const fullPrompt = buildOrchestratorPrompt(pending, context, durableDecisions, recentDecisions, worktreeStates, callerContext);
   if (Buffer.byteLength(fullPrompt, "utf-8") <= ARBITRATION_PROMPT_CAP_BYTES) return fullPrompt;
 
+  const truncations = [];
   const compactedPending = pending.map((req) => {
     if (!req || typeof req.content !== "string") return req;
-    return { ...req, content: truncateMiddle(req.content, ARBITRATION_PER_REQUEST_CAP_BYTES) };
+    const before = Buffer.byteLength(req.content, "utf-8");
+    const content = truncateMiddle(req.content, ARBITRATION_PER_REQUEST_CAP_BYTES);
+    const saved = before - Buffer.byteLength(content, "utf-8");
+    if (saved > 0) truncations.push({ name: `request[${req.request_id || req.agent || "?"}]`, saved });
+    return { ...req, content };
   });
   const compactedStates = {};
   for (const [agent, state] of Object.entries(worktreeStates || {})) {
-    compactedStates[agent] = typeof state === "string"
-      ? truncateMiddle(state, ARBITRATION_PER_STATE_CAP_BYTES)
-      : state;
+    if (typeof state !== "string") { compactedStates[agent] = state; continue; }
+    const before = Buffer.byteLength(state, "utf-8");
+    const compact = truncateMiddle(state, ARBITRATION_PER_STATE_CAP_BYTES);
+    const saved = before - Buffer.byteLength(compact, "utf-8");
+    if (saved > 0) truncations.push({ name: `worktreeStates[${agent}]`, saved });
+    compactedStates[agent] = compact;
   }
 
-  const compactPrompt = buildOrchestratorPrompt(compactedPending, context, durableDecisions, recentDecisions, compactedStates, callerContext);
+  const contextBlob = capBlob("context", JSON.stringify(context, null, 2), ARBITRATION_CONTEXT_CAP_BYTES, truncations);
+  const durableTrimmed = (typeof durableDecisions === "string" ? durableDecisions.trim() : "") || "(none recorded)";
+  const durableBlob = capBlob("durableDecisions", durableTrimmed, ARBITRATION_DURABLE_CAP_BYTES, truncations);
+  const recentBlob = capBlob("recentDecisions", JSON.stringify(recentDecisions, null, 2), ARBITRATION_RECENT_CAP_BYTES, truncations);
+  const callerTrimmed = (typeof callerContext === "string" ? callerContext.trim() : "") || "(none recorded)";
+  const callerBlob = capBlob("callerContext", callerTrimmed, ARBITRATION_CALLER_CAP_BYTES, truncations);
+
+  const compactPrompt = renderOrchestratorPromptFromBlobs({
+    requestsJson: JSON.stringify(compactedPending, null, 2),
+    contextJson: contextBlob,
+    durableText: durableBlob,
+    recentJson: recentBlob,
+    worktreeStatesJson: JSON.stringify(compactedStates, null, 2),
+    callerText: callerBlob,
+  });
+
   const originalKb = (Buffer.byteLength(fullPrompt, "utf-8") / 1024).toFixed(1);
   const cappedKb = (Buffer.byteLength(compactPrompt, "utf-8") / 1024).toFixed(1);
-  log?.(`Arbitration prompt exceeded ${(ARBITRATION_PROMPT_CAP_BYTES / 1024).toFixed(0)} KB (was ${originalKb} KB) — compacted per-request and worktree-state blobs to ${cappedKb} KB.`);
+  const summary = truncations.length > 0
+    ? ` (truncated ${truncations.map((t) => `${t.name} -${t.saved}B`).join(", ")})`
+    : "";
+  log?.(`Arbitration prompt exceeded ${(ARBITRATION_PROMPT_CAP_BYTES / 1024).toFixed(0)} KB (was ${originalKb} KB) — compacted to ${cappedKb} KB${summary}.`);
   return compactPrompt;
+
+  // Single-use helper — only called from buildBoundedArbitrationPrompt above.
+  // Truncates a blob, recording the section name and saved bytes when it
+  // overflows so the log call can name every truncated section in one line.
+  function capBlob(name, text, capBytes, recorder) {
+    const before = Buffer.byteLength(text, "utf-8");
+    if (before <= capBytes) return text;
+    const truncated = truncateMiddle(text, capBytes);
+    recorder.push({ name, saved: before - Buffer.byteLength(truncated, "utf-8") });
+    return truncated;
+  }
 }
 
 // Keeps the head and tail of a long blob and inserts a marker between them.
@@ -91,6 +135,21 @@ function truncateMiddle(text, maxBytes) {
 
 // Builds the arbitration prompt sent to the orchestrator CLI for each pending-request cycle.
 function buildOrchestratorPrompt(requests, context, durableDecisions, decisions, worktreeStates, callerContext = "") {
+  return renderOrchestratorPromptFromBlobs({
+    requestsJson: JSON.stringify(requests, null, 2),
+    contextJson: JSON.stringify(context, null, 2),
+    durableText: (typeof durableDecisions === "string" ? durableDecisions.trim() : "") || "(none recorded)",
+    recentJson: JSON.stringify(decisions, null, 2),
+    worktreeStatesJson: JSON.stringify(worktreeStates, null, 2),
+    callerText: (typeof callerContext === "string" ? callerContext.trim() : "") || "(none recorded)",
+  });
+}
+
+// Shared — used by buildOrchestratorPrompt (full-fidelity render) and
+// buildBoundedArbitrationPrompt (post-truncation render). Keeping the template
+// in one place ensures the bounded-prompt path can't drift from the canonical
+// section order or boilerplate.
+function renderOrchestratorPromptFromBlobs({ requestsJson, contextJson, durableText, recentJson, worktreeStatesJson, callerText }) {
   return `You are the system orchestrator for a multi-agent project.
 
 Worker agents are running as headless CLI sessions, each in an isolated git worktree.
@@ -124,23 +183,23 @@ Return ONLY valid JSON matching this exact structure (no markdown, no explanatio
 ## Dynamic Inputs
 
 ## Compact Project Context
-${JSON.stringify(context, null, 2)}
+${contextJson}
 
 ## Durable Project Decisions from coord/DECISIONS.md (DO NOT contradict these)
-${durableDecisions.trim() || "(none recorded)"}
+${durableText}
 
 ## Caller Session Context from coord/CALLER_CONTEXT.md
-${callerContext.trim() || "(none recorded)"}
+${callerText}
 
 ## Recent Runtime Decisions (DO NOT contradict these)
-${JSON.stringify(decisions, null, 2)}
+${recentJson}
 
 ## Agent Worktree States (Code Context)
 Here is the current git status and diff for the agents that submitted requests. Use this code context to understand their progress and evaluate their requests:
-${JSON.stringify(worktreeStates, null, 2)}
+${worktreeStatesJson}
 
 ## New Requests from Agents
-${JSON.stringify(requests, null, 2)}
+${requestsJson}
 
 ## Your Responsibilities
 Apply the responsibilities and response format above to these new requests.
