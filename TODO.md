@@ -18,7 +18,7 @@ Each item is tagged with a complexity rating:
 
 - [x] **[C3] Split worker access to coordination state**: stop exposing the whole `coord/` tree as a writable symlink inside worker worktrees. Provide read-only access to `DECISIONS.md`, `CALLER_CONTEXT.md`, `context.json`, and recent decisions, plus validated write-only ingress for `requests/` and `progress/`. Update prompts, spawn setup, staged-request handling, and ownership checks accordingly.
 
-- [ ] **[C3] Make arbitration request/action handling transactional**: validate arbitrator output before side effects, require every pending request to be approved or rejected, and persist action intent/request resolution before killing, committing, or respawning workers. Add tests for restart/end-agent responses that omit approvals and for crashes between action scheduling and request resolution.
+- [x] **[C3] Make arbitration request/action handling transactional**: validate arbitrator output before side effects, require every pending request to be approved or rejected, and persist action intent/request resolution before killing, committing, or respawning workers. Add tests for restart/end-agent responses that omit approvals and for crashes between action scheduling and request resolution.
 
 - [ ] **[C2] Investigate lock visibility race**: the full `node scripts/run-tests.js` run observed one half-formed lock state in `tests/locking.test.js`, while isolated rerun passed. Reproduce under stress, fix `acquireLock`/test TOCTOU as needed, and keep a regression that proves lock directories are never observable without a valid `pid`.
 

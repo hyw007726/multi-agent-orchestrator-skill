@@ -287,6 +287,83 @@ function killTimedOutChild(pid) {
   }, 2000).unref?.();
 }
 
+// Transactional validation for a parsed arbitration response.
+//
+// The orchestrator CLI is an LLM; nothing forces it to return a well-formed
+// envelope. Before we apply ANY side effects (killing workers, committing
+// worktrees, respawning, flipping requests.jsonl), every request that went
+// into the prompt must come back out resolved (approved or rejected), and
+// every action must tie back to an agent whose request actually was resolved
+// in this same response.
+//
+// A failed cycle is recoverable: the pending requests stay pending, so the
+// next tick re-renders the prompt and re-asks. A half-applied cycle (e.g. we
+// killed a worker but never recorded why) is not.
+//
+// Returns { ok: true } when valid, otherwise { ok: false, reasons: string[] }.
+function validateArbitrationResponse(response, pending) {
+  if (!response || typeof response !== "object") {
+    return { ok: false, reasons: ["Arbitration response is not an object."] };
+  }
+  const approved = Array.isArray(response.approved) ? response.approved : [];
+  const rejected = Array.isArray(response.rejected) ? response.rejected : [];
+  const actions = Array.isArray(response.actions) ? response.actions : [];
+  const pendingList = Array.isArray(pending) ? pending : [];
+
+  const approvedIds = new Set(approved.filter((a) => a && a.request_id).map((a) => a.request_id));
+  const rejectedIds = new Set(rejected.filter((r) => r && r.request_id).map((r) => r.request_id));
+  const resolvedIds = new Set([...approvedIds, ...rejectedIds]);
+
+  const reasons = [];
+
+  // Rule 1: every pending request must be in approved or rejected.
+  const pendingIds = pendingList
+    .filter((r) => r && r.request_id && r.status === "pending")
+    .map((r) => r.request_id);
+  const missingIds = pendingIds.filter((id) => !resolvedIds.has(id));
+  if (missingIds.length > 0) {
+    reasons.push(`Pending requests not in approved/rejected: ${missingIds.join(", ")}.`);
+  }
+
+  // Rule 2: every action must tie back to an agent whose request is resolved
+  // in this same response. Catches an arbitrator that decides to restart or
+  // end an agent without explaining what request prompted it.
+  for (const action of actions) {
+    if (!action || typeof action !== "object") {
+      reasons.push("Action entry is not an object.");
+      continue;
+    }
+    if (!["end_agent", "soft_restart", "hard_restart", "restart_agent"].includes(action.type)) {
+      // Unknown action types are processed by processActions but contribute no
+      // request-tying obligation; we let them through here.
+      continue;
+    }
+    const agentName = typeof action.agent === "string" && action.agent.length > 0 ? action.agent : null;
+    if (!agentName) {
+      reasons.push(`Action ${action.type} missing 'agent'.`);
+      continue;
+    }
+    // If the agent isn't in pending at all, the action is targeting a ghost —
+    // dropUnknownAgentAction will log + drop it per-action. Don't reject the
+    // whole response on that case; a single hallucinated action shouldn't be
+    // able to poison legitimate approvals in the same envelope.
+    const agentHasPending = pendingList.some(
+      (r) => r && r.agent === agentName && r.request_id,
+    );
+    if (!agentHasPending) continue;
+    const tiedToResolved = pendingList.some(
+      (r) => r && r.agent === agentName && r.request_id && resolvedIds.has(r.request_id),
+    );
+    if (!tiedToResolved) {
+      reasons.push(
+        `Action ${action.type} targets agent '${agentName}' but no pending request for that agent was approved or rejected.`,
+      );
+    }
+  }
+
+  return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
+}
+
 module.exports = {
   RECENT_DECISION_LIMIT,
   ARBITRATION_PROMPT_CAP_BYTES,
@@ -295,4 +372,5 @@ module.exports = {
   truncateMiddle,
   buildOrchestratorPrompt,
   callOrchestratorCli,
+  validateArbitrationResponse,
 };

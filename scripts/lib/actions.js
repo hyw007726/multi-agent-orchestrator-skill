@@ -51,9 +51,27 @@ function processActions(ctx, actions, arbitration = {}) {
         instruction: action.instruction,
         reason: action.type,
         mode: action.type === "hard_restart" ? "hard" : "soft",
+        requestIds: resolvedRequestIdsForAgent(action.agent, arbitration),
       });
     }
   }
+}
+
+// Single-use helper — used only by processActions above. Returns the
+// approved+rejected request_ids in this arbitration response that target
+// the given agent. We pass them through to bumpRestartAndRespawn so the
+// pre-kill restart_scheduled event records which requests we're acting on,
+// completing the audit trail.
+function resolvedRequestIdsForAgent(agentName, arbitration) {
+  if (!agentName || !arbitration) return [];
+  const response = arbitration.response || {};
+  const pending = Array.isArray(arbitration.pending) ? arbitration.pending : [];
+  const approvedIds = new Set((response.approved || []).filter((a) => a && a.request_id).map((a) => a.request_id));
+  const rejectedIds = new Set((response.rejected || []).filter((r) => r && r.request_id).map((r) => r.request_id));
+  const resolved = new Set([...approvedIds, ...rejectedIds]);
+  return pending
+    .filter((r) => r && r.agent === agentName && r.request_id && resolved.has(r.request_id))
+    .map((r) => r.request_id);
 }
 
 function dropUnknownAgentAction(ctx, action) {
@@ -237,6 +255,18 @@ function completeValidatedEndAgent(ctx, action, snapshot, arbitration) {
     return;
   }
 
+  // Persist the end_agent intent to events.jsonl BEFORE we touch the
+  // worktree (auto-commit), flip request status, or signal the worker. A
+  // crash anywhere after this row lets an operator recover what we were
+  // trying to do for this agent in this cycle, including which requests
+  // were tied to the action.
+  const endAgentRequestIds = resolvedRequestIdsForAgent(action.agent, arbitration);
+  appendEvent(coordDir, "end_agent_intent", {
+    agent: action.agent,
+    reason: "arbitration end_agent before commit/kill",
+    data: { request_ids: endAgentRequestIds },
+  });
+
   // Auto-commit any uncommitted changes so the final merge phase picks them up.
   const worktree = snapshot.worktree;
   if (fs.existsSync(worktree)) {
@@ -283,7 +313,7 @@ function handleValidationFailure(ctx, agentName, validation) {
 // the side effects (kill, recovery/WIP-commit, subprocess respawn) OUTSIDE the lock so
 // we never hold the lock across a subprocess (which would deadlock on spawn-agent's own
 // updateJSON write).
-function bumpRestartAndRespawn(ctx, { name, instruction, reason, mode, skipWipCommit = false }) {
+function bumpRestartAndRespawn(ctx, { name, instruction, reason, mode, skipWipCommit = false, requestIds = [] }) {
   const { paths, parsedConfig, log, runId, coordDir } = ctx;
   const outcomeRef = { value: { kind: "missing" } };
 
@@ -339,6 +369,23 @@ function bumpRestartAndRespawn(ctx, { name, instruction, reason, mode, skipWipCo
 
   const outcome = outcomeRef.value;
   if (outcome.kind === "missing") return false;
+
+  // Persist the intent to events.jsonl BEFORE any irreversible side effect
+  // (kill, commit, recovery tag, respawn). A crash between intent and the
+  // first side effect leaves a recoverable audit row; a crash mid-side-effect
+  // leaves a transition that operators can map back to "the loop intended X
+  // for agent Y at time Z" rather than guessing from agents.json alone.
+  if (outcome.kind === "respawn") {
+    appendEvent(coordDir, "restart_scheduled", {
+      agent: name,
+      reason: `${mode} restart - ${reason}`,
+      data: {
+        attempt: outcome.attempt,
+        maxAttempts: parsedConfig.default_max_restarts,
+        request_ids: requestIds,
+      },
+    });
+  }
 
   // Side effects below the lock — none of these should re-enter updateJSON on the same file.
   safeKill({ pid: outcome.pid, expectedCli: outcome.processMatch || processMatchForCli(outcome.cliTool, parsedConfig), recordedCmdline: outcome.recordedCmdline, log, coordDir, agent: name });
@@ -402,12 +449,6 @@ function bumpRestartAndRespawn(ctx, { name, instruction, reason, mode, skipWipCo
       }
     }
   }
-
-  appendEvent(coordDir, "restart_scheduled", {
-    agent: name,
-    reason: `${mode} restart - ${reason}`,
-    data: { attempt: outcome.attempt, maxAttempts: parsedConfig.default_max_restarts },
-  });
 
   const respawned = respawnAgent({
     name,

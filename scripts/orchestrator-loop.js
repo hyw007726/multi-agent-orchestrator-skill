@@ -11,7 +11,7 @@ const { tailLines } = require("./lib/log-tail");
 const { consolidateStagedRequests, readStagedRequests } = require("./lib/staged-requests");
 const { isValidationRunning, killValidationRunner } = require("./lib/validation-control");
 const { hasPendingProgressTimeoutRequest, buildProgressTimeoutRequest, stampProgressMilestone, readProgressHeartbeat, heartbeatChanged, shouldGrantHeartbeatGrace, readDiffSnapshot, readDiffHash } = require("./lib/progress-tracking");
-const { RECENT_DECISION_LIMIT, collectWorktreeStates, buildBoundedArbitrationPrompt, callOrchestratorCli } = require("./lib/arbitration");
+const { RECENT_DECISION_LIMIT, collectWorktreeStates, buildBoundedArbitrationPrompt, callOrchestratorCli, validateArbitrationResponse } = require("./lib/arbitration");
 const { shellQuote, runAppleScriptTerminal, writeStalledFlag, clearStalledFlag, finalize } = require("./lib/finalize");
 const { processApprovals } = require("./lib/approvals");
 const { processActions, processFinishedValidations, sweepRestartPrompts, expectedProcessForAgent } = require("./lib/actions");
@@ -327,8 +327,29 @@ async function runLoop() {
             consecutiveCliFailures = 0;
             clearStalledFlag(config.coordDir, log);
           }
-          processActions(ctx, response.actions || [], { response, pending });
-          processApprovals(ctx, response, { pending });
+          // Validate the parsed envelope BEFORE applying any side effects.
+          // Half-applying a malformed response (e.g. killing a worker but never
+          // recording why, or approving some requests but leaving others stale
+          // 'pending') is the kind of state we can't recover from. A failed
+          // cycle here is recoverable: the pending requests stay pending and
+          // the next tick re-asks.
+          const validation = validateArbitrationResponse(response, pending);
+          if (!validation.ok) {
+            log(`Arbitration response rejected before side effects: ${validation.reasons.join(" ")}`);
+            appendEvent(config.coordDir, "arbitration_response_rejected", {
+              reason: "validation failed",
+              data: {
+                reasons: validation.reasons,
+                pending_count: pending.length,
+                approved_count: Array.isArray(response.approved) ? response.approved.length : 0,
+                rejected_count: Array.isArray(response.rejected) ? response.rejected.length : 0,
+                actions_count: Array.isArray(response.actions) ? response.actions.length : 0,
+              },
+            });
+          } else {
+            processActions(ctx, response.actions || [], { response, pending });
+            processApprovals(ctx, response, { pending });
+          }
         }
       } else {
         // ── All-done check ────────────────────────────────────────────────
