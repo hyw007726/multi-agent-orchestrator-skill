@@ -70,4 +70,51 @@ describe('staged request quarantine', () => {
       if (project) project.cleanup();
     }
   });
+
+  it('survives a crash-replay: same request_id staged twice across consolidate passes is appended exactly once', () => {
+    let project;
+    try {
+      project = createTempProject('staged-replay-');
+      bootstrapProject(project.root, 'Crash-replay test project');
+
+      const coordDir = path.join(project.root, 'coord');
+      const paths = getPaths(coordDir);
+      const requestsDir = paths.requestsDir;
+      fs.mkdirSync(requestsDir, { recursive: true });
+
+      const requestId = 'req-replay-1';
+      const stagedFile = path.join(requestsDir, 'agent-one-replay.json');
+      const requestContent = {
+        request_id: requestId,
+        agent: 'agent-one',
+        type: 'question',
+        priority: 'medium',
+        status: 'pending',
+        content: 'staged once, ingested once',
+        created_at: new Date().toISOString(),
+      };
+
+      // First consolidate: appends to requests.jsonl and unlinks the staged file.
+      fs.writeFileSync(stagedFile, JSON.stringify(requestContent));
+      consolidateStagedRequests(paths);
+      const first = readJsonl(paths.requests);
+      assert.strictEqual(first.length, 1, 'first pass appends the request');
+      assert.strictEqual(first[0].request_id, requestId);
+      assert.ok(!fs.existsSync(stagedFile), 'staged file unlinked on success');
+
+      // Crash-replay simulation: a process restart that missed the unlink leaves
+      // the staged .json on disk while requests.jsonl already contains the row.
+      fs.writeFileSync(stagedFile, JSON.stringify(requestContent));
+      consolidateStagedRequests(paths);
+
+      const after = readJsonl(paths.requests);
+      const matchingIds = after.filter((r) => r.request_id === requestId);
+      assert.strictEqual(matchingIds.length, 1, 'request_id appears exactly once across crash-replay');
+      // The replayed staged file is still consumed (unlinked) so the loop
+      // doesn't re-process it on the next cycle either.
+      assert.ok(!fs.existsSync(stagedFile), 'replayed staged file unlinked');
+    } finally {
+      if (project) project.cleanup();
+    }
+  });
 });

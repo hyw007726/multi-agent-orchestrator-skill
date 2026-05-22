@@ -35,8 +35,21 @@ function consolidateStagedRequests(paths) {
   }
 
   if (collected.length > 0) {
+    // Dedupe by request_id under the requests.jsonl lock so a crash between
+    // the append and the unlink loop below cannot re-ingest the same staged
+    // .json on the next cycle. The set is rebuilt inside updateJSONL because
+    // a concurrent vanished-worker check could have appended to requests.jsonl
+    // between our read of current and this point.
     updateJSONL(paths.requests, (current) => {
-      current.push(...collected);
+      const seen = new Set();
+      for (const existing of current) {
+        if (existing && typeof existing.request_id === "string") seen.add(existing.request_id);
+      }
+      for (const req of collected) {
+        if (typeof req.request_id === "string" && seen.has(req.request_id)) continue;
+        current.push(req);
+        if (typeof req.request_id === "string") seen.add(req.request_id);
+      }
     });
     for (const filePath of consumedFiles) {
       try { fs.unlinkSync(filePath); } catch {}

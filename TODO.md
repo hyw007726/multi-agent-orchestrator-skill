@@ -26,7 +26,7 @@ Each item is tagged with a complexity rating:
 
 - [x] **[C2] Make manual resume failure-safe**: if `resume-agent.js` flips a parked agent to `running` but `spawn-agent.js` fails, restore or re-park the agent with clear `attention_reason` / `next_steps` instead of leaving a stale running record. Add a regression for resume relaunch failure.
 
-- [ ] **[C2] Make staged request ingestion idempotent**: prevent duplicate request ingestion if the loop crashes after appending staged requests to `requests.jsonl` but before deleting staged `.json` files. Deduplicate by `request_id` or move staged files through a processing/consumed state before append. Add a crash-replay regression.
+- [x] **[C2] Make staged request ingestion idempotent**: prevent duplicate request ingestion if the loop crashes after appending staged requests to `requests.jsonl` but before deleting staged `.json` files. Deduplicate by `request_id` or move staged files through a processing/consumed state before append. Add a crash-replay regression.
 
 - [ ] **[C2] Bound all dynamic arbitration prompt sections**: `buildBoundedArbitrationPrompt` currently truncates request content and worktree state only. Add size caps for `context.json`, `DECISIONS.md`, `CALLER_CONTEXT.md`, and recent decisions, and log which sections were truncated so small-context arbitrator CLIs stay reliable.
 
