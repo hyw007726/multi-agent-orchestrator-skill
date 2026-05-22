@@ -30,11 +30,11 @@ function spawnAgent() {
   }
 
   // Workers run with cwd=worktree, but coord/ lives at the project root and is gitignored,
-  // so it isn't materialized inside any worktree. Without this symlink, every hardcoded
-  // `coord/...` path in the worker prompt and request-staging protocol would resolve
-  // to a missing path and the worker would fail its first read. Use a relative target so
-  // the link survives project-directory renames.
-  ensureCoordSymlink(worktree, config.coordDir);
+  // so it isn't materialized inside any worktree. Without an exposed coord/, every hardcoded
+  // `coord/...` path in the worker prompt and request-staging protocol would resolve to
+  // ENOENT and the worker would fail its first read. We expose a per-worker view that
+  // contains ONLY the surfaces a worker is meant to touch — see ensureCoordWorkerView.
+  ensureCoordWorkerView(worktree, config.coordDir, config.agent);
 
   const prompt = fs.readFileSync(config.promptFile, "utf-8");
 
@@ -52,7 +52,12 @@ function spawnAgent() {
     process.exit(1);
   }
 
-  const runtimePromptFile = materializeLaunchPrompt(config, prompt);
+  // Resolve to an absolute path before handing it to the worker. The worker
+  // runs with cwd=worktree, so a relative prompt path would resolve through the
+  // worker's coord/ symlink — but the per-worker view does NOT expose prompts/,
+  // so relative paths like "coord/prompts/restart-<agent>-X.txt" would hit
+  // ENOENT. Absolute paths sidestep the view entirely.
+  const runtimePromptFile = path.resolve(materializeLaunchPrompt(config, prompt));
 
   const logsDir = path.resolve(config.coordDir, "logs");
   if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
@@ -177,19 +182,76 @@ function spawnAgent() {
   console.log(`__SPAWN_RESULT__ ${JSON.stringify({ pid: child.pid, logFile, templateMode })}`);
   console.log(`Registered agent in ${agentsFile}`);
 
-  // Single-use helper — creates the coord/ symlink inside the worktree so workers can
-  // reach the orchestration state via the documented `coord/...` relative paths.
-  // Idempotent: skips if a coord symlink (or directory, in case the user pre-staged one)
-  // is already present. Hard-fails on failure: a worker that boots without coord/
-  // discovers every `coord/...` path as ENOENT and silently degrades — the request
-  // staging protocol, progress heartbeats, and review_requests all break. Surface
-  // the underlying errno so the operator can fix the FS perms or pre-stage the link
-  // manually, rather than letting a broken worker chew through restart budget.
-  function ensureCoordSymlink(worktreeAbs, coordDirArg) {
-    const coordSymlink = path.join(worktreeAbs, "coord");
-    if (fs.existsSync(coordSymlink) || fs.lstatSync(coordSymlink, { throwIfNoEntry: false })) return;
+  // Single-use helper — replaces the previous "symlink the whole coord/ tree into each
+  // worktree" shape with a per-worker view that exposes only the surfaces a worker is
+  // meant to touch. The worktree's coord symlink points at this restricted view, not
+  // at the real coord/.
+  //
+  // Surfaces exposed in coord-views/<agent>/:
+  //   DECISIONS.md         — snapshot copy (writes by the worker stay in the view)
+  //   CALLER_CONTEXT.md    — snapshot copy
+  //   context.json         — snapshot copy
+  //   decisions.json       — symlink to the live recent-decisions snippet (read)
+  //   decisions.jsonl      — symlink to the live audit history (read)
+  //   requests/            — symlink (write-only ingress; orchestrator validates
+  //                          every staged file via consolidateStagedRequests before
+  //                          merging into requests.jsonl)
+  //   progress/            — symlink (write-only ingress; orchestrator only reads
+  //                          the heartbeat file's mtime)
+  //
+  // What workers CANNOT reach through coord/...:
+  //   agents.json, events.jsonl, requests.jsonl, prompts/, logs/, validation/,
+  //   orchestrator.log, orchestrator-loop.out, current_run.json, abort.flag,
+  //   the singleton lock files.
+  //
+  // Trust model: macOS lacks portable per-file read-only bind mounts, so we cannot
+  // strictly prevent a worker from writing to its own snapshot files or chasing
+  // the live decisions symlinks. Defence here is by exposure, not enforcement:
+  //   • snapshots protect the orchestrator's source-of-truth durable files
+  //     (writes to coord/DECISIONS.md never reach the real DECISIONS.md);
+  //   • write paths are validated at the orchestrator boundary;
+  //   • dangerous files (agents.json, events.jsonl, prompts/, logs/) are simply
+  //     absent from the view, so no documented coord/... path resolves to them.
+  //
+  // Snapshots are refreshed on every spawn (including respawns / resume), so
+  // DECISIONS.md / CALLER_CONTEXT.md / context.json updates between restarts
+  // reach the next worker incarnation.
+  //
+  // Hard-fails on the worktree-side symlink: a worker that boots without coord/
+  // discovers every documented coord/... path as ENOENT and the staging protocol
+  // silently fails. Surface the underlying errno so the operator can fix FS perms
+  // or pre-stage the link manually, rather than letting a broken worker chew
+  // through restart budget.
+  function ensureCoordWorkerView(worktreeAbs, coordDirArg, agentName) {
     const coordAbs = path.resolve(coordDirArg);
-    const target = path.relative(worktreeAbs, coordAbs);
+    const viewsRoot = path.resolve(coordAbs, "..", "coord-views");
+    const agentView = path.join(viewsRoot, agentName);
+    fs.mkdirSync(agentView, { recursive: true });
+
+    refreshSnapshot("DECISIONS.md");
+    refreshSnapshot("CALLER_CONTEXT.md");
+    refreshSnapshot("context.json");
+
+    refreshSymlink("decisions.json", "file");
+    refreshSymlink("decisions.jsonl", "file");
+
+    // requests/ and progress/ must exist before we symlink them. Bootstrap
+    // creates them, but a partially-bootstrapped coord/ could be missing one.
+    for (const dirName of ["requests", "progress"]) {
+      const realDir = path.join(coordAbs, dirName);
+      if (!fs.existsSync(realDir)) fs.mkdirSync(realDir, { recursive: true });
+    }
+    refreshSymlink("requests", "dir");
+    refreshSymlink("progress", "dir");
+
+    const coordSymlink = path.join(worktreeAbs, "coord");
+    const existing = fs.lstatSync(coordSymlink, { throwIfNoEntry: false });
+    if (existing) {
+      // Re-point on resume / restart: an old symlink could point at the wrong
+      // view (e.g. before this refactor) or be a stale dir.
+      try { fs.unlinkSync(coordSymlink); } catch {}
+    }
+    const target = path.relative(worktreeAbs, agentView);
     try {
       fs.symlinkSync(target, coordSymlink, "dir");
     } catch (err) {
@@ -197,9 +259,27 @@ function spawnAgent() {
       console.error(`Worker cannot run without coord/ — every documented coord/... path would resolve to ENOENT and the staging protocol would silently fail.`);
       console.error(`Fixes (try one):`);
       console.error(`  • Run on a filesystem where the user can create symlinks (some sandboxed FS / SMB shares disallow it).`);
-      console.error(`  • Pre-stage the link yourself before re-running:  ln -s ${coordAbs} ${coordSymlink}`);
+      console.error(`  • Pre-stage the link yourself before re-running:  ln -s ${agentView} ${coordSymlink}`);
       console.error(`  • Bind-mount coord/ at the same path inside the worktree.`);
       process.exit(1);
+    }
+
+    // Nested helpers — only used inside ensureCoordWorkerView.
+    function refreshSnapshot(name) {
+      const src = path.join(coordAbs, name);
+      const dest = path.join(agentView, name);
+      try { fs.unlinkSync(dest); } catch {}
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, dest);
+      } else {
+        fs.writeFileSync(dest, "");
+      }
+    }
+    function refreshSymlink(name, type) {
+      const link = path.join(agentView, name);
+      try { fs.unlinkSync(link); } catch {}
+      const linkTarget = path.relative(agentView, path.join(coordAbs, name));
+      fs.symlinkSync(linkTarget, link, type);
     }
   }
 }

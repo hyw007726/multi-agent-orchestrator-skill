@@ -16,7 +16,7 @@ Each item is tagged with a complexity rating:
 
 - [x] **[C2] Remove shell-based orchestrator loop launch**: replace the `shell: true` `nohup ... >> ... &` launch in `launch-all.js` with argv-based `spawn(process.execPath, [orchestratorLoopPath, "--coord", coordDir], ...)` and direct log-file stdio. Add a test proving shell metacharacters in `--coord` are treated as literal path text.
 
-- [ ] **[C3] Split worker access to coordination state**: stop exposing the whole `coord/` tree as a writable symlink inside worker worktrees. Provide read-only access to `DECISIONS.md`, `CALLER_CONTEXT.md`, `context.json`, and recent decisions, plus validated write-only ingress for `requests/` and `progress/`. Update prompts, spawn setup, staged-request handling, and ownership checks accordingly.
+- [x] **[C3] Split worker access to coordination state**: stop exposing the whole `coord/` tree as a writable symlink inside worker worktrees. Provide read-only access to `DECISIONS.md`, `CALLER_CONTEXT.md`, `context.json`, and recent decisions, plus validated write-only ingress for `requests/` and `progress/`. Update prompts, spawn setup, staged-request handling, and ownership checks accordingly.
 
 - [ ] **[C3] Make arbitration request/action handling transactional**: validate arbitrator output before side effects, require every pending request to be approved or rejected, and persist action intent/request resolution before killing, committing, or respawning workers. Add tests for restart/end-agent responses that omit approvals and for crashes between action scheduling and request resolution.
 
