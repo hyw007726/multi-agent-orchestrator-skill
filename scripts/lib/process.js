@@ -151,9 +151,33 @@ function safeKill({ pid, expectedCli, log, signal = "SIGTERM", coordDir, agent, 
     return dispatched;
   }
 
+  // The PID is gone (kill -0 ESRCH) ⇒ the counter is dead weight forever;
+  // drop it now so a long-lived loop watching many recycled PIDs can't grow
+  // refusalCounts monotonically. The cap below is the secondary bound for
+  // the genuinely-alive-but-mismatched case (hardened cmdlines).
+  if (!processStillAlive(normalizedPid)) {
+    refusalCounts.delete(normalizedPid);
+  } else {
+    enforceRefusalCountsCap();
+  }
   log(`Skipping ${signal} on PID ${normalizedPid}: process is gone or no longer matches '${expectedCli}' (refusal ${nextCount}/${REFUSAL_FALLBACK_THRESHOLD}).`);
   return false;
 }
+
+// Shared — used by safeKill's no-fallback skip branch.
+// LRU cap so the map can never exceed REFUSAL_COUNTS_MAX even when entries
+// can't be dropped via the dead-PID path (alive PIDs that keep failing match,
+// e.g. a CLI that mutated process.title past recognition). JS Map iteration
+// is insertion-ordered, so .keys().next() yields the oldest entry — FIFO.
+function enforceRefusalCountsCap() {
+  while (refusalCounts.size > REFUSAL_COUNTS_MAX) {
+    const oldest = refusalCounts.keys().next().value;
+    if (oldest === undefined) return;
+    refusalCounts.delete(oldest);
+  }
+}
+
+const REFUSAL_COUNTS_MAX = 1024;
 
 // Single-use helper — called from safeKill after a successful dispatchKill
 // when the caller opted in to waiting. Polls the PID with short backoff. If
@@ -338,11 +362,27 @@ function _resetRefusalCounts() {
   refusalCounts.clear();
 }
 
+// Test-only: peek at the counter so the bounded-growth regression can assert
+// the map doesn't leak entries across many dead-PID refusals.
+function _refusalCountsSize() {
+  return refusalCounts.size;
+}
+
+// Test-only: seed an entry so the LRU-cap regression can populate the map
+// past the cap without paying for thousands of spawned processes. Not part
+// of the public API; production code paths only ever write via safeKill.
+function _seedRefusal(pid, count = 1) {
+  refusalCounts.set(pid, count);
+}
+
 module.exports = {
   getProcessCommand,
   getProcessCommandMap,
   pidMatchesCli,
   safeKill,
   REFUSAL_FALLBACK_THRESHOLD,
+  REFUSAL_COUNTS_MAX,
   _resetRefusalCounts,
+  _refusalCountsSize,
+  _seedRefusal,
 };

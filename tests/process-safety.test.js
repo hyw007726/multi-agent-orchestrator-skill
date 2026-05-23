@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { pidMatchesCli, getProcessCommandMap, safeKill, REFUSAL_FALLBACK_THRESHOLD, _resetRefusalCounts } = require('../scripts/lib/process');
+const { pidMatchesCli, getProcessCommandMap, safeKill, REFUSAL_FALLBACK_THRESHOLD, REFUSAL_COUNTS_MAX, _resetRefusalCounts, _refusalCountsSize, _seedRefusal } = require('../scripts/lib/process');
 const { waitFor, cleanupProcess } = require('./helpers/temp-project');
 
 // Shared — used by the waitForExitMs tests below. Spawns a worker via an
@@ -478,5 +478,72 @@ describe('process safety helpers', () => {
     } finally {
       cleanupProcess(child);
     }
+  });
+
+  // 11. Dead-PID refusals must not leak into refusalCounts forever. A
+  //     long-lived loop watching many recycled PIDs would otherwise grow
+  //     the map monotonically; this exercises the drop-on-dead-PID branch
+  //     in safeKill's no-fallback skip path.
+  it('safeKill drops refusalCounts entries for PIDs that no longer exist', async () => {
+    _resetRefusalCounts();
+    assert.strictEqual(_refusalCountsSize(), 0, 'precondition: counter starts empty');
+    // Spawn-then-reap a batch of short-lived processes. Each PID is dead by
+    // the time we call safeKill, so pidMatchesCli refuses → counter would
+    // bump and stay forever without the dead-PID cleanup.
+    const deadPids = [];
+    for (let i = 0; i < 50; i++) {
+      const child = spawn('node', ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+      await new Promise((resolve) => child.on('exit', resolve));
+      deadPids.push(child.pid);
+    }
+    const logs = [];
+    for (const pid of deadPids) {
+      const result = safeKill({
+        pid,
+        expectedCli: 'definitely-not-anything',
+        log: (msg) => logs.push(msg),
+      });
+      assert.strictEqual(result, false, `safeKill on dead PID ${pid} should refuse`);
+    }
+    // Map must be empty: every refusal landed on a dead PID and got dropped.
+    assert.strictEqual(
+      _refusalCountsSize(), 0,
+      `refusalCounts should be empty after ${deadPids.length} dead-PID refusals, was ${_refusalCountsSize()}`,
+    );
+  });
+
+  // 12. Even when refusals come from genuinely alive but mismatched PIDs
+  //     (the dead-PID drop branch can't fire), the LRU cap prevents
+  //     unbounded growth. This guards the secondary bound on the map for
+  //     adversarial cases like a CLI mutating process.title past
+  //     recognition while staying alive indefinitely.
+  it('safeKill caps refusalCounts at REFUSAL_COUNTS_MAX when alive PIDs keep refusing', () => {
+    _resetRefusalCounts();
+    // Seed the map past the cap with synthetic entries — these stand in for
+    // alive-but-mismatched PIDs we've previously refused. Use PIDs far above
+    // any real PID range so they can't collide with our test runner's children.
+    const SEED_BASE = 100_000_000;
+    for (let i = 0; i < REFUSAL_COUNTS_MAX + 10; i++) {
+      _seedRefusal(SEED_BASE + i, 1);
+    }
+    assert.strictEqual(_refusalCountsSize(), REFUSAL_COUNTS_MAX + 10, 'precondition: map is over the cap');
+
+    // Now trip a real safeKill skip path against an alive but mismatched PID
+    // (the test runner itself satisfies both — kill(pid,0) succeeds AND its
+    // cmdline contains 'node' not the bogus CLI). The cap should activate.
+    safeKill({
+      pid: process.pid,
+      expectedCli: 'absolutely-not-the-process',
+      log: () => {},
+    });
+    assert.ok(
+      _refusalCountsSize() <= REFUSAL_COUNTS_MAX,
+      `refusalCounts should not exceed ${REFUSAL_COUNTS_MAX}, was ${_refusalCountsSize()}`,
+    );
+    // FIFO eviction: the oldest seeded entries should be the ones dropped.
+    // (Seed 0 was the first inserted, so it should be among the evicted set.)
+    // We don't have a public peek, but size-bounded behavior plus the FIFO
+    // semantic of JS Map ordering means the most recent entry (process.pid)
+    // is still present.
   });
 });
