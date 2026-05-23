@@ -119,13 +119,22 @@ function pidMatchesCli(pid, expectedCli, { recordedCmdline, cmdMap } = {}) {
 // signalling anyway after REFUSAL_FALLBACK_THRESHOLD consecutive refusals.
 // This covers the case where a CLI mutated `process.title` so badly that
 // neither the template basename nor the recorded cmdline still matches.
-function safeKill({ pid, expectedCli, log, signal = "SIGTERM", coordDir, agent, recordedCmdline } = {}) {
+//
+// When `waitForExitMs > 0`, after a successful SIGTERM dispatch we poll the
+// PID until it's gone or the grace window expires; on timeout we escalate to
+// SIGKILL and poll once more under a hard cap. Callers that respawn into the
+// same worktree (bumpRestartAndRespawn) or park an unresponsive worker
+// (orchestrator-loop liveness timeout) MUST set this so the old PID can't
+// still be writing to the worktree when the next phase begins.
+function safeKill({ pid, expectedCli, log, signal = "SIGTERM", coordDir, agent, recordedCmdline, waitForExitMs = 0 } = {}) {
   const normalizedPid = normalizePid(pid);
   if (!normalizedPid) return false;
 
   if (pidMatchesCli(normalizedPid, expectedCli, { recordedCmdline })) {
     refusalCounts.delete(normalizedPid);
-    return dispatchKill(normalizedPid, expectedCli, signal, log, coordDir, agent, { fallback: false });
+    const dispatched = dispatchKill(normalizedPid, expectedCli, signal, log, coordDir, agent, { fallback: false });
+    if (dispatched && waitForExitMs > 0) waitForExitOrEscalate(normalizedPid, signal, waitForExitMs, expectedCli, log, coordDir, agent);
+    return dispatched;
   }
 
   const nextCount = (refusalCounts.get(normalizedPid) || 0) + 1;
@@ -137,12 +146,56 @@ function safeKill({ pid, expectedCli, log, signal = "SIGTERM", coordDir, agent, 
   if (fallback) {
     log(`safeKill fallback: PID ${normalizedPid} refused match ${nextCount}× and events.jsonl shows we spawned it; signalling ${signal} anyway.`);
     refusalCounts.delete(normalizedPid);
-    return dispatchKill(normalizedPid, expectedCli, signal, log, coordDir, agent, { fallback: true });
+    const dispatched = dispatchKill(normalizedPid, expectedCli, signal, log, coordDir, agent, { fallback: true });
+    if (dispatched && waitForExitMs > 0) waitForExitOrEscalate(normalizedPid, signal, waitForExitMs, expectedCli, log, coordDir, agent);
+    return dispatched;
   }
 
   log(`Skipping ${signal} on PID ${normalizedPid}: process is gone or no longer matches '${expectedCli}' (refusal ${nextCount}/${REFUSAL_FALLBACK_THRESHOLD}).`);
   return false;
 }
+
+// Single-use helper — called from safeKill after a successful dispatchKill
+// when the caller opted in to waiting. Polls the PID with short backoff. If
+// the process survives the grace window, escalate to SIGKILL and poll once
+// more under a hard cap so we never block forever on a wedged child.
+function waitForExitOrEscalate(pid, sentSignal, waitForExitMs, expectedCli, log, coordDir, agent) {
+  if (!waitForExit(pid, waitForExitMs)) {
+    // SIGTERM did not take effect within the grace window — escalate. Skip if
+    // we already sent SIGKILL (caller's choice of `signal`).
+    if (sentSignal === "SIGKILL") {
+      log(`PID ${pid} survived ${waitForExitMs}ms after SIGKILL; giving up.`);
+      return;
+    }
+    log(`PID ${pid} survived ${waitForExitMs}ms after ${sentSignal}; escalating to SIGKILL.`);
+    const escalated = dispatchKill(pid, expectedCli, "SIGKILL", log, coordDir, agent, { fallback: false });
+    if (!escalated) return;
+    // 2s hard cap is plenty for SIGKILL delivery on a healthy kernel. If we
+    // still see the PID after that, log loudly — there's nothing else to try.
+    if (!waitForExit(pid, 2000)) {
+      log(`PID ${pid} still alive 2s after SIGKILL; the process may be a zombie or kernel-stuck.`);
+    }
+  }
+}
+
+function waitForExit(pid, maxMs) {
+  const deadline = Date.now() + maxMs;
+  let delay = 25;
+  while (Date.now() < deadline) {
+    if (!processStillAlive(pid)) return true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    sleepSync(Math.min(delay, remaining));
+    delay = Math.min(delay * 2, 200);
+  }
+  return !processStillAlive(pid);
+}
+
+function sleepSync(ms) {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.round(ms));
+}
+
 
 // Shared — invoked from both the happy path and the post-fallback path in
 // safeKill above.

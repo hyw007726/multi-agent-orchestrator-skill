@@ -388,7 +388,14 @@ function bumpRestartAndRespawn(ctx, { name, instruction, reason, mode, skipWipCo
   }
 
   // Side effects below the lock — none of these should re-enter updateJSON on the same file.
-  safeKill({ pid: outcome.pid, expectedCli: outcome.processMatch || processMatchForCli(outcome.cliTool, parsedConfig), recordedCmdline: outcome.recordedCmdline, log, coordDir, agent: name });
+  //
+  // waitForExitMs is critical here: every kind below either respawns into the
+  // same worktree (`respawn`) or hands the worktree back to the operator
+  // (`terminated` / `errored` for a worker that may still be holding it
+  // open). A worker that traps SIGTERM mid-syscall would otherwise race the
+  // next spawn into the same worktree — escalate to SIGKILL after the grace
+  // window so the next phase starts on a known-quiet process group.
+  safeKill({ pid: outcome.pid, expectedCli: outcome.processMatch || processMatchForCli(outcome.cliTool, parsedConfig), recordedCmdline: outcome.recordedCmdline, log, coordDir, agent: name, waitForExitMs: 5000 });
 
   if (outcome.kind === "terminated") {
     log(`Agent ${name} terminated (no follow-up instruction).`);

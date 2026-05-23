@@ -2,13 +2,49 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const { pidMatchesCli, getProcessCommandMap, safeKill, REFUSAL_FALLBACK_THRESHOLD, _resetRefusalCounts } = require('../scripts/lib/process');
 const { waitFor, cleanupProcess } = require('./helpers/temp-project');
+
+// Shared — used by the waitForExitMs tests below. Spawns a worker via an
+// intermediate `node -e` that exits immediately after detaching, so the worker
+// is orphaned to init (PID 1). Production safeKill callers (orchestrator-loop)
+// never parent their workers directly either — spawn-agent.js exits after
+// detaching — so this mirrors the real reaping topology and avoids zombies
+// piling up under the test runner while safeKill's blocking poll loop runs.
+//
+// `setupSrc` runs first in the worker. If it touches a ready-marker file, the
+// caller can await its appearance to be sure subsequent signals reach an
+// initialised worker rather than racing the JS startup window.
+async function spawnOrphanedWorkerReady(setupSrc) {
+  const readyFile = path.join(os.tmpdir(), `worker-ready-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+  const workerSrc = [
+    setupSrc,
+    `require("fs").writeFileSync(${JSON.stringify(readyFile)}, "ready");`,
+    'setInterval(() => {}, 1000);',
+  ].join('\n');
+  const dispatcher = [
+    'const cp = require("child_process");',
+    `const child = cp.spawn(process.execPath, ["-e", ${JSON.stringify(workerSrc)}], { detached: true, stdio: "ignore" });`,
+    'child.unref();',
+    'process.stdout.write(String(child.pid));',
+  ].join('\n');
+  const result = spawnSync(process.execPath, ['-e', dispatcher], { encoding: 'utf-8' });
+  if (result.status !== 0) {
+    throw new Error(`spawnOrphanedWorkerReady dispatcher failed: ${result.stderr}`);
+  }
+  const pid = parseInt(String(result.stdout).trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`spawnOrphanedWorkerReady got non-numeric pid: ${result.stdout}`);
+  }
+  await waitFor(() => fs.existsSync(readyFile), { timeoutMs: 3000, intervalMs: 25 });
+  try { fs.unlinkSync(readyFile); } catch {}
+  return pid;
+}
 
 describe('process safety helpers', () => {
   // 1. pidMatchesCli returns true when the process CLI matches.
@@ -316,7 +352,95 @@ describe('process safety helpers', () => {
     }
   });
 
-  // 9. getProcessCommandMap returns a populated pid→cmdline map and
+  // 9a. waitForExitMs blocks until the PID is dead and escalates to SIGKILL
+  //     when SIGTERM is trapped indefinitely. Regression for the
+  //     respawn-into-same-worktree race in bumpRestartAndRespawn: a worker
+  //     that traps SIGTERM must not still be running when the next respawn
+  //     reuses the same worktree.
+  //
+  //     The worker is spawned via an intermediate process that exits right
+  //     after spawning so the worker is orphaned to init. This mirrors how
+  //     spawn-agent.js detaches workers in production, and (importantly)
+  //     means safeKill's blocking poll loop doesn't sit between SIGCHLD and
+  //     the test runner's reaper — which would leave zombies that kill(0)
+  //     can't distinguish from live processes.
+  it('safeKill with waitForExitMs blocks until the PID is gone, escalating to SIGKILL', {
+    skip: process.platform === 'win32' ? 'SIGTERM-trapping semantics differ on Windows' : false,
+  }, async () => {
+    _resetRefusalCounts();
+    const workerPid = await spawnOrphanedWorkerReady('process.on("SIGTERM", () => {});');
+
+    try {
+      const logs = [];
+      const startedAt = Date.now();
+      const result = safeKill({
+        pid: workerPid,
+        expectedCli: 'node',
+        waitForExitMs: 800,
+        log: (msg) => logs.push(msg),
+      });
+      const elapsedMs = Date.now() - startedAt;
+
+      assert.strictEqual(result, true, 'safeKill should report it dispatched');
+      // SIGTERM was trapped — waitForExit must have elapsed at least the
+      // grace window before SIGKILL fired.
+      assert.ok(elapsedMs >= 700, `safeKill should have waited at least the grace window, got ${elapsedMs}ms`);
+      assert.ok(
+        logs.some((msg) => msg.includes('escalating to SIGKILL')),
+        `expected escalation log, got:\n${logs.join('\n')}`,
+      );
+      // PID must be gone immediately after safeKill returns — that's the
+      // regression: respawn into the same worktree can never start while
+      // the previous PID is still alive.
+      try {
+        process.kill(workerPid, 0);
+        assert.fail(`PID ${workerPid} should be dead after safeKill returned`);
+      } catch (err) {
+        assert.strictEqual(err.code, 'ESRCH', `expected ESRCH, got ${err.code}`);
+      }
+    } finally {
+      try { process.kill(workerPid, 'SIGKILL'); } catch {}
+    }
+  });
+
+  // 9b. When SIGTERM actually works, waitForExitMs returns promptly without
+  //     escalating — escalation must be the exception, not the rule, so a
+  //     well-behaved worker is reaped without paying the full grace window.
+  it('safeKill with waitForExitMs returns promptly when SIGTERM is honoured', {
+    skip: process.platform === 'win32' ? 'POSIX process groups are not available on Windows' : false,
+  }, async () => {
+    _resetRefusalCounts();
+    const workerPid = await spawnOrphanedWorkerReady('');
+
+    try {
+      const logs = [];
+      const startedAt = Date.now();
+      const result = safeKill({
+        pid: workerPid,
+        expectedCli: 'node',
+        waitForExitMs: 5000,
+        log: (msg) => logs.push(msg),
+      });
+      const elapsedMs = Date.now() - startedAt;
+
+      assert.strictEqual(result, true);
+      assert.ok(elapsedMs < 2000, `SIGTERM-respecting child should be reaped well under the grace window, got ${elapsedMs}ms`);
+      assert.ok(
+        !logs.some((msg) => msg.includes('escalating to SIGKILL')),
+        `should not escalate when SIGTERM works, got:\n${logs.join('\n')}`,
+      );
+      try {
+        process.kill(workerPid, 0);
+        assert.fail(`PID ${workerPid} should be dead after safeKill returned`);
+      } catch (err) {
+        assert.strictEqual(err.code, 'ESRCH');
+      }
+    } finally {
+      try { process.kill(workerPid, 'SIGKILL'); } catch {}
+    }
+  });
+
+  // 10. getProcessCommandMap returns a populated pid→cmdline map and
   //    pidMatchesCli consults it instead of spawning its own ps.
   it('pidMatchesCli reads from a per-cycle cmdMap and avoids the per-pid ps fan-out', {
     skip: process.platform === 'win32' ? 'ps -eo is POSIX-only' : false,

@@ -196,7 +196,11 @@ async function runLoop() {
         const timeoutMins = agent.timeout_mins || parsedConfig.default_timeout_mins;
         if (Date.now() - lastActivity > timeoutMins * 60 * 1000) {
           log(`Agent ${name} idle (no log output) for ${timeoutMins} mins. Killing.`);
-          safeKill({ pid: agent.pid, expectedCli: expectedProcessForAgent(agent, parsedConfig), recordedCmdline: agent.spawned_cmdline, log, coordDir: config.coordDir, agent: name });
+          // Liveness timeout means the worker is unresponsive; SIGTERM may be
+          // trapped or ignored. Wait for the grace window, then SIGKILL so the
+          // worker is provably gone before we flip the agent to attention —
+          // operators inspecting the worktree shouldn't be racing the old PID.
+          safeKill({ pid: agent.pid, expectedCli: expectedProcessForAgent(agent, parsedConfig), recordedCmdline: agent.spawned_cmdline, log, coordDir: config.coordDir, agent: name, waitForExitMs: 5000 });
           const livenessReason = `liveness timeout - idle ${timeoutMins} mins`;
           let livenessNextSteps, livenessAttentionAt;
           updateJSON(paths.agents, (agents) => {
