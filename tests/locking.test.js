@@ -199,15 +199,28 @@ describe('locking primitives', () => {
     assert.strictEqual(tmpFiles.length, 0, `tmp files left behind: ${tmpFiles.join(', ')}`);
   });
 
-  it('writeAtomic fsyncs the tmp file before rename', () => {
+  it('writeAtomic fsyncs the tmp file before rename and the parent dir after', {
+    skip: process.platform === 'win32' ? 'parent-dir fsync is POSIX-only' : false,
+  }, () => {
     const targetFile = path.join(tmpDir, 'synced.txt');
     const originalFsync = fs.fsyncSync;
     const originalRename = fs.renameSync;
+    const originalOpen = fs.openSync;
     const order = [];
+    // Track which fd is the parent-dir handle so we can label the fsync calls
+    // distinctly. Without this we'd only see two anonymous 'fsync' events and
+    // couldn't tell which one was the dir vs the file body.
+    const dirFds = new Set();
+    const parentDir = path.dirname(targetFile);
 
     try {
+      fs.openSync = (...args) => {
+        const fd = originalOpen.apply(fs, args);
+        if (args[0] === parentDir) dirFds.add(fd);
+        return fd;
+      };
       fs.fsyncSync = (fd) => {
-        order.push('fsync');
+        order.push(dirFds.has(fd) ? 'fsync-dir' : 'fsync-file');
         return originalFsync.call(fs, fd);
       };
       fs.renameSync = (...args) => {
@@ -217,11 +230,15 @@ describe('locking primitives', () => {
 
       writeAtomic(targetFile, 'durable content\n');
     } finally {
+      fs.openSync = originalOpen;
       fs.fsyncSync = originalFsync;
       fs.renameSync = originalRename;
     }
 
-    assert.deepStrictEqual(order, ['fsync', 'rename']);
+    // The order encodes the crash-safety contract: file body durable on disk
+    // → directory entry pointing at it durable on disk. Reordering either
+    // pair would reintroduce the gap the regression closes.
+    assert.deepStrictEqual(order, ['fsync-file', 'rename', 'fsync-dir']);
     assert.strictEqual(fs.readFileSync(targetFile, 'utf-8'), 'durable content\n');
   });
 

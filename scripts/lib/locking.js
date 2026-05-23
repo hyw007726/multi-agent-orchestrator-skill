@@ -391,6 +391,15 @@ function atomicRemoveLock(lockDir) {
 // Shared — used by updateJSON and updateJSONL.
 // Atomic write: stage to a sibling tmp file then rename. Concurrent readers see either
 // the old contents or the new contents, never a half-written file.
+//
+// Durability across power loss / kernel panic depends on TWO fsyncs:
+//   1) fsync(tmp fd) — flushes the file body so the inode has durable data.
+//   2) fsync(parent dir fd) — flushes the rename's directory entry. Without
+//      this, POSIX is free to leave the new entry in the page cache; a crash
+//      before the next implicit dir-sync can lose the rename even though the
+//      file body was durable, leaving readers seeing the *old* contents.
+// Skipped on Windows: fsync of a directory handle isn't a portable operation
+// there and the dir-entry durability model differs.
 function writeAtomic(filePath, content) {
   const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
   let fd;
@@ -401,12 +410,33 @@ function writeAtomic(filePath, content) {
     fs.closeSync(fd);
     fd = undefined;
     fs.renameSync(tmpPath, filePath);
+    fsyncParentDir(filePath);
   } catch (err) {
     if (fd !== undefined) {
       try { fs.closeSync(fd); } catch {}
     }
     try { fs.unlinkSync(tmpPath); } catch {}
     throw err;
+  }
+
+  // Single-use helper — only called from writeAtomic above. Best-effort: a
+  // failure to fsync the dir doesn't unwind the rename (the new contents are
+  // already visible to readers), so we swallow EINVAL/ENOTSUP/etc. that some
+  // filesystems return for dir fsync rather than fail the whole write.
+  function fsyncParentDir(filePath) {
+    if (process.platform === "win32") return;
+    const parent = path.dirname(filePath);
+    let dirFd;
+    try {
+      dirFd = fs.openSync(parent, "r");
+      fs.fsyncSync(dirFd);
+    } catch {
+      // ignore — write itself succeeded
+    } finally {
+      if (dirFd !== undefined) {
+        try { fs.closeSync(dirFd); } catch {}
+      }
+    }
   }
 }
 
