@@ -352,7 +352,7 @@ async function runLiveWorkerSmoke(t, providerName) {
       if (!fs.existsSync(agentsPath)) return false;
       const agents = readJson(agentsPath);
       const status = agents["agent-live-worker"]?.status;
-      return ["completed", "errored", "exited", "terminated"].includes(status) ? status : false;
+      return ["completed", "needs_attention", "exited", "terminated"].includes(status) ? status : false;
     }, { timeoutMs, intervalMs: 1000 });
 
     assert.strictEqual(
@@ -488,7 +488,7 @@ async function runAllLiveSmoke(t, providerName) {
         if (!fs.existsSync(agentsPath)) return false;
         const agents = readJson(agentsPath);
         const status = agents["agent-live-all"]?.status;
-        return ["completed", "errored", "exited", "terminated"].includes(status) ? status : false;
+        return ["completed", "needs_attention", "exited", "terminated"].includes(status) ? status : false;
       }, { timeoutMs, intervalMs: 1000 });
     } catch (err) {
       const transientSkip = transientProviderSkipReasonFromArtifacts(project.root, providerName, ["worker", "arbitrator"]);

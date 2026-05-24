@@ -339,7 +339,7 @@ function bumpRestartAndRespawn(ctx, { name, instruction, reason, mode, skipWipCo
       const attentionReason = `max restarts (${maxRestarts}) exhausted`;
       const nextSteps = parkRationale("restart_budget_exhausted");
       parkAgentForAttention(agent, name, attentionReason, log, { nextSteps });
-      outcomeRef.value = { kind: "errored", pid: agent.pid, cliTool, processMatch: expectedProcessForAgent(agent, parsedConfig), recordedCmdline: agent.spawned_cmdline, worktree: agent.worktree };
+      outcomeRef.value = { kind: "parked", pid: agent.pid, cliTool, processMatch: expectedProcessForAgent(agent, parsedConfig), recordedCmdline: agent.spawned_cmdline, worktree: agent.worktree };
       appendEvent(coordDir, "agent_parked", {
         agent: name,
         reason: attentionReason,
@@ -391,7 +391,7 @@ function bumpRestartAndRespawn(ctx, { name, instruction, reason, mode, skipWipCo
   //
   // waitForExitMs is critical here: every kind below either respawns into the
   // same worktree (`respawn`) or hands the worktree back to the operator
-  // (`terminated` / `errored` for a worker that may still be holding it
+  // (`terminated` / `parked` for a worker that may still be holding it
   // open). A worker that traps SIGTERM mid-syscall would otherwise race the
   // next spawn into the same worktree — escalate to SIGKILL after the grace
   // window so the next phase starts on a known-quiet process group.
@@ -401,8 +401,8 @@ function bumpRestartAndRespawn(ctx, { name, instruction, reason, mode, skipWipCo
     log(`Agent ${name} terminated (no follow-up instruction).`);
     return false;
   }
-  if (outcome.kind === "errored") {
-    log(`Agent ${name} exceeded ${parsedConfig.default_max_restarts} restarts (${reason}). Marking errored, not respawning.`);
+  if (outcome.kind === "parked") {
+    log(`Agent ${name} exceeded ${parsedConfig.default_max_restarts} restarts (${reason}). Parked for attention, not respawning.`);
     return false;
   }
 

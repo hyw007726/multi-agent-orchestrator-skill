@@ -75,7 +75,7 @@
     "default_max_restarts": {
       "type": "integer",
       "minimum": 0,
-      "description": "Maximum restart attempts per agent before it is marked errored.",
+      "description": "Maximum restart attempts per agent before it is parked in needs_attention.",
       "default": 3
     },
     "orchestrator_failure_threshold": {

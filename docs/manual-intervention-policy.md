@@ -10,10 +10,8 @@ reference the code as of Batch 1.
 
 ## Principle
 
-`STATUS.ERRORED` historically meant two unrelated things: "the orchestrator gave
-up and threw the work away" and "the orchestrator stopped but the worktree is
-intact and a human could pick it up". The second case is *parked-pending-review*,
-not *errored*. The split is:
+The runtime previously overloaded a single terminal status for both "give up"
+and "park for human review". The split is now explicit:
 
 - **Cheap recovery still available** → keep the existing automatic recovery
   (soft/hard restart). Do **not** park.
@@ -40,39 +38,37 @@ the restart budget runs out (see Class B).
 
 | Failure mode | Current call site | Current handling (Batch 1) | Why no cheap recovery |
 |---|---|---|---|
-| Restart budget exhausted (covers budget-exhausted validation failures and budget-exhausted progress timeouts) | `scripts/orchestrator-loop.js:450` | `STATUS.ERRORED`, worktree preserved, not respawned | The cheap path (restart) has already been spent `default_max_restarts` times; another restart is not "cheap", it is a loop. |
-| Liveness timeout (no log output for `timeout_mins`) | `scripts/orchestrator-loop.js:159` | `STATUS.ERRORED`, worktree preserved | The worker is wedged or its CLI/auth/model setup is broken; restarting blindly tends to re-wedge. Needs a human to inspect the log/worktree. |
-| Hard-restart recovery/reset failed | `scripts/orchestrator-loop.js:496` | `STATUS.ERRORED`, worktree preserved | The recovery primitive itself failed; there is no further automatic fallback. |
-| Progress timeout with no restart budget remaining | `buildProgressEscalation` → `restart_budget_exhausted`, `scripts/orchestrator-loop.js:857` | `suggestedAction: "manual_inspection"` | Explicitly signals there is no budget left to spend. |
-| File-ownership violation | `scripts/orchestrator-loop.js:340` | Currently `soft_restart` with `skipWipCommit` (`:353`) | The worker changed files outside its assigned ownership — an out-of-scope/ambiguous-scope decision a human must adjudicate, not something a re-prompt reliably fixes. Target state: park. |
-| Unresolved conflict | conflict request type, `scripts/orchestrator-loop.js:20` | Arbitration / human review | Cross-worker conflicts need a human or the arbitration owner to decide; no cheap deterministic fix. |
-| Broken CLI / auth / model setup | surfaces as liveness timeout (`:159`) or CLI-failure threshold | Stalled flag / `ERRORED` | Environmental; no amount of restarting fixes missing auth or a misconfigured CLI. |
+| Restart budget exhausted (covers budget-exhausted validation failures and budget-exhausted progress timeouts) | `scripts/lib/actions.js:341` | `needs_attention`, worktree preserved, not respawned | The cheap path (restart) has already been spent `default_max_restarts` times; another restart is not "cheap", it is a loop. |
+| Liveness timeout (no log output for `timeout_mins`) | `scripts/orchestrator-loop.js:209` | `needs_attention`, worktree preserved | The worker is wedged or its CLI/auth/model setup is broken; restarting blindly tends to re-wedge. Needs a human to inspect the log/worktree. |
+| Hard-restart recovery/reset failed | `scripts/lib/actions.js:420` | `needs_attention`, worktree preserved | The recovery primitive itself failed; there is no further automatic fallback. |
+| Progress timeout with no restart budget remaining | `buildProgressEscalation` → `restart_budget_exhausted`, `scripts/lib/progress-tracking.js:108` | `suggestedAction: "manual_inspection"` | Explicitly signals there is no budget left to spend. |
+| File-ownership violation | `scripts/lib/actions.js:227` | Currently `soft_restart` with `skipWipCommit` (`scripts/lib/actions.js:253`) | The worker changed files outside its assigned ownership — an out-of-scope/ambiguous-scope decision a human must adjudicate, not something a re-prompt reliably fixes. Target state: park. |
+| Unresolved conflict | conflict request type, `scripts/lib/staged-requests.js:7` | Arbitration / human review | Cross-worker conflicts need a human or the arbitration owner to decide; no cheap deterministic fix. |
+| Broken CLI / auth / model setup | surfaces as liveness timeout or CLI-failure threshold | Stalled flag / `needs_attention` | Environmental; no amount of restarting fixes missing auth or a misconfigured CLI. |
 | Ambiguous product decision | surfaces as a `question` / `change` request | Arbitration / human review | Requires a product call the orchestrator is not authorized to make. |
 
 ### Batch 2 scope note
 
-Batch 2 re-routes exactly the three currently-`ERRORED`-but-worktree-preserved
-sites to `needs_attention`:
+Batch 2 re-routes exactly the three worktree-preserved park sites to
+`needs_attention`:
 
-1. Restart budget exhausted — `scripts/orchestrator-loop.js:450`
-2. Liveness timeout — `scripts/orchestrator-loop.js:159`
-3. Hard-restart recovery failed — `scripts/orchestrator-loop.js:496`
+1. Restart budget exhausted — `scripts/lib/actions.js:341`
+2. Liveness timeout — `scripts/orchestrator-loop.js:209`
+3. Hard-restart recovery failed — `scripts/lib/actions.js:420`
 
 `next_steps` for these is populated from the existing
-`buildProgressEscalation` rationale (`scripts/orchestrator-loop.js:852`) rather
-than hand-written per call site.
+`buildProgressEscalation` rationale (`scripts/lib/progress-tracking.js:108`)
+rather than hand-written per call site.
 
 The remaining Class B rows (file-ownership violations, conflicts, environmental
 breakage, ambiguous product decisions) are the documented *target* policy. Their
 re-route is tracked beyond Batch 2's three core sites and is out of scope for the
 initial flip; they are recorded here so the routing intent is unambiguous.
 
-`STATUS.ERRORED` is reserved, after Batch 2, for the truly-give-up paths only.
-
 ### Deferred Class B rows
 
-Batches 1–3 re-route the three currently-`ERRORED`-but-worktree-preserved
-sites and surface `needs_attention` in the dashboard. The four remaining
+Batches 1–3 re-route the three worktree-preserved park sites and surface
+`needs_attention` in the dashboard. The four remaining
 Class B rows below are **not** scheduled in any `TODO.md` batch. This
 subsection records, per row, the current handling, the intended target state,
 and the explicit blocker — so a reader six months out can tell queued from

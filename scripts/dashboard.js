@@ -129,9 +129,7 @@ function renderAgents() {
           const logs = readLogTailLines(logPath, 50);
           if (logs) {
             const lastLine = logs[logs.length - 1] || "";
-            if (a.status === "errored") {
-              info = `ERROR: ${lastLine.slice(0, 40)}`;
-            } else if (a.status === "exited") {
+            if (a.status === "exited") {
               const exitTail = a.exit_log_tail || "";
               const exitLastLine = exitTail ? exitTail.trim().split("\n").pop() || "" : "";
               info = `VANISHED: ${exitLastLine.slice(0, 40)}`;
@@ -157,8 +155,7 @@ function renderAgents() {
     console.log("Waiting for agents.json...");
   }
 
-  // Amber so a parked agent reads as "warning / awaiting human" — distinct
-  // from the red a reader expects for `errored`. The token is colored rather
+  // Amber so a parked agent reads as "warning / awaiting human". The token is colored rather
   // than the Status column because console.table includes ANSI bytes in its
   // width math, which misaligns a colored column. Skipped for non-TTY/NO_COLOR
   // so piped or captured output stays clean.
@@ -168,7 +165,7 @@ function renderAgents() {
   }
 }
 
-// Shared — used by renderAgents for both `running` and `errored` rows.
+// Shared — used by renderAgents for `running` and `exited` rows.
 // Returns the trailing N lines as an array (no trailing-newline element), or
 // null when the log file doesn't exist. Caches the parsed array per-path and
 // re-uses it when the file's stat hasn't changed since the last call.

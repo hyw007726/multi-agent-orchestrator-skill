@@ -31,8 +31,9 @@ describe('dashboard CLI', () => {
           pid: 12345,
           restart_count: 2,
         },
-        'agent-errored': {
-          status: 'errored',
+        'agent-parked': {
+          status: 'needs_attention',
+          attention_reason: 'restart budget exhausted',
           task: 'Investigate failure',
           pid: 23456,
         },
@@ -48,7 +49,7 @@ describe('dashboard CLI', () => {
         'Tool Use: read_file README.md',
         'Editing file: src/app.js',
       ].join('\n') + '\n', 'utf-8');
-      fs.writeFileSync(path.join(coord, 'logs', 'agent-errored.log'), 'build failed\n', 'utf-8');
+      fs.writeFileSync(path.join(coord, 'logs', 'agent-parked.log'), 'build failed\n', 'utf-8');
       fs.writeFileSync(path.join(coord, 'logs', 'agent-exited.log'), 'process ended\n', 'utf-8');
       fs.writeFileSync(path.join(coord, 'requests.jsonl'), [
         JSON.stringify({
@@ -86,7 +87,7 @@ describe('dashboard CLI', () => {
       assert.match(output, /High-priority blocked: 1/);
       assert.match(output, /agent-running/);
       assert.match(output, /Editing: src\/app\.js/);
-      assert.match(output, /ERROR: build failed/);
+      assert.match(output, /ATTENTION: restart budget exhausted/);
       assert.match(output, /VANISHED: vanished tail/);
       assert.match(output, /req-pending/);
       assert.doesNotMatch(output, /req-resolved/);

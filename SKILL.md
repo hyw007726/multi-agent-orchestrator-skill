@@ -44,6 +44,15 @@ all accept `--json` for stable machine-readable output — see
   runtime supervises workers but does not replace integration review.
 - Git worktrees reduce accidental overlap, not all overlap. Workers can still
   touch shared files or make incompatible choices that need manual reconciliation.
+- **Windows.** Symlinked worktrees and POSIX process-group signalling are less
+  reliable on Windows; prefer macOS or Linux for production runs.
+- **Security.** Workers launch with permission-bypass flags
+  (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`,
+  `--yolo`, `--auto`). Use only in trusted repositories; do not put secrets in
+  worktrees or coordination files.
+- **Arbitration stall.** When `coord/orchestrator-stalled.flag` appears, fix the
+  orchestrator CLI (auth, model, install) and let the loop recover — do not hand-edit
+  `coord/requests.jsonl` or `coord/decisions.jsonl`.
 
 ## Caller support
 
@@ -219,6 +228,10 @@ For each `single_worker` / `parallel` / `phased` task:
 
 1. Carve non-overlapping agent boundaries.
 2. Map the files each agent may touch (`allowed_paths`, `forbidden_paths`).
+   These paths are **soft boundaries**: ownership is checked at `review_request` and
+   completion, and the first violation triggers a `soft_restart` with corrective
+   instructions — not an immediate park. See
+   [`docs/manual-intervention-policy.md`](docs/manual-intervention-policy.md).
 3. List `read_first` files for targeted source context.
 4. Fill the `foundation` block: `not_required` (empty paths),
    `completed_committed` (paths + commit), or `owned_by_worker` (paths + owner).
@@ -427,8 +440,13 @@ the loop is running in the background, then exit.
 
 ### Monitoring
 
-The dashboard auto-launches on local macOS by default. To check status from
-any caller, use the canonical probe:
+The TUI dashboard (`scripts/dashboard.js`) is a glance view: agent rows, recent
+log lines, and pending requests. It auto-launches on local macOS by default.
+
+**`scripts/status.js --json` is the canonical probe** — use it for automation and
+when you need full run state. The dashboard does not surface `loop_state`, the
+event sequence, structured `next_steps`, or the `coord/review-summary.txt`
+pointer; `status.js` does.
 
 ```bash
 node <SKILL>/scripts/status.js --coord ./coord            # human
@@ -439,10 +457,26 @@ node <SKILL>/scripts/status.js --coord ./coord --json     # machine-readable
 blockers), and surfaces `coord/orchestrator-stalled.flag` /
 `coord/abort.flag`. It is safe to run before, during, or after a run.
 
+### Recovering parked agents
+
+When the loop parks a worker into `needs_attention`, the worktree is preserved
+and no further automatic recovery runs until a human steps in. Amber
+`ATTENTION:` rows in the dashboard are **not** hard failures — use
+`scripts/resume-agent.js` after fixing the underlying issue.
+
+```bash
+node <SKILL>/scripts/resume-agent.js --coord ./coord --agent <agent-name>
+```
+
+Operator runbooks:
+
+- [`docs/resolving-needs-attention.md`](docs/resolving-needs-attention.md) — detect, inspect, resume, or abandon a parked agent
+- [`docs/manual-intervention-policy.md`](docs/manual-intervention-policy.md) — which failures park vs restart
+
 ### Progress monitoring (loop internals)
 
 - **Liveness timeout.** No log output for `timeout_mins` → the agent is killed
-  and marked errored.
+  and parked in `needs_attention` (worktree preserved; resume manually).
 - **Progress timeout.** Logs flow but no git commits or unstaged diff for
   `progress_timeout_mins` → the loop writes a synthetic `progress_timeout`
   request into `coord/requests.jsonl` for normal arbitration.
@@ -471,8 +505,8 @@ blockers), and surfaces `coord/orchestrator-stalled.flag` /
 | `hard_restart` | Loop kills the process, captures uncommitted+untracked work as a `recovery/<agent>/<timestamp>` git tag, resets the worktree clean, respawns. The tag preserves the wiped state for `git show <tag>` recovery. |
 
 **Restart cap.** Every restart increments `restart_count`. Past
-`default_max_restarts` (default 3), the loop stops respawning and marks the
-agent `errored`.
+`default_max_restarts` (default 3), the loop stops respawning and parks the
+agent in `needs_attention`.
 
 **PID/process-group safety.** Before signalling, the loop validates the stored
 PID still matches the worker CLI's cmdline (POSIX `ps`). On POSIX, workers
@@ -514,9 +548,17 @@ done. Please review and integrate."* Then:
 
 1. Identify completed worktrees (look in `.kilocode/worktrees/` and
    `.agents/worktrees/`).
-2. Run `git diff main...<agent-name>` for each.
-3. Summarize the work for the user.
-4. After approval, merge:
+2. **Resolve any `needs_attention` agents first** — resume with
+   `scripts/resume-agent.js` or abandon the branch before merging. Do not merge
+   parked worktrees.
+3. For each agent ready to integrate, read `base_ref` from `coord/agents.json`
+   (or the task record in `coord/context.json`) and diff against that ref, not
+   a hard-coded branch:
+   ```bash
+   git diff <base_ref>...<agent-name>
+   ```
+4. Summarize the work for the user.
+5. After approval, merge:
    ```bash
    git merge <agent-name>
    git worktree remove <worktree-path>/<agent-name>

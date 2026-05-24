@@ -828,7 +828,7 @@ describe('buildFinalSummary tri-state title', () => {
   it('titles RUN INCOMPLETE when an agent failed/vanished (even alongside a parked one)', () => {
     const summary = buildFinalSummary({
       'agent-a': { status: 'completed' },
-      'agent-b': { status: 'errored' },
+      'agent-b': { status: 'exited' },
       'agent-c': { status: 'needs_attention', attention_reason: 'liveness timeout - idle 30 mins' },
     });
     assert.match(summary, /^RUN INCOMPLETE/);

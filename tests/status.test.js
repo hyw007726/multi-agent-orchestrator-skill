@@ -9,7 +9,7 @@ describe('STATUS constants', () => {
   it('exposes needs_attention as a frozen, distinct value', () => {
     assert.strictEqual(STATUS.NEEDS_ATTENTION, 'needs_attention');
     assert.ok(Object.isFrozen(STATUS));
-    assert.notStrictEqual(STATUS.NEEDS_ATTENTION, STATUS.ERRORED);
+    assert.ok(!('ERRORED' in STATUS));
   });
 });
 

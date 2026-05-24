@@ -115,7 +115,7 @@ function buildProgressEscalation({ previousProgressTimeouts, restartCount, maxRe
       level: "restart_budget_exhausted",
       suggestedAction: "manual_inspection",
       instruction: baseInstruction,
-      rationale: "The agent has no restart budget remaining. Prefer manual inspection or allow the restart cap to mark the agent errored instead of scheduling another respawn.",
+      rationale: "The agent has no restart budget remaining. Prefer manual inspection or allow the restart cap to park the agent for attention instead of scheduling another respawn.",
       restartsRemaining,
     };
   }

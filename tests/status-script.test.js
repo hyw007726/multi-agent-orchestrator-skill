@@ -91,7 +91,7 @@ describe('status.js CLI', () => {
         path.join(coord, 'agents.json'),
         JSON.stringify({
           'agent-one': { status: 'completed' },
-          'agent-two': { status: 'errored' },
+          'agent-two': { status: 'exited' },
         }, null, 2),
       );
       const result = runStatus(tmp, '--coord', './coord', '--json');

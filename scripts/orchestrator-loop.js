@@ -362,7 +362,7 @@ async function runLoop() {
         // needs_attention is terminal for "can the loop exit?": a parked agent
         // is awaiting a human and the loop will never advance it on its own.
         const allDone = entries.length > 0 &&
-          entries.every((a) => a.status === "completed" || a.status === "terminated" || a.status === "errored" || a.status === "exited" || a.status === STATUS.NEEDS_ATTENTION);
+          entries.every((a) => a.status === "completed" || a.status === "terminated" || a.status === "exited" || a.status === STATUS.NEEDS_ATTENTION);
         if (allDone) {
           finalize(config, paths, parsedConfig, log);
           break;

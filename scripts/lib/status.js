@@ -11,9 +11,8 @@ const STATUS = Object.freeze({
   COMPLETED: "completed",
   TERMINATED: "terminated",
   EXITED: "exited",
-  ERRORED: "errored",
   // Parked pending human review: the worktree is intact and a human can resume
-  // the work. Distinct from ERRORED, which means the orchestrator gave up.
+  // the work via resume-agent.js.
   NEEDS_ATTENTION: "needs_attention",
 });
 

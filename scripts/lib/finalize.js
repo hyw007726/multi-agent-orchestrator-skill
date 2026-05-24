@@ -74,7 +74,7 @@ function finalize(config, paths, parsedConfig, log) {
 
   // Deliberately excludes needs_attention: a parked agent is awaiting a human,
   // not failed/vanished, so it must not flip the run to the "incomplete" copy.
-  const failedCount = Object.values(agents).filter((agent) => agent.status === "exited" || agent.status === "errored").length;
+  const failedCount = Object.values(agents).filter((agent) => agent.status === "exited").length;
   const parkedCount = Object.values(agents).filter((agent) => agent.status === STATUS.NEEDS_ATTENTION).length;
   if (failedCount > 0) {
     log(`Run ended incomplete (${failedCount} agents failed/vanished). Deterministic summary written to ${path.resolve(summaryFile)}.`);
@@ -133,7 +133,7 @@ function buildFinalSummary(agents = {}, requests = [], tasks = {}) {
   // parked agent is neither a success nor a failure; it is pending a human.
   const failedAgents = names.filter((name) => {
     const status = agents[name]?.status;
-    return status === "exited" || status === "errored";
+    return status === "exited";
   });
   // Tri-state, independent of failedAgents semantics: a parked agent is neither
   // a success nor a failure, but the run is not "all completed" while a human

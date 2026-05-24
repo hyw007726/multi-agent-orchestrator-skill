@@ -458,7 +458,7 @@ shape — every field the loop actually depends on — is:
   "agent-frontend": {
     "task": "string — immutable original task description; mirrors context.json tasks[<name>].description and is NOT rewritten on restart (the dashboard and review-summary render the context.json description, falling back to this)",
     "last_instruction": "string | omitted — the most recent restart/resume instruction payload; rotates on every respawn. Kept separate from `task` so restart instructions never masquerade as the original task",
-    "status": "running | completed | terminated | errored | exited",
+    "status": "running | completed | terminated | needs_attention | exited",
     "worktree": "string — absolute path to the agent's git worktree (`.kilocode/worktrees/<name>` for kilo, `.agents/worktrees/<name>` otherwise)",
     "cli": "string — which worker CLI or configured CLI alias was used; the loop reads this to pick the respawn template and to validate the PID's cmdline before signalling",
     "template_mode": "string — argv | shell | builtin; records how the CLI template was executed for debugging shell/quoting behavior",
@@ -472,7 +472,7 @@ shape — every field the loop actually depends on — is:
     "validation_timeout_mins": "number | null — validation command timeout; falls back to timeout_mins, then default_timeout_mins. The loop always enforces a finite timeout — when every override is missing or 0 it uses a built-in 30-minute hard cap so a hung suite cannot starve the main cycle",
     "timeout_mins": "integer | null — liveness threshold (no log output); falls back to default_timeout_mins from orchestrator.config.jsonc",
     "progress_timeout_mins": "integer | null — progress threshold (no code change while logs flow); falls back to default_progress_timeout_mins",
-    "restart_count": "integer — bumped on every respawn (validation failure, progress-timeout arbitration, explicit soft/hard restart); once it exceeds default_max_restarts the loop marks the agent `errored` instead of respawning",
+    "restart_count": "integer — bumped on every respawn (validation failure, progress-timeout arbitration, explicit soft/hard restart); once it exceeds default_max_restarts the loop parks the agent in `needs_attention` instead of respawning",
     "base_ref": "string — the Git ref (branch or tag) this agent's worktree was branched from; used for diff computation (defaults to 'main' if not recorded)",
     "recovery_tag": "string | omitted — Git tag name (e.g. `recovery/agent-frontend/2025-01-01T00-00-00-000Z-a1b2c3`, timestamp plus a random suffix for collision safety) holding pre-hard-restart state; set by the loop when a hard restart successfully creates a recovery tag",
     "exit_log_tail": "string | null — last 50 lines of worker logs captured when the process vanished without a review_request"
@@ -559,7 +559,7 @@ On failure, `agents` reflects whatever workers were spawned before the abort
   "agents": [
     {
       "name": "string",
-      "status": "running | needs_attention | completed | terminated | exited | errored | unknown",
+      "status": "running | needs_attention | completed | terminated | exited | unknown",
       "last_event_seq": 42,
       "last_event": "agent_spawned",
       "blocker": "string — omitted when no blocker is known"

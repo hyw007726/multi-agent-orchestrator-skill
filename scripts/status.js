@@ -29,7 +29,7 @@
  *     "agents": [
  *       {
  *         "name": "agent-foo",
- *         "status": "running | needs_attention | completed | terminated | exited | errored",
+ *         "status": "running | needs_attention | completed | terminated | exited",
  *         "last_event_seq": 42,            // 1-based line number in events.jsonl, or null
  *         "last_event": "agent_spawned",   // event type from the same record, or null
  *         "blocker": "liveness timeout"    // omitted when no blocker is known
@@ -209,9 +209,9 @@ function readStalledFlag(flagPath, errors) {
 
 function deriveBlocker(agent) {
   if (agent.attention_reason) return String(agent.attention_reason);
-  if (agent.status === "errored" && agent.exit_log_tail) {
+  if (agent.status === "exited" && agent.exit_log_tail) {
     const tail = String(agent.exit_log_tail).trim().split("\n").pop() || "";
-    if (tail) return `errored: ${tail.slice(0, 120)}`;
+    if (tail) return `exited: ${tail.slice(0, 120)}`;
   }
   return null;
 }
@@ -223,7 +223,13 @@ function deriveLoopState(agents, stalled, abortRequested) {
   if (stalled) return "stalled";
   if (abortRequested) return "aborting";
 
-  const terminal = new Set(["completed", "terminated", "exited", "errored"]);
+  // `needs_attention` belongs in the terminal set because the loop will never
+  // advance a parked agent on its own — for "is the loop still doing work?"
+  // semantics it counts as done. It does NOT mean the run completed cleanly:
+  // the `hasAttention` short-circuit below fires first and returns
+  // "needs_attention", so `loop_state: "completed"` can only be reached when
+  // every agent is completed/terminated/exited and none are parked.
+  const terminal = new Set(["completed", "terminated", "exited", "needs_attention"]);
   let hasRunning = false;
   let hasAttention = false;
   let allTerminal = true;

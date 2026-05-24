@@ -16,7 +16,7 @@ if your coordination directory is not `./coord`.
 ## 1. Detect a parked agent
 
 The dashboard renders a parked agent as an amber `ATTENTION: <reason>` row,
-distinct from a red `errored` row:
+distinct from a vanished `exited` row:
 
 ```
 node scripts/dashboard.js --coord ./coord
@@ -144,7 +144,7 @@ node scripts/resume-agent.js --agent <agent> --coord ./coord --preserve-restart-
 ```
 
 The script refuses (exits non-zero, record untouched) if the agent is not in
-`needs_attention` — resuming a `running`, `completed`, or truly `errored`
+`needs_attention` — resuming a `running`, `completed`, or `exited`
 agent is almost certainly a mistake, so it is rejected rather than guessed at.
 
 ## 6. Verify

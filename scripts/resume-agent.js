@@ -105,7 +105,7 @@ function resumeAgent() {
     console.error(
       `Error: agent '${config.agent}' is '${outcome.status}', not '${STATUS.NEEDS_ATTENTION}'. ` +
       `Resume only operates on a parked agent; refusing to touch a '${outcome.status}' one. ` +
-      `(Rescuing a truly errored agent is a separate, deliberate action and out of scope here.)`
+      `(Other statuses are reached via different recovery paths — running agents stay with the loop, completed/terminated/exited ones are out of scope here.)`
     );
     process.exit(1);
   }
