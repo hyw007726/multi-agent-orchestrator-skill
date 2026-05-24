@@ -100,7 +100,8 @@ Restart Codex after installing. Running the installer again updates the skill.
 git clone https://github.com/hyw007726/multi-agent-orchestrator-skill.git \
   ~/src/multi-agent-orchestrator
 
-gemini extensions install ~/src/multi-agent-orchestrator
+./install-gemini.sh
+# or: gemini extensions install ~/src/multi-agent-orchestrator
 
 export ORCHESTRATOR_HOME="$HOME/src/multi-agent-orchestrator"
 ```

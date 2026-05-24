@@ -29,6 +29,7 @@ const VALID_EVENTS = new Set([
   "agent_parked",
   "agent_resumed",
   "agent_resume_failed",
+  "agent_integrated",
   "arbitration_action_dropped",
   "arbitration_response_rejected",
   "end_agent_intent",

@@ -18,6 +18,7 @@ Each phase has exactly one recommended command. Alternative entry points are doc
 | Phase 1.5 — Plan review (optional) | `scripts/review-plan.js` |
 | Phase 4 — Launch | `scripts/launch-all.js` |
 | Monitoring | `scripts/status.js` |
+| Phase 5 — Integration (opt-in) | `scripts/integrate-agent.js` |
 
 `status.js` is the single "what's happening right now" probe. It reads
 `coord/agents.json`, `coord/events.jsonl`, and `coord/orchestrator-stalled.flag`
@@ -551,14 +552,20 @@ done. Please review and integrate."* Then:
 2. **Resolve any `needs_attention` agents first** — resume with
    `scripts/resume-agent.js` or abandon the branch before merging. Do not merge
    parked worktrees.
-3. For each agent ready to integrate, read `base_ref` from `coord/agents.json`
-   (or the task record in `coord/context.json`) and diff against that ref, not
-   a hard-coded branch:
+3. For each agent ready to integrate, preview with the opt-in helper (default is
+   human-gated — diff and merge conflict check only):
    ```bash
-   git diff <base_ref>...<agent-name>
+   node <SKILL>/scripts/integrate-agent.js --agent <agent-name> --coord ./coord
    ```
+   It reads `base_ref` from `coord/agents.json` and runs
+   `git diff <base_ref>...<agent-name>` plus a `git merge-tree` conflict pre-check.
 4. Summarize the work for the user.
-5. After approval, merge:
+5. After explicit approval, apply the merge and clean up:
+   ```bash
+   node <SKILL>/scripts/integrate-agent.js --agent <agent-name> --coord ./coord --apply
+   ```
+   This merges into the current branch, runs `git worktree remove`, and deletes
+   the agent branch. Manual equivalents:
    ```bash
    git merge <agent-name>
    git worktree remove <worktree-path>/<agent-name>
